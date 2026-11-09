@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>羊多一點 · 玩家端</title>
+<script src="/i18n.js"></script>
+<script src="/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    /* 赌场豪华 + 中式喜庆 配色 */
+    --bg1: #3a0a0f;          /* 深红绸缎 */
+    --bg2: #16060a;          /* 更深的暗红 */
+    --bg3: #5c0e16;          /* 中段过渡红 */
+    --card: rgba(80, 12, 18, .55);
+    --card-solid: #4a0b12;
+    --card-border: rgba(212, 166, 83, .38);
+    --card-border-strong: rgba(212, 166, 83, .65);
+    --text: #fff2d6;         /* 暖金米白 */
+    --muted: #e8cfa0;        /* 淡金灰（提亮，保证深红底可读性） */
+    --gold: #ffd45e;
+    --gold-deep: #e8a020;
+    --gold-bright: #ffe58a;
+    --red: #c1121f;          /* 喜庆红 */
+    --red-deep: #7a0812;
+    --ok: #3ddc84;           /* 命中绿（保留语义色，偏暖） */
+    --bad: #ff6b6b;
+    --accent: #e8a020;       /* 主强调色改为金 */
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  html,body { height:100%; }
+  body {
+    position:relative;
+    font-family: -apple-system, "PingFang SC", "PingFang HK", "Microsoft YaHei", "STKaiti", "KaiTi", serif;
+    background:
+      radial-gradient(1200px 600px at 50% -10%, rgba(255,180,60,.14), transparent 60%),
+      radial-gradient(900px 500px at 110% 110%, rgba(255,60,60,.14), transparent 55%),
+      linear-gradient(165deg, var(--bg1) 0%, var(--bg3) 38%, var(--bg2) 100%);
+    color: var(--text);
+    min-height:100vh; padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; align-items:center;
+    text-shadow: 0 1px 1px rgba(0,0,0,.35);
+  }
+  /* 祥云 + 铜钱 暗纹背景（SVG data-URI，随内容平铺，不遮挡内容） */
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.5;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='none' stroke='%23d8b98a' stroke-opacity='.10' stroke-width='1.4'%3E%3Ccircle cx='40' cy='40' r='10'/%3E%3Crect x='34' y='34' width='12' height='12' rx='1.5'/%3E%3Cpath d='M104 34c-5 4-5 12 0 16 5-4 5-12 0-16z'/%3E%3Cpath d='M118 46c-7 0-7 10 0 10s7-10 0-10z'/%3E%3Cpath d='M88 50c-4 3-4 10 0 13 4-3 4-10 0-13z'/%3E%3Ccircle cx='112' cy='108' r='9'/%3E%3Crect x='106' y='102' width='12' height='12' rx='1.5'/%3E%3Cpath d='M44 112c-6 5-6 14 0 19 6-5 6-14 0-19z'/%3E%3Cpath d='M60 126c-8 0-8 12 0 12s8-12 0-12z'/%3E%3C/g%3E%3C/svg%3E");
+    background-size:160px 160px;
+  }
+  .wrap { width:100%; max-width:560px; position:relative; z-index:1; }
+
+  header { position:relative; text-align:center; margin:10px 0 6px; }
+  header h1 { position:relative; display:inline-block; font-size:30px; letter-spacing:3px; font-weight:900;
+    background:linear-gradient(180deg,#fff0c2 0%,var(--gold) 45%,var(--gold-deep) 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:none; filter:drop-shadow(0 2px 2px rgba(0,0,0,.5)); }
+  /* 标题两侧中式灯笼装饰（灯笼体 + 上下灯盖 + 灯穗） */
+  header h1::before, header h1::after {
+    content:""; display:inline-block; width:20px; height:24px; margin:0 12px; vertical-align:-6px;
+    background:
+      radial-gradient(circle at 50% 32%, #fff0c2 0%, #ffd76b 45%, #e8a020 100%);
+    border-radius:50%;
+    box-shadow:
+      0 2px 5px rgba(0,0,0,.5),
+      0 0 14px rgba(255,190,70,.7),
+      0 -14px 0 -9px #f5b22e,   /* 上灯盖 */
+      0 16px 0 -9px #d9860c;   /* 下灯盖 */
+    position:relative;
+  }
+  header h1 .tag { font-size:13px; vertical-align:middle; margin-left:8px; padding:3px 12px; border-radius:99px;
+    background:linear-gradient(135deg,#fff0c2,var(--gold) 50%,var(--gold-deep)); color:#3a1500; font-weight:800;
+    box-shadow:0 1px 3px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.5); text-shadow:none; }
+  .round { color:var(--muted); font-size:14px; margin-top:6px; letter-spacing:1px; }
+
+  /* 顶栏：语言切换 + 登出 */
+  .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:2px; }
+  .lang-switch { display:flex; align-items:center; }
+  .lang-btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    font-size:13px; padding:6px 14px; border-radius:99px; cursor:pointer;
+    background:rgba(60,8,12,.6); border:1px solid var(--card-border); color:var(--text);
+    font-weight:600; transition:all .12s ease;
+  }
+  .lang-btn svg { width:20px; height:20px; flex:none; }
+  .lang-btn .lang-code { font-size:13px; font-weight:600; letter-spacing:.5px; }
+  .lang-btn:active { transform:scale(.96); }
+  .logout-btn {
+    font-size:13px; padding:6px 14px; border-radius:99px; cursor:pointer;
+    background:rgba(150,20,25,.35); border:1px solid rgba(255,120,120,.55); color:#ffd0d0;
+    font-weight:600; transition:all .12s ease;
+  }
+  .logout-btn:active { transform:scale(.96); }
+
+  .status-pill {
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    margin:14px auto 18px; width:fit-content; padding:9px 24px; border-radius:99px;
+    font-size:16px; font-weight:700; letter-spacing:1px;
+    background:linear-gradient(135deg, rgba(120,20,28,.7), rgba(60,8,12,.7));
+    border:1px solid var(--card-border-strong);
+    box-shadow:0 4px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,220,150,.15);
+  }
+  .status-pill .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); }
+  .st-unreg  .dot { background:#e8cfa0; }
+  .st-ready  .dot { background:var(--gold); animation:pulse 1.4s infinite; box-shadow:0 0 8px var(--gold); }
+  .st-wait   .dot { background:#ffb347; animation:pulse 1.4s infinite; box-shadow:0 0 8px #ffb347; }
+  .st-done   .dot { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  @keyframes pulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.4; transform:scale(.75)} }
+
+  .card {
+    position:relative;
+    background:linear-gradient(180deg, rgba(100,16,24,.6), rgba(55,7,12,.62));
+    border:1px solid var(--card-border);
+    border-radius:20px; padding:22px 20px; margin-bottom:16px;
+    backdrop-filter: blur(8px);
+    box-shadow:0 8px 28px rgba(0,0,0,.42), inset 0 0 0 1px rgba(255,210,120,.08), inset 0 1px 0 rgba(255,220,150,.12);
+  }
+  /* 卡片四角金色点缀 */
+  .card::before, .card::after {
+    content:""; position:absolute; width:14px; height:14px; pointer-events:none;
+    border:2px solid var(--gold); opacity:.75;
+  }
+  .card::before { top:8px; left:8px; border-right:none; border-bottom:none; border-top-left-radius:8px; }
+  .card::after  { bottom:8px; right:8px; border-left:none; border-top:none; border-bottom-right-radius:8px; }
+  .card h2 { font-size:18px; margin-bottom:14px; display:flex; align-items:center; gap:8px; font-weight:800; letter-spacing:1px; }
+  .card h2 .step { width:26px; height:26px; border-radius:8px;
+    background:linear-gradient(135deg,#fff0c2,var(--gold) 50%,var(--gold-deep)); color:#3a1500;
+    display:inline-flex; align-items:center; justify-content:center; font-size:14px; flex:none; font-weight:900;
+    box-shadow:0 2px 4px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.5); }
+  .hint { color:var(--muted); font-size:13px; line-height:1.6; margin-top:12px; }
+
+  input[type=text] {
+    width:100%; font-size:19px; padding:15px 16px; border-radius:14px;
+    border:1.5px solid var(--card-border); background:rgba(30,4,8,.45); color:var(--text); outline:none;
+  }
+  input[type=text]:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(255,212,94,.18); }
+  input[type=text]::placeholder { color:#d9b886; }
+
+  .btn {
+    width:100%; margin-top:14px; padding:16px; font-size:19px; font-weight:800; letter-spacing:3px;
+    border:none; border-radius:14px; color:#2b1200; cursor:pointer;
+    background:linear-gradient(180deg,#fff0c2 0%,var(--gold) 45%,var(--gold-deep) 100%);
+    box-shadow:0 4px 14px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.55), inset 0 -2px 0 rgba(150,90,0,.35);
+    transition: transform .08s ease, opacity .2s, box-shadow .08s ease;
+    text-shadow:0 1px 0 rgba(255,255,255,.35);
+  }
+  .btn:active { transform:scale(.97); box-shadow:0 2px 6px rgba(0,0,0,.4), inset 0 2px 4px rgba(120,70,0,.4); }
+  .btn[disabled] { opacity:.45; pointer-events:none; }
+  .btn.gold { background:linear-gradient(180deg,#ffd76b 0%,#f0a71c 50%,#d9860c 100%); color:#3a1500; }
+  .btn.plain { background:linear-gradient(180deg,#fff0c2 0%,#ffd76b 45%,#f0a71c 100%);
+    font-size:16px; padding:13px; letter-spacing:1px; color:#3a1500; border:1px solid rgba(255,240,194,.6);
+    box-shadow:0 3px 10px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.5); text-shadow:0 1px 0 rgba(255,255,255,.3); }
+
+  /* 手动输入区（不折叠，输入框 + 按钮同行） */
+  .manual-label { color:var(--muted); font-size:14px; margin:16px 0 10px; padding-top:14px;
+    border-top:1px solid var(--card-border); }
+  .manual-row { display:flex; gap:10px; align-items:stretch; }
+  .manual-row input[type=text] { flex:1; min-width:0; font-size:16px; padding:13px 14px; }
+  .manual-row .manual-btn { width:auto; flex:none; margin-top:0; padding:0 18px; white-space:nowrap; }
+
+  /* 相机取景框 */
+  #camBox { border-radius:16px; overflow:hidden; margin-bottom:4px; background:#000;
+    border:1px solid var(--card-border); }
+  #camReader { width:100%; }
+  #camReader video { width:100% !important; border-radius:16px; object-fit:cover; }
+  .cam-tip { text-align:center; color:var(--muted); font-size:13px; padding:8px 0 2px; }
+
+  /* 单双选择（下注按钮：金色描边 + 深红底） */
+  .pair { display:flex; gap:14px; }
+  .pair .opt, .numgrid button {
+    flex:1; padding:20px 0; font-size:24px; font-weight:800; border-radius:16px;
+    background:linear-gradient(180deg, rgba(140,24,32,.85), rgba(90,10,16,.9));
+    color:var(--text); border:2px solid var(--card-border); cursor:pointer;
+    transition: all .12s ease; box-shadow:0 4px 12px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,210,120,.15);
+  }
+  .pair .opt small { display:block; font-size:12px; font-weight:500; color:var(--muted); margin-top:4px; letter-spacing:1px; }
+  .pair .opt.sel, .numgrid button.sel {
+    background:linear-gradient(180deg,#ffd76b 0%,#f0a71c 55%,#d9860c 100%);
+    border-color:#fff0c2; color:#3a1500; transform:scale(1.03);
+    box-shadow:0 0 18px rgba(255,200,80,.5), inset 0 1px 0 rgba(255,255,255,.6);
+    text-shadow:0 1px 0 rgba(255,255,255,.3);
+  }
+  .pair .opt.sel small { color:#7a4a00; }
+  .numgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .numgrid button { padding:18px 0; font-size:26px; }
+
+  .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:18px; }
+
+  /* 等待开奖 */
+  .waiting { text-align:center; padding:10px 0; }
+  .spinner { width:44px; height:44px; margin:6px auto 14px; border-radius:50%;
+    border:4px solid rgba(255,220,150,.18); border-top-color:var(--gold); animation:spin 1s linear infinite;
+    box-shadow:0 0 16px rgba(255,200,80,.25); }
+  @keyframes spin { to { transform:rotate(360deg) } }
+  .my-pred { display:flex; gap:12px; justify-content:center; margin:16px 0 4px; }
+  .my-pred .chip { padding:10px 18px; border-radius:12px;
+    background:linear-gradient(180deg, rgba(120,18,26,.7), rgba(70,8,14,.7));
+    border:1px solid var(--card-border-strong); font-size:17px; font-weight:700;
+    box-shadow:inset 0 1px 0 rgba(255,210,120,.12); }
+  .my-pred .chip b { color:var(--gold); }
+
+  /* 结果 */
+  .result-num { text-align:center; margin:4px 0 16px; }
+  .result-num .n { font-size:88px; font-weight:900; line-height:1;
+    background:linear-gradient(180deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 3px 4px rgba(0,0,0,.5)); }
+  .result-num .lab { color:var(--muted); font-size:14px; letter-spacing:3px; }
+  .verdict { display:flex; gap:12px; }
+  .verdict .v { flex:1; text-align:center; padding:16px 8px; border-radius:16px;
+    background:linear-gradient(180deg, rgba(120,18,26,.6), rgba(70,8,14,.6));
+    border:1px solid var(--card-border); }
+  .verdict .v .t { font-size:13px; color:var(--muted); margin-bottom:6px; }
+  .verdict .v .d { font-size:20px; font-weight:800; }
+  .v.hit { border-color:rgba(61,220,132,.7); box-shadow:0 0 12px rgba(61,220,132,.25); } .v.hit .d { color:var(--ok); }
+  .v.miss { border-color:rgba(255,120,120,.6); } .v.miss .d { color:var(--bad); }
+
+  /* Toast */
+  #toast { position:fixed; left:50%; bottom:calc(28px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(20px);
+    background:rgba(52,6,11,.96); border:1px solid var(--card-border-strong); color:var(--text);
+    padding:13px 24px; border-radius:14px; font-size:15px; opacity:0; pointer-events:none;
+    transition:all .25s ease; z-index:99; max-width:86vw; text-align:center;
+    box-shadow:0 8px 24px rgba(0,0,0,.5); }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  #toast.err { border-color:rgba(255,120,120,.7); }
+  #toast.ok { border-color:rgba(255,212,94,.7); }
+
+  .hidden { display:none !important; }
+  .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 顶栏：语言切换 + 登出 -->
+  <div class="topbar">
+    <button class="lang-btn" id="langBtn" type="button" aria-label="切换语言">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M2 12h20"/>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      <span class="lang-code" id="langCode">繁體</span>
+    </button>
+    <button class="logout-btn hidden" id="logoutBtn" data-i18n="p_logout">登出</button>
+  </div>
+
+  <header>
+    <h1 data-i18n="p_title">单双竞猜<span class="tag" data-i18n="p_tag">玩家端</span></h1>
+    <div class="round" id="roundInfo"></div>
+  </header>
+
+  <div class="status-pill st-unreg" id="statusPill"><span class="dot"></span><span id="statusText"></span></div>
+
+  <!-- ① 扫描自己的二维码 -->
+  <div class="card" id="cardScan">
+    <h2><span class="step">1</span><span data-i18n="p_scanTitle">扫描我的二维码</span></h2>
+    <button class="btn" id="camBtn" data-i18n="p_openCam">打开相机扫描</button>
+    <div id="camBox" class="hidden"><div id="camReader"></div><div class="cam-tip" data-i18n="p_camTip">对准你手中的二维码，自动识别</div></div>
+    <div class="manual-label" data-i18n="p_manualSummary">相机不可用？手动输入二维码内容</div>
+    <div class="manual-row">
+      <input type="text" id="manualInput" maxlength="64" data-i18n-ph="p_manualPlaceholder" placeholder="输入二维码内容 / 编号" autocomplete="off">
+      <button class="btn plain manual-btn" id="manualBtn" data-i18n="p_manualBtn">提交识别</button>
+    </div>
+    <div class="err" id="scanErr"></div>
+  </div>
+
+  <!-- ② 提交预测 -->
+  <div class="card hidden" id="cardPred">
+    <h2><span class="step">2</span><span data-i18n="p_predTitle">提交预测</span></h2>
+    <div class="pair">
+      <button class="opt" data-oe="单"><span class="oe-main">单</span><small>1 / 3 / 5 / 7</small></button>
+      <button class="opt" data-oe="双"><span class="oe-main">双</span><small>2 / 4 / 6 / 8</small></button>
+    </div>
+    <div style="height:14px"></div>
+    <div class="numgrid" id="numGrid">
+      <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
+      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button>
+    </div>
+    <div class="err" id="predErr"></div>
+    <button class="btn gold" id="predBtn" data-i18n="p_predBtn">提交预测</button>
+    <div class="hint" data-i18n="p_predHint">单双 + 数字各预测一次，一次提交、不可修改。</div>
+  </div>
+
+  <!-- ③ 等待开奖 -->
+  <div class="card hidden" id="cardWait">
+    <div class="waiting">
+      <div class="spinner"></div>
+      <div style="font-size:19px;font-weight:700;letter-spacing:1px" data-i18n="p_waitTitle">已提交 · 等待工作人员开奖</div>
+      <div class="my-pred" id="myPred"></div>
+      <div class="hint" data-i18n="p_waitHint">工作人员确认前不会公布数字，请耐心等待～</div>
+    </div>
+  </div>
+
+  <!-- ④ 结果 -->
+  <div class="card hidden" id="cardResult">
+    <div class="result-num">
+      <div class="lab" data-i18n="p_resultLab">本轮开奖数字</div>
+      <div class="n" id="resultNum">?</div>
+    </div>
+    <div class="verdict">
+      <div class="v" id="vOE"><div class="t" data-i18n="p_oePred">单双预测</div><div class="d" id="vOEd">—</div></div>
+      <div class="v" id="vNum"><div class="t" data-i18n="p_numPred">数字预测</div><div class="d" id="vNumd">—</div></div>
+    </div>
+    <div class="hint" style="text-align:center" data-i18n="p_resultHint">等待工作人员开始新一轮后再扫码即可继续。</div>
+  </div>
+
+  <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
+</div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var PID_KEY = 'oe_pid';
+  var pid = localStorage.getItem(PID_KEY) || '';
+  var state = null;
+  var selOE = null, selNum = null, submitting = false;
+
+  window.I18N.init({ storageKey: 'oe_lang' });
+  var t = window.I18N.t;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---------- i18n ---------- */
+  /* 语言码 → 按钮短标签 */
+  var LANG_LABEL = { 'zh-HK': '繁體', 'zh-CN': '简体', 'en-US': 'EN' };
+
+  /* 静态文案应用 + 语言按钮标签 + 单双选项文字 + 动态区重渲染 */
+  function applyI18n() {
+    var lang = window.I18N.getLocale();
+    document.documentElement.lang = lang;
+
+    // 语言按钮上的短标签
+    var code = $('langCode');
+    if (code) code.textContent = LANG_LABEL[lang] || lang;
+
+    // data-i18n 文本
+    Array.prototype.forEach.call(document.querySelectorAll('[data-i18n]'), function (el) {
+      var key = el.getAttribute('data-i18n');
+      // 若元素内部含 <b> 或嵌套标签，用 innerHTML 保留结构
+      var val = t(key);
+      if (/<[a-z][\s\S]*>/i.test(val)) el.innerHTML = val;
+      else el.textContent = val;
+    });
+
+    // data-i18n-ph 占位符
+    Array.prototype.forEach.call(document.querySelectorAll('[data-i18n-ph]'), function (el) {
+      el.placeholder = t(el.getAttribute('data-i18n-ph'));
+    });
+
+    // 单双选项按钮文字
+    Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (b) {
+      var oe = b.getAttribute('data-oe');
+      var main = b.querySelector('.oe-main');
+      if (main) main.textContent = t(oe === '单' ? 'odd' : 'even');
+    });
+
+    // 页面标题
+    document.title = t('p_title') + ' · ' + t('p_tag');
+
+    // 动态区重新渲染
+    render();
+  }
+
+  /* ---------- Toast ---------- */
+  var toastTimer = null;
+  function toast(msg, type) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'show ' + (type || '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 2600);
+  }
+
+  function esc(x) {
+    return String(x).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+
+  /* ---------- 状态判定 ---------- */
+  function phase(s) {
+    if (!s.me) return 'unreg';                 // 未扫码（或新一轮）
+    if (s.me.oddEven == null) return 'ready';  // 已登记待预测
+    if (!s.locked) return 'wait';              // 已预测等待开奖
+    return 'done';                             // 已出结果
+  }
+
+  var PHASE_META = {
+    unreg: { cls: 'st-unreg', text: function () { return t('p_st_unreg'); } },
+    ready: { cls: 'st-ready', text: function () { return t('p_st_ready'); } },
+    wait:  { cls: 'st-wait',  text: function () { return t('p_st_wait'); } },
+    done:  { cls: 'st-done',  text: function () { return t('p_st_done'); } }
+  };
+
+  /* ---------- 渲染 ---------- */
+  function render() {
+    var s = state; if (!s) return;
+
+    // 身份有效性判定：唯一权威信号是服务端 players 里是否还有这个 pid（s.me 是否非空）。
+    // 服务端 /api/reset 开始新一轮时会清空 players，此时 s.me 变 null，即为「身份失效，需重新扫码」。
+    // 不再用本地轮次比对（该机制在提交预测/确认数字后可能因轮次残留误判而误清 pid）。
+    if (pid && !s.me) { pid = ''; localStorage.removeItem(PID_KEY); }
+
+    $('roundInfo').textContent = t('p_round', { n: s.round }) + (s.locked ? t('p_locked') : t('p_inProgress'));
+
+    var ph = phase(s);
+    var meta = PHASE_META[ph];
+    $('statusPill').className = 'status-pill ' + meta.cls;
+    $('statusText').textContent = meta.text();
+
+    $('cardScan').classList.toggle('hidden', ph !== 'unreg');
+    $('cardPred').classList.toggle('hidden', ph !== 'ready');
+    $('cardWait').classList.toggle('hidden', ph !== 'wait');
+    $('cardResult').classList.toggle('hidden', ph !== 'done');
+
+    // 登出按钮：有本地身份时才显示
+    $('logoutBtn').classList.toggle('hidden', !pid);
+
+    if (ph === 'wait') {
+      $('myPred').innerHTML =
+        '<div class="chip">' + esc(t('p_oeCol')) + ' <b>' + esc(s.me.oddEven) + '</b></div>' +
+        '<div class="chip">' + esc(t('p_numCol')) + ' <b>' + esc(s.me.number) + '</b></div>';
+    }
+
+    if (ph === 'done') renderResult(s);
+  }
+
+  function renderResult(s) {
+    var n = s.number;
+    $('resultNum').textContent = n;
+
+    var me = s.me;
+    // 单双命中：基于开奖数字的奇偶性判定，与语言/文案无关（避免「单/單」「双/雙」字形差异导致误判）
+    var oeHit = (me.oddEven === '单') === (n % 2 === 1);
+    var numHit = me.number === n;
+    $('vOE').className = 'v ' + (oeHit ? 'hit' : 'miss');
+    $('vOEd').textContent = t('p_guessOE', { x: me.oddEven, r: oeHit ? t('p_hitYes') : t('p_hitNo') });
+    $('vNum').className = 'v ' + (numHit ? 'hit' : 'miss');
+    $('vNumd').textContent = t('p_guessOE', { x: me.number, r: numHit ? t('p_hitYes') : t('p_hitNo') });
+  }
+
+  /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
+  var es = null;          // EventSource 实例
+  var streamClosed = false; // 手动关闭标记（登出/页面隐藏时置 true，避免误判为断线）
+
+  function fetchState() {
+    var url = '/api/state' + (pid ? '?pid=' + encodeURIComponent(pid) : '');
+    return fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); });
+  }
+
+  function applyState(s) {
+    if (!s.ok) return;
+    $('connLost').classList.add('hidden');
+    var prevPh = state ? phase(state) : null;
+    state = s;
+    render();
+    if (prevPh === 'wait' && phase(s) === 'done') toast(t('p_resultLab') + ' 🎉', 'ok');
+  }
+
+  /** 关闭当前 SSE 连接（手动/重连前统一走这里，避免遗留连接）。 */
+  function closeStream() {
+    streamClosed = true;
+    if (es) { es.close(); es = null; }
+  }
+
+  /** 建立 SSE 连接：登录/扫码后 pid 变化时重连。 */
+  function startStream() {
+    closeStream();
+    streamClosed = false;
+    var url = '/api/stream' + (pid ? '?pid=' + encodeURIComponent(pid) : '');
+    es = new EventSource(url);
+
+    // 连接建立（含自动重连成功）：立即拉一次全量状态对齐，消除断线期间错过的变更
+    es.onopen = function () {
+      $('connLost').classList.add('hidden');
+      fetchState().then(applyState).catch(function () {});
+    };
+
+    // 服务端推送的状态快照（事件名 state）
+    es.addEventListener('state', function (ev) {
+      try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
+    });
+
+    // 心跳事件：无需处理，仅用于保持连接活性（浏览器层面已处理）
+
+    // 连接出错/中断：显示提示；EventSource 会按服务端 retry 间隔自动重连，
+    // 重连成功后 onopen 再次触发并全量对齐
+    es.onerror = function () {
+      if (streamClosed) return; // 手动关闭导致的 error 不提示
+      // readyState 为 CONNECTING 表示正在重连；CLOSED 才彻底失败
+      if (es && es.readyState === EventSource.CONNECTING) {
+        $('connLost').classList.remove('hidden');
+      }
+    };
+  }
+
+  /** 拉取一次全量状态快照，用于对齐 SSE 断线/回到前台期间错过的变更。 */
+  function poll() {
+    fetchState().then(applyState).catch(function () {
+      $('connLost').classList.remove('hidden');
+    });
+  }
+
+  /* ---------- 扫码识别（手动输入通道） ---------- */
+  function handleScannedContent(content) {
+    $('scanErr').textContent = '';
+    fetch('/api/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { $('scanErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_scanFail'); return; }
+      pid = d.pid;
+      localStorage.setItem(PID_KEY, pid);
+      if (d.name) {
+        toast(t('p_welcome', { n: d.name }), 'ok');
+      } else {
+        toast(t('p_scanned', { id: '****' + d.idShort }), 'ok');
+      }
+      startStream(); // pid 变化，重连以获取 me 视角
+      poll();
+    }).catch(function () { $('scanErr').textContent = t('p_scanNetErr'); });
+  }
+
+  /* ---------- 相机扫码 ---------- */
+  var html5Qr = null;      // Html5Qrcode 实例
+  var camActive = false;   // 相机是否已启动
+  var scanHandled = false; // 本次启动后是否已处理过扫码结果（防重复触发）
+
+  function stopCamera() {
+    if (html5Qr) {
+      var inst = html5Qr;
+      html5Qr = null;
+      camActive = false;
+      scanHandled = false;
+      inst.stop().then(function () {
+        try { inst.clear(); } catch (e) { /* 忽略 */ }
+      }).catch(function () {
+        try { inst.clear(); } catch (e) { /* 忽略 */ }
+      });
+    }
+    $('camBox').classList.add('hidden');
+    $('camReader').innerHTML = '';
+    $('camBtn').textContent = t('p_openCam');
+    $('camBtn').disabled = false;
+  }
+
+  function startCamera() {
+    // 库未加载（CDN 或本地文件缺失/损坏）时提示走手动通道
+    if (typeof Html5Qrcode === 'undefined') {
+      $('scanErr').textContent = t('p_camUnavailable');
+      return;
+    }
+    if (camActive) return;
+    $('scanErr').textContent = '';
+
+    html5Qr = new Html5Qrcode('camReader');
+    camActive = true;
+    scanHandled = false;
+    $('camBox').classList.remove('hidden');
+    $('camBtn').disabled = true;
+    $('camBtn').textContent = t('p_camStarting');
+
+    html5Qr.start(
+      { facingMode: 'environment' },
+      {
+        fps: 10,
+        qrbox: function (vw, vh) {
+          var s = Math.floor(Math.min(vw, vh) * 0.7);
+          return { width: s, height: s };
+        },
+        aspectRatio: 1
+      },
+      function (decodedText) {
+        // 识别到内容：停止相机并进入登记流程
+        if (scanHandled) return;
+        scanHandled = true;
+        stopCamera();
+        handleScannedContent(decodedText);
+      },
+      function (err) {
+        // 忽略每帧的常规解码失败（未对准/模糊等），只处理致命错误
+      }
+    ).catch(function (err) {
+      camActive = false;
+      $('camBox').classList.add('hidden');
+      $('camReader').innerHTML = '';
+      $('camBtn').disabled = false;
+      $('camBtn').textContent = t('p_openCam');
+      var msg = (err && (err.message || err.name)) || '';
+      if (/NotAllowedError|Permission|permission/i.test(msg)) {
+        $('scanErr').textContent = t('p_camDenied');
+      } else if (/NotFoundError|DevicesNotFound|no.*camera/i.test(msg)) {
+        $('scanErr').textContent = t('p_camNotFound');
+      } else if (/NotReadableError|in use|busy/i.test(msg)) {
+        $('scanErr').textContent = t('p_camBusy');
+      } else {
+        $('scanErr').textContent = t('p_camUnavailable');
+      }
+    });
+  }
+
+  $('camBtn').addEventListener('click', startCamera);
+
+  /* 手动输入二维码内容 */
+  $('manualBtn').addEventListener('click', function () {
+    var v = $('manualInput').value.trim();
+    $('scanErr').textContent = '';
+    if (!v) { $('scanErr').textContent = t('p_manualEmpty'); return; }
+    handleScannedContent(v);
+  });
+
+  /* ---------- 预测 ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (b) {
+    b.addEventListener('click', function () {
+      selOE = b.getAttribute('data-oe');
+      Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (x) {
+        x.classList.toggle('sel', x === b);
+      });
+      $('predErr').textContent = '';
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (b) {
+    b.addEventListener('click', function () {
+      selNum = parseInt(b.getAttribute('data-n'), 10);
+      Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) {
+        x.classList.toggle('sel', x === b);
+      });
+      $('predErr').textContent = '';
+    });
+  });
+
+  $('predBtn').addEventListener('click', function () {
+    if (submitting) return;
+    $('predErr').textContent = '';
+    if (!selOE) { $('predErr').textContent = t('p_selOddEven'); return; }
+    if (selNum == null) { $('predErr').textContent = t('p_selNum'); return; }
+    submitting = true; $('predBtn').disabled = true;
+    fetch('/api/predict', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid: pid, oddEven: selOE, number: selNum })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        toast(t('p_predSubmitting'), 'ok');
+        poll();
+      } else {
+        $('predErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_predSubmitFail');
+        $('predBtn').disabled = false;
+        // 已提交过预测（可能多端/刷新后重复点击）→ 同步状态
+        if (d.code === 'predict_duplicate') poll();
+      }
+    }).catch(function () {
+      $('predErr').textContent = t('p_scanNetErr');
+      $('predBtn').disabled = false;
+    }).finally(function () { submitting = false; });
+  });
+
+  /* ---------- 登出 ---------- */
+  $('logoutBtn').addEventListener('click', function () {
+    if (!confirm(t('p_logoutConfirm'))) return;
+    stopCamera();
+    pid = '';
+    localStorage.removeItem(PID_KEY);
+    selOE = null; selNum = null;
+    state = null;
+    $('logoutBtn').classList.add('hidden');
+    toast(t('p_loggedOut'), 'ok');
+    startStream(); // 清除 pid 后重连
+    poll();
+  });
+
+  /* ---------- 语言切换 ---------- */
+  $('langBtn').addEventListener('click', function () {
+    var next = window.I18N.nextLocale();
+    if (window.I18N.setLocale(next)) applyI18n();
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) {
+      // 回到前台：重连 SSE 并立即对齐一次
+      startStream();
+      poll();
+    } else {
+      stopCamera();
+      closeStream(); // 后台关闭连接，省资源；回前台时重连
+    }
+  });
+
+  /* 初始化：应用语言后建立 SSE 连接（替代轮询） */
+  applyI18n();
+  startStream();
+  poll();
+})();
+</script>
+</body>
+</html>

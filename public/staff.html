@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>羊多一點 · 工作人員端</title>
+<script src="i18n.js"></script>
+<style>
+  :root {
+    --bg1: #101627; --bg2: #16233d;
+    --card: rgba(255,255,255,.07);
+    --card-border: rgba(255,255,255,.13);
+    --text: #eef1ff; --muted: #93a0bd;
+    --gold: #ffd45e; --gold-deep: #f5a623;
+    --ok: #34d399; --bad: #f87171;
+    --accent: #4f8cff;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(160deg, var(--bg1), var(--bg2) 70%);
+    color: var(--text);
+    min-height:100vh; padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .wrap { width:100%; max-width:640px; position:relative; }
+
+  header { text-align:center; margin:10px 0 6px; padding:0 64px; }
+  header h1 { font-size:28px; letter-spacing:2px; }
+  header h1 .tag { font-size:13px; vertical-align:middle; margin-left:8px; padding:3px 10px; border-radius:99px;
+    background:linear-gradient(135deg,#4f8cff,#2f6fe0); color:#fff; font-weight:700; }
+  .round { color:var(--muted); font-size:14px; margin-top:6px; }
+
+  .status-pill {
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    margin:14px auto 18px; width:fit-content; padding:9px 22px; border-radius:99px;
+    font-size:16px; font-weight:600; letter-spacing:1px;
+    background:var(--card); border:1px solid var(--card-border);
+  }
+  .status-pill .dot { width:10px; height:10px; border-radius:50%; }
+  .st-input .dot { background:var(--gold); animation:pulse 1.4s infinite; }
+  .st-locked .dot { background:var(--ok); }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.75)} }
+
+  .card {
+    background:var(--card); border:1px solid var(--card-border);
+    border-radius:20px; padding:22px 20px; margin-bottom:16px;
+    backdrop-filter: blur(8px);
+  }
+  .card h2 { font-size:18px; margin-bottom:14px; }
+
+  .btn {
+    width:100%; margin-top:14px; padding:16px; font-size:19px; font-weight:700; letter-spacing:2px;
+    border:none; border-radius:14px; color:#fff; cursor:pointer;
+    background:linear-gradient(135deg,#4f8cff,#2f6fe0);
+    transition: transform .08s ease, opacity .2s;
+  }
+  .btn:active { transform:scale(.97); }
+  .btn[disabled] { opacity:.4; pointer-events:none; }
+  .btn.gold { background:linear-gradient(135deg,var(--gold),var(--gold-deep)); color:#3a2500; }
+  .btn.warn { background:linear-gradient(135deg,#f87171,#e5484d); }
+
+  .stats { display:flex; gap:12px; margin-top:16px; width:100%; }
+  .stats .st { flex:1; text-align:center; padding:12px 6px; border-radius:14px;
+    background:rgba(0,0,0,.25); border:1px solid var(--card-border); }
+  .stats .st .n { font-size:26px; font-weight:800; color:var(--gold); }
+  .stats .st .t { font-size:12px; color:var(--muted); margin-top:3px; }
+
+  /* 数字录入 */
+  .numgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .numgrid button {
+    padding:20px 0; font-size:28px; font-weight:800; border-radius:16px;
+    background:rgba(0,0,0,.28); color:var(--text); border:2px solid var(--card-border); cursor:pointer;
+    transition: all .12s ease;
+  }
+  .numgrid button.sel { background:linear-gradient(135deg,var(--gold),var(--gold-deep));
+    border-color:#ffe9a8; color:#3a2500; transform:scale(1.04); }
+  .sel-preview { text-align:center; margin:16px 0 2px; font-size:15px; color:var(--muted); }
+  .sel-preview b { font-size:24px; color:var(--gold); margin:0 4px; }
+  .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:18px; }
+
+  /* 登录锁 */
+  .lock { text-align:center; padding:20px 4px 6px; }
+  .lock .icon { width:64px; height:64px; margin:0 auto 16px; border-radius:18px; display:flex; align-items:center; justify-content:center;
+    background:rgba(79,140,255,.16); border:1px solid rgba(79,140,255,.4); }
+  .lock .icon svg { width:30px; height:30px; }
+  .lock h2 { font-size:19px; margin-bottom:6px; }
+  input[type=password] {
+    width:100%; font-size:19px; padding:15px 16px; border-radius:14px;
+    border:1.5px solid var(--card-border); background:rgba(0,0,0,.25); color:var(--text); outline:none;
+    letter-spacing:2px; text-align:center;
+  }
+  input[type=password]:focus { border-color:var(--accent); }
+  .logout-link { display:block; margin:16px auto 0; background:none; border:none; color:var(--muted);
+    font-size:13px; cursor:pointer; text-decoration:underline; }
+
+  /* 已确认视图 */
+  .locked-banner { text-align:center; }
+  .locked-banner .n { font-size:92px; font-weight:900; line-height:1.05;
+    background:linear-gradient(180deg,var(--gold),var(--gold-deep)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .locked-banner .lab { color:var(--ok); font-size:16px; font-weight:700; letter-spacing:2px; }
+
+  table { width:100%; border-collapse:collapse; font-size:15px; }
+  th,td { padding:10px 6px; text-align:center; }
+  th { color:var(--muted); font-weight:600; font-size:13px; border-bottom:1px solid var(--card-border); }
+  td { border-bottom:1px solid rgba(255,255,255,.06); }
+  .hit-txt { color:var(--ok); font-weight:700; } .miss-txt { color:var(--bad); }
+  .empty { text-align:center; color:var(--muted); font-size:14px; padding:14px 0; }
+
+  /* 本轮玩家列表 + 新老玩家区分 */
+  .plist { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
+  .plist .p { display:flex; align-items:center; gap:8px; padding:7px 13px; border-radius:12px; font-size:14px; }
+  .plist .p .nm { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .plist .p .tag-n { font-size:11px; padding:2px 8px; border-radius:99px; font-weight:700; flex:none; }
+  /* 新玩家：蓝色系 */
+  .p.is-new { background:rgba(79,140,255,.14); border:1px solid rgba(79,140,255,.45); }
+  .p.is-new .nm { color:#cfe0ff; }
+  .p.is-new .tag-n { background:rgba(79,140,255,.25); color:#7fb2ff; }
+  /* 老玩家：金色系 */
+  .p.is-vet { background:rgba(255,212,94,.12); border:1px solid rgba(255,212,94,.4); }
+  .p.is-vet .nm { color:#ffe9b0; }
+  .p.is-vet .tag-n { background:rgba(255,212,94,.22); color:var(--gold); }
+
+  #toast { position:fixed; left:50%; bottom:calc(28px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(20px);
+    background:rgba(15,20,35,.95); border:1px solid var(--card-border); color:var(--text);
+    padding:13px 24px; border-radius:14px; font-size:15px; opacity:0; pointer-events:none;
+    transition:all .25s ease; z-index:99; max-width:86vw; text-align:center; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  #toast.err { border-color:rgba(248,113,113,.6); }
+  #toast.ok { border-color:rgba(52,211,153,.6); }
+
+  .hidden { display:none !important; }
+  .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
+
+  /* 语言切换 —— 固定到容器最左上角 */
+  .lang-switch {
+    position:absolute; top:0; left:0; z-index:5;
+  }
+  .lang-btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    font-size:13px; padding:6px 14px; border-radius:99px; cursor:pointer;
+    background:rgba(0,0,0,.25); border:1px solid var(--card-border); color:var(--text);
+    font-weight:600; transition:all .12s ease;
+  }
+  .lang-btn svg { width:18px; height:18px; flex:none; }
+  .lang-btn .lang-code { font-size:13px; font-weight:600; letter-spacing:.5px; }
+  .lang-btn:active { transform:scale(.96); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 语言切换（左上角） -->
+  <div class="lang-switch" id="langSwitch" aria-label="Language">
+    <button class="lang-btn" id="langBtn" type="button" aria-label="切换语言">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M2 12h20"/>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      <span class="lang-code" id="langCode">繁體</span>
+    </button>
+  </div>
+
+  <header>
+    <h1><span data-i18n="brand">羊多一点</span><span class="tag" data-i18n="staffTag">工作人员端</span></h1>
+    <div class="round" id="roundInfo">第 1 轮</div>
+  </header>
+
+  <!-- 登录锁 -->
+  <div class="card" id="loginCard">
+    <div class="lock">
+      <div class="icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="11" width="16" height="10" rx="2"/>
+          <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+        </svg>
+      </div>
+      <h2 data-i18n="loginTitle">工作人员登录</h2>
+      <input type="password" id="pwdInput" placeholder="管理密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
+      <button class="btn" id="loginBtn" data-i18n="unlock">解锁</button>
+      <div class="err" id="loginErr"></div>
+    </div>
+  </div>
+
+  <!-- 主内容（登录后显示） -->
+  <div id="mainContent" class="hidden">
+  <div class="status-pill st-input" id="statusPill"><span class="dot"></span><span id="statusText">待录入</span></div>
+
+  <!-- 本轮玩家统计 -->
+  <div class="card">
+    <h2 data-i18n="overview">本轮概况</h2>
+    <div class="stats">
+      <div class="st"><div class="n" id="cntReg">0</div><div class="t" data-i18n="cntReg">已扫码玩家</div></div>
+      <div class="st"><div class="n" id="cntPred">0</div><div class="t" data-i18n="cntPred">已提交预测</div></div>
+    </div>
+  </div>
+
+  <!-- 本轮玩家列表（新老玩家区分） -->
+  <div class="card">
+    <h2><span data-i18n="playerListTitle">本轮玩家</span><span style="margin-left:auto;font-size:13px;color:var(--muted);font-weight:400" id="plistCount"></span></h2>
+    <div class="plist" id="playerList"></div>
+  </div>
+
+  <!-- 待录入：录入并确认数字 -->
+  <div class="card" id="cardInput">
+    <h2 data-i18n="inputTitle">录入本轮数字</h2>
+    <div class="numgrid" id="numGrid">
+      <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
+      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button>
+    </div>
+    <div class="sel-preview"><span data-i18n="selPreview">已选数字</span><b id="selShow">—</b></div>
+    <div class="err" id="inputErr"></div>
+    <button class="btn gold" id="confirmBtn" disabled data-i18n="confirmLock">确认并锁定本轮数字</button>
+  </div>
+
+  <!-- 已确认：结果总览 -->
+  <div class="card hidden" id="cardLocked">
+    <div class="locked-banner">
+      <div class="lab" data-i18n="lockedBanner">✓ 本轮数字已确认并锁定</div>
+      <div class="n" id="lockedNum">?</div>
+    </div>
+    <div id="resultTableWrap"></div>
+    <button class="btn warn" id="resetBtn" data-i18n="resetRound">开始新一轮</button>
+  </div>
+
+  <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
+  <button class="logout-link" id="logoutBtn" data-i18n="logout">退出登录</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var TOKEN_KEY = 'oe_staff_token';
+  var token = sessionStorage.getItem(TOKEN_KEY) || '';
+  var state = null, selNum = null, confirming = false;
+  window.I18N.init({ storageKey: 'oe_staff_locale' });
+  var t = window.I18N.t;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---------- 语言切换 ---------- */
+  var LANG_LABEL = { 'zh-HK': '繁體', 'zh-CN': '简体', 'en-US': 'EN' };
+
+  /** 刷新语言按钮上的短标签（单个地球按钮，显示当前语言码）。 */
+  function updateLangButton() {
+    var code = $('langCode');
+    var lang = window.I18N.getLocale();
+    if (code) code.textContent = LANG_LABEL[lang] || lang;
+  }
+
+  $('langBtn').addEventListener('click', function () {
+    var next = window.I18N.nextLocale();
+    if (window.I18N.setLocale(next)) {
+      applyStaticI18n();
+      render();
+    }
+  });
+
+  /** 应用静态文本（data-i18n / data-i18n-placeholder），并刷新语言按钮标签 */
+  function applyStaticI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+      el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder')));
+    });
+    document.title = t('brand') + ' · ' + t('staffTag');
+    updateLangButton();
+  }
+
+  var toastTimer = null;
+  function toast(msg, type) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'show ' + (type || '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 2600);
+  }
+
+  function setAuth(t) {
+    token = t;
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  }
+
+  function showLogin() {
+    $('loginCard').classList.remove('hidden');
+    $('mainContent').classList.add('hidden');
+  }
+
+  function showMain() {
+    $('loginCard').classList.add('hidden');
+    $('mainContent').classList.remove('hidden');
+  }
+
+  function esc(x) {
+    return String(x).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+
+  /* ---------- 渲染 ---------- */
+  function render() {
+    var s = state; if (!s) return;
+    $('roundInfo').textContent = t('roundInfo', { round: s.round }) +
+      (s.locked ? ' · ' + t('roundLocked') : ' · ' + t('roundOngoing'));
+
+    var locked = s.locked;
+    $('statusPill').className = 'status-pill ' + (locked ? 'st-locked' : 'st-input');
+    $('statusText').textContent = t(locked ? 'statusLocked' : 'statusInput');
+
+    $('cardInput').classList.toggle('hidden', locked);
+    $('cardLocked').classList.toggle('hidden', !locked);
+
+    var reg = s.players.length, pred = s.players.filter(function (p) { return p.submitted; }).length;
+    $('cntReg').textContent = reg;
+    $('cntPred').textContent = pred;
+
+    renderPlayerList(s);
+
+    if (locked) {
+      $('lockedNum').textContent = s.number;
+      var n = s.number;
+      if (!s.players.length) {
+        $('resultTableWrap').innerHTML = '<div class="empty">' + t('noPlayerReg') + '</div>';
+        return;
+      }
+      var rows = s.players.map(function (p) {
+        // 单双命中：基于开奖数字奇偶性判定，与语言无关（「单/單」「双/雙」字形差异不再影响结果）
+        var pOE = (p.oddEven === '单') === (n % 2 === 1), pN = p.number === n;
+        return '<tr><td>' + esc(p.name || t('noNameBound')) + '</td>' +
+          '<td>' + esc(p.oddEven || '—') + '</td>' +
+          '<td>' + esc(p.number != null ? p.number : '—') + '</td>' +
+          '<td class="' + (pOE ? 'hit-txt' : 'miss-txt') + '">' + (pOE ? t('hit') : t('miss')) + '</td>' +
+          '<td class="' + (pN ? 'hit-txt' : 'miss-txt') + '">' + (pN ? t('hit') : t('miss')) + '</td></tr>';
+      }).join('');
+      $('resultTableWrap').innerHTML =
+        '<table><tr><th>' + t('thPlayer') + '</th><th>' + t('thOddEven') + '</th><th>' + t('thNumber') +
+        '</th><th>' + t('thOddEvenResult') + '</th><th>' + t('thNumberResult') + '</th></tr>' + rows + '</table>';
+    }
+  }
+
+  /* ---------- 本轮玩家列表（新老区分） ---------- */
+  function renderPlayerList(s) {
+    var list = $('playerList');
+    var vetCount = s.players.filter(function (p) { return p.isVeteran; }).length;
+    var newCount = s.players.length - vetCount;
+    $('plistCount').textContent = t('plistCount', { total: s.players.length, new: newCount, vet: vetCount });
+
+    if (!s.players.length) {
+      list.innerHTML = '<div class="empty">' + t('noPlayerYet') + '</div>';
+      return;
+    }
+    list.innerHTML = s.players.map(function (p) {
+      var cls = p.isVeteran ? 'is-vet' : 'is-new';
+      var tag = p.isVeteran ? t('tagVet') : t('tagNew');
+      return '<div class="p ' + cls + '">' +
+        '<span class="nm">' + esc(p.name || t('noName')) + '</span>' +
+        '<span class="tag-n">' + tag + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
+  var es = null;           // EventSource 实例
+  var streamClosed = false; // 手动关闭标记
+
+  function applyState(s) {
+    if (!s.ok) return;
+    $('connLost').classList.add('hidden');
+    var wasLocked = state ? state.locked : false;
+    state = s;
+    render();
+    if (!wasLocked && s.locked) toast(t('toastNumberLocked', { number: s.number }), 'ok');
+  }
+
+  /** 关闭当前 SSE 连接。 */
+  function closeStream() {
+    streamClosed = true;
+    if (es) { es.close(); es = null; }
+  }
+
+  /** 建立 SSE 连接。 */
+  function startStream() {
+    closeStream();
+    streamClosed = false;
+    es = new EventSource('/api/stream');
+
+    es.onopen = function () {
+      $('connLost').classList.add('hidden');
+      poll(); // 重连成功后全量对齐一次
+    };
+
+    es.addEventListener('state', function (ev) {
+      try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
+    });
+
+    es.onerror = function () {
+      if (streamClosed) return;
+      if (es && es.readyState === EventSource.CONNECTING) {
+        $('connLost').classList.remove('hidden');
+      }
+    };
+  }
+
+  /** 拉取一次全量状态快照，用于对齐 SSE 断线/回到前台期间错过的变更。 */
+  function poll() {
+    fetch('/api/state', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
+      applyState(s);
+    }).catch(function () {
+      $('connLost').classList.remove('hidden');
+    });
+  }
+
+  /* ---------- 交互 ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (b) {
+    b.addEventListener('click', function () {
+      if (state && state.locked) return;
+      selNum = parseInt(b.getAttribute('data-n'), 10);
+      Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) {
+        x.classList.toggle('sel', x === b);
+      });
+      $('selShow').textContent = selNum;
+      $('confirmBtn').disabled = false;
+      $('inputErr').textContent = '';
+    });
+  });
+
+  $('confirmBtn').addEventListener('click', function () {
+    if (confirming || state.locked) return;
+    if (selNum == null || !Number.isInteger(selNum) || selNum < 1 || selNum > 8) {
+      $('inputErr').textContent = t('errPickNumber');
+      return;
+    }
+    var sure = confirm(t('confirmDialog', { number: selNum }));
+    if (!sure) return;
+    confirming = true; $('confirmBtn').disabled = true;
+    fetch('/api/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ number: selNum, token: token })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) { toast(t('toastLocked', { number: d.number }), 'ok'); poll(); }
+      else if (d.code === 'unauthorized') { forceLogout(); }
+      else { $('inputErr').textContent = window.I18N.errCode(d.code, d) || t('errConfirmFailed'); $('confirmBtn').disabled = false; poll(); }
+    }).catch(function () {
+      $('inputErr').textContent = t('errNetRetry');
+      $('confirmBtn').disabled = false;
+    }).finally(function () { confirming = false; });
+  });
+
+  $('resetBtn').addEventListener('click', function () {
+    if (!state.locked) return;
+    var sure = confirm(t('resetDialog'));
+    if (!sure) return;
+    fetch('/api/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        selNum = null;
+        $('selShow').textContent = '—';
+        $('confirmBtn').disabled = true;
+        Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) { x.classList.remove('sel'); });
+        toast(t('toastNewRound', { round: d.round }), 'ok');
+        poll();
+      } else if (d.code === 'unauthorized') { forceLogout(); }
+      else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  });
+
+  /* ---------- 登录 / 退出 ---------- */
+  function forceLogout() {
+    closeStream();
+    setAuth('');
+    showLogin();
+    toast(t('errSessionExpired'), 'err');
+  }
+
+  $('loginBtn').addEventListener('click', function () {
+    var pw = $('pwdInput').value;
+    $('loginErr').textContent = '';
+    if (!pw) { $('loginErr').textContent = t('errEmptyPwd'); return; }
+    $('loginBtn').disabled = true;
+    fetch('/api/staff-login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        setAuth(d.token);
+        $('pwdInput').value = '';
+        showMain();
+        startStream();
+      } else { $('loginErr').textContent = window.I18N.errCode(d.code, d) || t('errLoginFailed'); }
+    }).catch(function () { $('loginErr').textContent = t('errNetRetry'); })
+      .finally(function () { $('loginBtn').disabled = false; });
+  });
+
+  $('pwdInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('loginBtn').click();
+  });
+
+  $('logoutBtn').addEventListener('click', function () {
+    closeStream();
+    fetch('/api/staff-logout', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    });
+    setAuth('');
+    showLogin();
+  });
+
+  /* 启动时校验会话有效性 */
+  fetch('/api/staff-check?token=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (d) {
+    if (d.ok) { showMain(); startStream(); }
+    else showLogin();
+  }).catch(function () { showLogin(); });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { startStream(); poll(); }
+    else closeStream();
+  });
+
+  /* 初始化语言：应用静态文本 */
+  updateLangButton();
+  applyStaticI18n();
+})();
+</script>
+</body>
+</html>
