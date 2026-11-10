@@ -512,11 +512,7 @@
       if (!d.ok) { $('scanErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_scanFail'); return; }
       pid = d.pid;
       localStorage.setItem(PID_KEY, pid);
-      if (d.name) {
-        toast(t('p_welcome', { n: d.name }), 'ok');
-      } else {
-        toast(t('p_scanned', { id: '****' + d.idShort }), 'ok');
-      }
+      toast(t('p_welcome', { n: d.pid }), 'ok');
       startStream(); // pid 变化，重连以获取 me 视角
       poll();
     }).catch(function () { $('scanErr').textContent = t('p_scanNetErr'); });

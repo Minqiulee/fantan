@@ -44,8 +44,6 @@
       tagVet: '老玩家',
       tagNew: '新玩家',
       noPlayerYet: '本轮还没有玩家扫码',
-      noName: '（未命名）',
-      noNameBound: '（未绑称呼）',
 
       inputTitle: '录入本轮数字',
       selPreview: '已选数字',
@@ -135,7 +133,6 @@
       p_hitNo: '✗ 未中',
 
       p_welcome: '欢迎回来，{n}！',
-      p_scanned: '二维码已识别 {id}',
       p_manualEmpty: '请输入二维码内容或编号',
       p_scanNetErr: '网络异常，请重试',
       p_scanFail: '识别失败',
@@ -186,8 +183,6 @@
       tagVet: '老玩家',
       tagNew: '新玩家',
       noPlayerYet: '本輪還沒有玩家掃碼',
-      noName: '（未命名）',
-      noNameBound: '（未綁稱呼）',
 
       inputTitle: '錄入本輪數字',
       selPreview: '已選數字',
@@ -277,7 +272,6 @@
       p_hitNo: '✗ 未中',
 
       p_welcome: '歡迎回來，{n}！',
-      p_scanned: '二維碼已識別 {id}',
       p_manualEmpty: '請輸入二維碼內容或編號',
       p_scanNetErr: '網絡異常，請重試',
       p_scanFail: '識別失敗',
@@ -327,8 +321,6 @@
       tagVet: 'Returning',
       tagNew: 'New',
       noPlayerYet: 'No player has scanned in yet',
-      noName: '(unnamed)',
-      noNameBound: '(no alias bound)',
 
       inputTitle: 'Enter This Round\'s Number',
       selPreview: 'Selected number',
@@ -418,7 +410,6 @@
       p_hitNo: '✗ Miss',
 
       p_welcome: 'Welcome back, {n}!',
-      p_scanned: 'QR recognized {id}',
       p_manualEmpty: 'Enter QR content or ID',
       p_scanNetErr: 'Network error, try again',
       p_scanFail: 'Recognition failed',

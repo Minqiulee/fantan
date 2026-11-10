@@ -406,7 +406,7 @@
       var rows = s.players.map(function (p) {
         // 单双命中：基于开奖数字奇偶性判定，与语言无关（「单/單」「双/雙」字形差异不再影响结果）
         var pOE = (p.oddEven === '单') === (n % 2 === 1), pN = p.number === n;
-        return '<tr><td>' + esc(p.name || t('noNameBound')) + '</td>' +
+        return '<tr><td>' + esc(p.id) + '</td>' +
           '<td>' + esc(p.oddEven || '—') + '</td>' +
           '<td>' + esc(p.number != null ? p.number : '—') + '</td>' +
           '<td class="' + (pOE ? 'hit-txt' : 'miss-txt') + '">' + (pOE ? t('hit') : t('miss')) + '</td>' +
@@ -433,7 +433,7 @@
       var cls = p.isVeteran ? 'is-vet' : 'is-new';
       var tag = p.isVeteran ? t('tagVet') : t('tagNew');
       return '<div class="p ' + cls + '">' +
-        '<span class="nm">' + esc(p.name || t('noName')) + '</span>' +
+        '<span class="nm">' + esc(p.id) + '</span>' +
         '<span class="tag-n">' + tag + '</span>' +
         '</div>';
     }).join('');

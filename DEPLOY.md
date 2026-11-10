@@ -12,10 +12,11 @@
 
 | 表 | 说明 | 时间戳字段 |
 |---|---|---|
-| `round` | 当前轮次状态 | `locked_at`、`updated_at` |
-| `player` | 每轮玩家登记与预测 | `registered_at`、`submitted_at`、`last_scan_at` |
+| `round` | 当前轮次状态 | `locked_at` |
+| `player` | 每轮玩家登记与预测 | `registered_at`、`submitted_at` |
 | `identity` | 跨轮次玩家身份档案 | `created_at`、`updated_at` |
-| `scan_log` | 扫码审计日志 | `ts` |
+
+玩家 ID 统一为「二维码内容 / 原始 ID」（未经 hash），`player.id` 与 `identity.id` 一致。
 
 表会在应用首次启动时自动创建（幂等，`CREATE TABLE IF NOT EXISTS`），无需手动建表。
 
@@ -79,4 +80,4 @@ docker run -d --name oddeven-pg \
 ## 说明
 
 - 员工端会话（`sessions`）仍是**内存态**，服务重启后需要重新登录，这是有意设计，不影响游戏数据持久化。
-- 扫码日志上限 500 条（`scan_log` 表保留最近 500 条）。
+- 玩家 ID 不再做 hash，直接以二维码内容/原始 ID 作为主键。

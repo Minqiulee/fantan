@@ -5,13 +5,12 @@
  * 本服务只负责「录入、校验、锁定与分发」，绝不在服务端或前端
  * 随机生成或抽取该数字。
  *
- * 身份模型（v2）：玩家自带二维码，页面扫码识别后，
- * 以「二维码内容」的 SHA-256 作为玩家唯一 ID：
+ * 身份模型：玩家自带二维码或直接提交原始 ID，页面识别后，
+ * 以「原始内容」直接作为玩家唯一 ID（不做 hash）：
  *   - players 按 ID 存储本轮登记与预测
- *   - identities 跨轮次记住每个 ID 上次用的称呼（便于复扫自动回填）
- *   - scanLog 记录每一次扫码识别（时间、ID、结果）
+ *   - identities 跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
  *
- * 持久化（v3）：状态存 Postgres（见 db.js），应用重启后数据仍在。
+ * 持久化：状态存 Postgres（见 db.js），应用重启后数据仍在。
  * 需要 DATABASE_URL 环境变量提供连接串（Fly.io Postgres 注入）。
  *
  * 运行：node server.js （默认 3000 端口，可用 PORT 环境变量覆盖）
@@ -25,8 +24,7 @@ const db = require('./db');
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-const QR_MAX_LEN = 512;   // 二维码内容长度上限
-const SCAN_LOG_MAX = 500; // 扫码记录条数上限（超出丢弃最旧，db.js 中同样保留此上限）
+const QR_MAX_LEN = 512;   // 二维码/原始 ID 内容长度上限
 const SESSION_TTL = 12 * 60 * 60 * 1000; // 员工端会话有效期：12 小时
 const DEFAULT_PASSWORD = '123456';       // 默认员工端密码（可用 STAFF_PASSWORD 环境变量覆盖）
 
@@ -41,9 +39,8 @@ let state = {
   round: 1,        // 当前轮次
   number: null,    // 本轮开奖数字：仅由工作人员 POST /api/confirm 写入，锁定后不可更改
   lockedAt: null,  // 锁定时间
-  players: {},     // qrId -> { id, qrPreview, name, oddEven, number, registeredAt, submittedAt, scanCount, lastScanAt }
-  identities: {},  // qrId -> { lastSeenRound, lastName, totalScans }（跨轮次身份档案）
-  scanLog: []      // [{ ts, round, id, idShort, result }] result: new|known|known_no_name|rejected_locked
+  players: {},     // 原始ID -> { id, oddEven, number, registeredAt, submittedAt }
+  identities: {}   // 原始ID -> { lastSeenRound, completedRounds }（跨轮次身份档案）
 };
 
 /* ---------------- SSE（Server-Sent Events）---------------- */
@@ -93,7 +90,7 @@ function buildStatePayload(pid) {
     locked: state.number != null,
     number: state.number != null ? state.number : undefined,
     players: publicPlayers(),
-    me: me ? { id: me.id, idShort: me.id.slice(0, 8), name: me.name, oddEven: me.oddEven, number: me.number } : null
+    me: me ? { id: me.id, oddEven: me.oddEven, number: me.number } : null
   };
 }
 
@@ -112,8 +109,7 @@ async function loadState() {
       number: s.number,
       lockedAt: s.lockedAt,
       players: s.players || {},
-      identities: s.identities || {},
-      scanLog: s.scanLog || []
+      identities: s.identities || {}
     };
   } catch (e) {
     console.error('[db] 加载状态失败，使用内存初始状态:', e.message);
@@ -167,15 +163,6 @@ function readBody(req) {
   });
 }
 
-function qrIdOf(content) {
-  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
-}
-
-function logScan(id, result) {
-  state.scanLog.push({ ts: Date.now(), round: state.round, id: id, idShort: id.slice(0, 8), result });
-  if (state.scanLog.length > SCAN_LOG_MAX) state.scanLog = state.scanLog.slice(-SCAN_LOG_MAX);
-}
-
 /** 玩家公共视图：开奖前绝不包含任何人的预测明细与本轮数字 */
 function publicPlayers() {
   const locked = state.number != null;
@@ -184,7 +171,7 @@ function publicPlayers() {
     .map((p) => {
       // 老玩家判定：曾完整走完过至少一轮（提交过预测且那一轮最终开奖）
       const completed = (state.identities[p.id] || {}).completedRounds || 0;
-      const item = { name: p.name, submitted: p.oddEven != null, isVeteran: completed >= 1 };
+      const item = { id: p.id, submitted: p.oddEven != null, isVeteran: completed >= 1 };
       if (locked) { // 已开奖：展示每个人的预测与命中
         item.oddEven = p.oddEven;
         item.number = p.number;
@@ -237,7 +224,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, buildStatePayload(pid));
   }
 
-  /* 二维码识别：内容 → 唯一 ID。重复扫码幂等返回同一玩家 */
+  /* 二维码识别：内容直接作为玩家唯一 ID（不做 hash）。重复扫码幂等返回同一玩家 */
   if (req.method === 'POST' && url.pathname === '/api/scan') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -245,56 +232,36 @@ async function handleApi(req, res, url) {
     if (!content) return json(res, 400, { ok: false, code: 'scan_empty' });
     if (content.length > QR_MAX_LEN) return json(res, 400, { ok: false, code: 'scan_too_long', maxLen: QR_MAX_LEN });
 
-    const id = qrIdOf(content);
-    const preview = content.length > 24 ? content.slice(0, 24) + '…' : content;
+    const id = content;
 
     // 情况一：本轮已扫过该码 → 幂等恢复同一玩家（任意设备、任意次数）
     const existing = state.players[id];
     if (existing) {
-      existing.scanCount += 1;
-      existing.lastScanAt = Date.now();
-      logScan(id, existing.name ? 'known' : 'known_no_name');
       const idt = state.identities[id];
-      if (idt) { idt.totalScans += 1; idt.lastSeenRound = state.round; }
+      if (idt) { idt.lastSeenRound = state.round; }
       saveState();
       markStateChanged();
-      return json(res, 200, {
-        ok: true, pid: id, idShort: id.slice(0, 8),
-        status: existing.name ? 'known' : 'known_no_name',
-        name: existing.name || null,
-        lastName: (state.identities[id] || {}).lastName || null
-      });
+      return json(res, 200, { ok: true, pid: id, status: 'known' });
     }
 
     // 情况二：本轮新码。已开奖 → 拒绝入场
     if (state.number != null) {
-      logScan(id, 'rejected_locked');
-      saveState();
       return json(res, 400, { ok: false, code: 'scan_locked' });
     }
 
-    // 情况三：本轮新码 → 建档（直接以二维码内容作为显示名）
+    // 情况三：本轮新码 → 建档
     state.players[id] = {
-      id, qrPreview: preview,
-      name: content, oddEven: null, number: null,
-      registeredAt: Date.now(), submittedAt: null,
-      scanCount: 1, lastScanAt: Date.now()
+      id, oddEven: null, number: null,
+      registeredAt: Date.now(), submittedAt: null
     };
     const prev = state.identities[id];
     state.identities[id] = {
       lastSeenRound: state.round,
-      lastName: (prev && prev.lastName) || null,
-      totalScans: (prev && prev.totalScans || 0) + 1,
       completedRounds: (prev && prev.completedRounds) || 0
     };
-    logScan(id, 'new');
     saveState();
     markStateChanged();
-    return json(res, 200, {
-      ok: true, pid: id, idShort: id.slice(0, 8),
-      status: 'known',
-      name: content
-    });
+    return json(res, 200, { ok: true, pid: id, status: 'known' });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/predict') {
@@ -347,10 +314,10 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
     if (!requireAuth(body.token)) return json(res, 401, { ok: false, code: 'unauthorized' });
-    // 新一轮：清空本轮玩家与扫码记录；identities（跨轮次身份档案）保留
+    // 新一轮：清空本轮玩家；identities（跨轮次身份档案）保留
     state = {
       round: state.round + 1, number: null, lockedAt: null,
-      players: {}, identities: state.identities, scanLog: []
+      players: {}, identities: state.identities
     };
     saveState();
     markStateChanged();
