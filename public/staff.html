@@ -130,6 +130,35 @@
   #toast.err { border-color:rgba(248,113,113,.6); }
   #toast.ok { border-color:rgba(52,211,153,.6); }
 
+  /* 自定义确认弹窗 */
+  .modal-mask { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center;
+    padding:24px; background:rgba(8,12,24,.6); backdrop-filter:blur(4px);
+    opacity:0; pointer-events:none; transition:opacity .18s ease; }
+  .modal-mask.show { opacity:1; pointer-events:auto; }
+  .modal {
+    width:100%; max-width:340px; background:#1a2440; border:1px solid var(--card-border);
+    border-radius:20px; padding:24px 22px 20px; text-align:center;
+    transform:translateY(8px) scale(.98); transition:transform .18s ease;
+    box-shadow:0 24px 60px rgba(0,0,0,.45);
+  }
+  .modal-mask.show .modal { transform:translateY(0) scale(1); }
+  .modal .m-ico { width:52px; height:52px; margin:0 auto 14px; border-radius:50%; display:flex;
+    align-items:center; justify-content:center; }
+  .modal .m-ico svg { width:26px; height:26px; }
+  .modal.warn .m-ico { background:rgba(248,113,113,.16); border:1px solid rgba(248,113,113,.45); }
+  .modal.plain .m-ico { background:rgba(79,140,255,.16); border:1px solid rgba(79,140,255,.45); }
+  .modal .m-title { font-size:18px; font-weight:700; margin-bottom:10px; }
+  .modal .m-body { font-size:14px; line-height:1.6; color:var(--muted); margin-bottom:20px;
+    white-space:pre-line; }
+  .modal .m-body b { color:var(--gold); font-size:17px; }
+  .modal .m-actions { display:flex; gap:10px; }
+  .modal .m-actions button { flex:1; padding:13px 0; font-size:16px; font-weight:700;
+    border:none; border-radius:12px; cursor:pointer; letter-spacing:1px; transition:transform .08s ease, opacity .2s; }
+  .modal .m-actions button:active { transform:scale(.96); }
+  .m-btn-cancel { background:rgba(255,255,255,.08); color:var(--text); border:1px solid var(--card-border); }
+  .m-btn-ok { background:linear-gradient(135deg,#4f8cff,#2f6fe0); color:#fff; }
+  .modal.warn .m-btn-ok { background:linear-gradient(135deg,#f87171,#e5484d); }
+
   .hidden { display:none !important; }
   .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
 
@@ -230,6 +259,19 @@
 </div>
 <div id="toast"></div>
 
+<!-- 自定义确认弹窗 -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal" id="modalBox">
+    <div class="m-ico" id="modalIco"></div>
+    <div class="m-title" id="modalTitle"></div>
+    <div class="m-body" id="modalBody"></div>
+    <div class="m-actions">
+      <button class="m-btn-cancel" id="modalCancel"></button>
+      <button class="m-btn-ok" id="modalOk"></button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
@@ -279,6 +321,39 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.className = ''; }, 2600);
   }
+
+  /* ---------- 自定义确认弹窗 ---------- */
+  var modalResolve = null;
+  var ICON = {
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>',
+    plain: '<svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'
+  };
+
+  /** 弹出自定义确认框。opts: { type:'warn'|'plain', title, body(HTML), okText, cancelText }。
+   *  返回 Promise<boolean>，用户点确认 resolve(true)，取消/关闭 resolve(false)。 */
+  function confirmModal(opts) {
+    if (modalResolve) modalResolve(false); // 已有弹窗未决时先关闭旧的
+    var box = $('modalBox');
+    box.className = 'modal ' + (opts.type === 'warn' ? 'warn' : 'plain');
+    $('modalIco').innerHTML = opts.type === 'warn' ? ICON.warn : ICON.plain;
+    $('modalTitle').textContent = opts.title;
+    $('modalBody').innerHTML = opts.body;
+    $('modalOk').textContent = opts.okText;
+    $('modalCancel').textContent = opts.cancelText;
+    $('modalMask').classList.add('show');
+    return new Promise(function (resolve) {
+      modalResolve = function (v) { resolve(v); };
+    });
+  }
+
+  function closeModal(v) {
+    $('modalMask').classList.remove('show');
+    if (modalResolve) { var r = modalResolve; modalResolve = null; r(v); }
+  }
+
+  $('modalOk').addEventListener('click', function () { closeModal(true); });
+  $('modalCancel').addEventListener('click', function () { closeModal(false); });
+  $('modalMask').addEventListener('click', function (e) { if (e.target === $('modalMask')) closeModal(false); });
 
   function setAuth(t) {
     token = t;
@@ -429,13 +504,31 @@
     });
   });
 
-  $('confirmBtn').addEventListener('click', function () {
+  $('confirmBtn').addEventListener('click', async function () {
     if (confirming || state.locked) return;
     if (selNum == null || !Number.isInteger(selNum) || selNum < 1 || selNum > 8) {
       $('inputErr').textContent = t('errPickNumber');
       return;
     }
-    var sure = confirm(t('confirmDialog', { number: selNum }));
+    // 结算前检查：仍有玩家未提交预测 → 弹额外提示，要求确认是否继续，避免遗漏玩家数据
+    var unpredicted = state.players.filter(function (p) { return !p.submitted; }).length;
+    if (unpredicted > 0) {
+      var proceed = await confirmModal({
+        type: 'warn',
+        title: t('modalUnpredictedTitle'),
+        body: t('modalUnpredictedBody', { count: unpredicted }),
+        okText: t('modalUnpredictedOk'),
+        cancelText: t('modalCancelText')
+      });
+      if (!proceed) return;
+    }
+    var sure = await confirmModal({
+      type: 'plain',
+      title: t('modalConfirmTitle'),
+      body: t('modalConfirmBody', { number: selNum }),
+      okText: t('modalConfirmOk'),
+      cancelText: t('modalCancelText')
+    });
     if (!sure) return;
     confirming = true; $('confirmBtn').disabled = true;
     fetch('/api/confirm', {
@@ -451,9 +544,15 @@
     }).finally(function () { confirming = false; });
   });
 
-  $('resetBtn').addEventListener('click', function () {
+  $('resetBtn').addEventListener('click', async function () {
     if (!state.locked) return;
-    var sure = confirm(t('resetDialog'));
+    var sure = await confirmModal({
+      type: 'plain',
+      title: t('modalResetTitle'),
+      body: t('modalResetBody'),
+      okText: t('modalResetOk'),
+      cancelText: t('modalCancelText')
+    });
     if (!sure) return;
     fetch('/api/reset', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
