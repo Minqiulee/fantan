@@ -2,8 +2,11 @@
   "name": "oddeven-guess",
   "version": "1.0.0",
   "private": true,
-  "description": "单双竞猜：工作人员端 + 玩家扫码端，本地无依赖实现",
+  "description": "单双竞猜：工作人员端 + 玩家扫码端，Postgres 持久化",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
   }
 }

@@ -11,19 +11,22 @@
  *   - identities 跨轮次记住每个 ID 上次用的称呼（便于复扫自动回填）
  *   - scanLog 记录每一次扫码识别（时间、ID、结果）
  *
+ * 持久化（v3）：状态存 Postgres（见 db.js），应用重启后数据仍在。
+ * 需要 DATABASE_URL 环境变量提供连接串（Fly.io Postgres 注入）。
+ *
  * 运行：node server.js （默认 3000 端口，可用 PORT 环境变量覆盖）
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const db = require('./db');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_FILE = path.join(__dirname, 'game-data.json');
 
 const QR_MAX_LEN = 512;   // 二维码内容长度上限
-const SCAN_LOG_MAX = 500; // 扫码记录条数上限（超出丢弃最旧）
+const SCAN_LOG_MAX = 500; // 扫码记录条数上限（超出丢弃最旧，db.js 中同样保留此上限）
 const SESSION_TTL = 12 * 60 * 60 * 1000; // 员工端会话有效期：12 小时
 const DEFAULT_PASSWORD = '123456';       // 默认员工端密码（可用 STAFF_PASSWORD 环境变量覆盖）
 
@@ -33,7 +36,7 @@ let failedAttempts = 0;
 let lockedUntil = 0;
 const sessions = {}; // token -> { expiresAt }
 
-/** 全局游戏状态（持久化到 game-data.json，尽力而为） */
+/** 全局游戏状态（内存态，作为数据库状态的运行时缓存） */
 let state = {
   round: 1,        // 当前轮次
   number: null,    // 本轮开奖数字：仅由工作人员 POST /api/confirm 写入，锁定后不可更改
@@ -100,24 +103,28 @@ function markStateChanged() {
   broadcastState();
 }
 
-function loadState() {
+/** 从数据库加载状态到内存。失败时回退到内存初始状态（但会记录错误）。 */
+async function loadState() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    if (parsed && typeof parsed.round === 'number' && parsed.players) {
-      state = {
-        round: parsed.round,
-        number: typeof parsed.number === 'number' ? parsed.number : null,
-        lockedAt: parsed.lockedAt || null,
-        players: parsed.players || {},
-        identities: parsed.identities || {},
-        scanLog: parsed.scanLog || []
-      };
-    }
-  } catch (e) { /* 首次运行或文件不存在/损坏：使用初始状态 */ }
+    const s = await db.loadState();
+    state = {
+      round: s.round,
+      number: s.number,
+      lockedAt: s.lockedAt,
+      players: s.players || {},
+      identities: s.identities || {},
+      scanLog: s.scanLog || []
+    };
+  } catch (e) {
+    console.error('[db] 加载状态失败，使用内存初始状态:', e.message);
+  }
 }
 
+/** 持久化当前状态到数据库。失败仅记录错误，不阻断请求。 */
 function saveState() {
-  try { fs.writeFileSync(DATA_FILE, JSON.stringify(state)); } catch (e) { /* 尽力而为 */ }
+  db.saveState(state).catch((e) => {
+    console.error('[db] 保存状态失败:', e.message);
+  });
 }
 
 function initStaffPassword() {
@@ -425,22 +432,35 @@ function serveStatic(req, res, url) {
 
 /* ---------------- 启动 ---------------- */
 
-loadState();
-initStaffPassword();
+async function start() {
+  initStaffPassword();
 
-http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/api/stream') {
-    handleStream(req, res, url);
-  } else if (url.pathname.startsWith('/api/')) {
-    handleApi(req, res, url).catch(() => json(res, 500, { ok: false, error: '服务器内部错误' }));
-  } else {
-    serveStatic(req, res, url);
+  try {
+    await db.initDb(); // 幂等建表
+    await loadState(); // 从数据库恢复上次状态
+  } catch (e) {
+    console.error('[db] 数据库初始化失败，应用无法启动:', e.message);
+    console.error('  请确认 DATABASE_URL 已正确配置（Fly.io: fly secrets set DATABASE_URL=...）');
+    process.exit(1);
   }
-}).listen(PORT, '0.0.0.0', () => {
-  console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后扫自己的二维码)');
-  console.log('工作人员端入口: http://localhost:' + PORT + '/staff');
-  if (!process.env.STAFF_PASSWORD) {
-    console.log('⚠ 工作人员端默认密码为 ' + DEFAULT_PASSWORD + '，建议设置 STAFF_PASSWORD 环境变量覆盖（如 STAFF_PASSWORD=你的密码 node server.js）');
-  }
-});
+
+  http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/api/stream') {
+      handleStream(req, res, url);
+    } else if (url.pathname.startsWith('/api/')) {
+      handleApi(req, res, url).catch(() => json(res, 500, { ok: false, error: '服务器内部错误' }));
+    } else {
+      serveStatic(req, res, url);
+    }
+  }).listen(PORT, '0.0.0.0', () => {
+    console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后扫自己的二维码)');
+    console.log('工作人员端入口: http://localhost:' + PORT + '/staff');
+    console.log('数据持久化: Postgres（DATABASE_URL）');
+    if (!process.env.STAFF_PASSWORD) {
+      console.log('⚠ 工作人员端默认密码为 ' + DEFAULT_PASSWORD + '，建议设置 STAFF_PASSWORD 环境变量覆盖（如 STAFF_PASSWORD=你的密码 node server.js）');
+    }
+  });
+}
+
+start();
