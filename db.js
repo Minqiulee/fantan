@@ -11,8 +11,9 @@
  * 玩家 ID 统一为「二维码内容 / 用户直接提交的原始 ID」（未经 hash）。
  *
  * 连接串来源（优先级从高到低）：
- *   1. PG_USER / PG_PASS / PG_HOST —— Fly.io secrets，拼成
- *      postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres
+ *   1. PG_HOST / PG_USER / PG_PASS —— Fly.io secrets，拼成
+ *      postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB
+ *      （PG_PORT 默认 5432，PG_DB 默认 postgres）
  *   2. DATABASE_URL / PG_URL —— 完整连接串，本地开发用
  *   3. 本地默认值
  */
@@ -20,12 +21,14 @@ const { Pool } = require('pg');
 
 let pool = null;
 
-/** 由 Fly.io secrets 拼接连接串；三个变量缺一不可，否则返回 null 交由上层回退。 */
+/** 由 Fly.io secrets 拼接连接串；主机/用户/密码缺一不可，否则返回 null 交由上层回退。 */
 function buildConnectionString() {
-  const { PG_USER, PG_PASS, PG_HOST } = process.env;
-  if (PG_USER && PG_PASS && PG_HOST) {
+  const { PG_HOST, PG_USER, PG_PASS, PG_PORT, PG_DB } = process.env;
+  if (PG_HOST && PG_USER && PG_PASS) {
+    const port = PG_PORT || 5432;
+    const database = PG_DB || 'postgres';
     // 密码里可能有 @ / : / 等保留字符，必须转义
-    return `postgresql://${encodeURIComponent(PG_USER)}:${encodeURIComponent(PG_PASS)}@${PG_HOST}:5432/postgres`;
+    return `postgresql://${encodeURIComponent(PG_USER)}:${encodeURIComponent(PG_PASS)}@${PG_HOST}:${port}/${database}`;
   }
   return null;
 }

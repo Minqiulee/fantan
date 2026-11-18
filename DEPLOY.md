@@ -6,7 +6,8 @@
 
 - 数据层：`db.js`（连接池 + 幂等建表 + 读写函数）
 - 服务入口：`server.js` 启动时 `initDb()` 建表、`loadState()` 恢复上次状态
-- 连接串：由三个 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`
+- 连接串：由 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`
+  （`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）
 
 ## 数据实体与表结构
 
@@ -24,17 +25,19 @@
 
 ### 1. 准备 Postgres 并写入 secrets
 
-数据库固定连 `postgres` 库。把主机、用户名、密码写进 Fly secrets：
+把主机、用户名、密码写进 Fly secrets（端口和库名可选，不设则用 `5432` / `postgres`）：
 
 ```bash
 fly secrets set \
   PG_HOST=your-db-host \
   PG_USER=your-db-user \
   PG_PASS='your-db-password' \
+  PG_PORT=5432 \
+  PG_DB=postgres \
   --app ft-faithful-darkness-5345
 ```
 
-应用会用这三个值拼出连接串：`postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`。
+应用会用这些值拼出连接串：`postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`。
 设置 secret 会触发一次自动重启。
 
 > 如果还在用 `fly postgres attach` 注入的 `DATABASE_URL`，两者同时存在时
@@ -80,11 +83,13 @@ docker run -d --name oddeven-pg \
 | `PG_HOST` | Postgres 主机（Fly secret） | 无 |
 | `PG_USER` | Postgres 用户名（Fly secret） | 无 |
 | `PG_PASS` | Postgres 密码（Fly secret） | 无 |
-| `DATABASE_URL` | 完整连接串，`PG_*` 三个不全时才生效 | 无 |
+| `PG_PORT` | Postgres 端口（Fly secret，可选） | `5432` |
+| `PG_DB` | 数据库名（Fly secret，可选） | `postgres` |
+| `DATABASE_URL` | 完整连接串，`PG_*` 主机/用户/密码不全时才生效 | 无 |
 | `PORT` | 服务端口 | `3000` |
 | `STAFF_PASSWORD` | 员工端密码 | `123456` |
 
-> 连接串固定拼成 `postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`：端口 5432、库名 `postgres` 写死。
+> 连接串拼成 `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`；`PG_HOST`、`PG_USER`、`PG_PASS` 三者缺一就整体回退到 `DATABASE_URL`。
 > 用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。
 > 若目标数据库要求 TLS，需要在 `db.js` 的 `Pool` 配置里加 `ssl`，Fly 内网同组织互访不需要。
 
