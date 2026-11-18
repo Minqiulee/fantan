@@ -10,16 +10,31 @@
  *
  * 玩家 ID 统一为「二维码内容 / 用户直接提交的原始 ID」（未经 hash）。
  *
- * 连接通过环境变量 DATABASE_URL 提供（Fly.io Postgres 会在 secrets 中注入）。
+ * 连接串来源（优先级从高到低）：
+ *   1. PG_USER / PG_PASS / PG_HOST —— Fly.io secrets，拼成
+ *      postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres
+ *   2. DATABASE_URL / PG_URL —— 完整连接串，本地开发用
+ *   3. 本地默认值
  */
 const { Pool } = require('pg');
 
 let pool = null;
 
+/** 由 Fly.io secrets 拼接连接串；三个变量缺一不可，否则返回 null 交由上层回退。 */
+function buildConnectionString() {
+  const { PG_USER, PG_PASS, PG_HOST } = process.env;
+  if (PG_USER && PG_PASS && PG_HOST) {
+    // 密码里可能有 @ / : / 等保留字符，必须转义
+    return `postgresql://${encodeURIComponent(PG_USER)}:${encodeURIComponent(PG_PASS)}@${PG_HOST}:5432/postgres`;
+  }
+  return null;
+}
+
 /** 懒加载连接池。配置允许通过独立环境变量覆盖，方便本地/测试。 */
 function getPool() {
   if (pool) return pool;
   const connectionString =
+    buildConnectionString() ||
     process.env.DATABASE_URL ||
     process.env.PG_URL ||
     'postgres://postgres:postgres@localhost:5432/oddeven';

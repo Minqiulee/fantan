@@ -159,11 +159,28 @@
   .manual-row .manual-btn { width:auto; flex:none; margin-top:0; padding:0 18px; white-space:nowrap; }
 
   /* 相机取景框 */
-  #camBox { border-radius:16px; overflow:hidden; margin-bottom:4px; background:#000;
+  #camBox { position:relative; border-radius:16px; overflow:hidden; margin-bottom:4px; background:#000;
     border:1px solid var(--card-border); }
   #camReader { width:100%; }
   #camReader video { width:100% !important; border-radius:16px; object-fit:cover; }
   .cam-tip { text-align:center; color:var(--muted); font-size:13px; padding:8px 0 2px; }
+
+  /* 切换摄像头按钮（浮于取景框右上角） */
+  .cam-switch {
+    position:absolute; top:10px; right:10px; z-index:5;
+    width:38px; height:38px; padding:0; border-radius:50%; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:rgba(26,4,9,.62); color:var(--gold);
+    border:1px solid var(--card-border-strong);
+    -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+    box-shadow:0 2px 10px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,220,150,.15);
+    transition: transform .12s ease, opacity .16s ease;
+  }
+  .cam-switch svg { width:21px; height:21px; flex:none; }
+  .cam-switch:active { transform:scale(.92); }
+  .cam-switch[disabled] { opacity:.35; cursor:default; pointer-events:none; }
+  .cam-switch.busy { pointer-events:none; }
+  .cam-switch.busy svg { animation:spin .9s linear infinite; }
 
   /* 单双选择（下注按钮：金色描边 + 深红底） */
   .pair { display:flex; gap:14px; }
@@ -255,7 +272,19 @@
   <div class="card" id="cardScan">
     <h2><span class="step">1</span><span data-i18n="p_scanTitle">扫描我的二维码</span></h2>
     <button class="btn" id="camBtn" data-i18n="p_openCam">打开相机扫描</button>
-    <div id="camBox" class="hidden"><div id="camReader"></div><div class="cam-tip" data-i18n="p_camTip">对准你手中的二维码，自动识别</div></div>
+    <div id="camBox" class="hidden">
+      <div id="camReader"></div>
+      <button id="camSwitchBtn" class="cam-switch hidden" type="button" aria-label="切换摄像头" title="切换摄像头">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7.5h3L8.5 5h7l1.5 2.5h3A1.5 1.5 0 0 1 21.5 9v9A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5z"/>
+          <path d="M9.2 12.4a3.2 3.2 0 0 1 5.3-1.1"/>
+          <path d="M14.8 15.1a3.2 3.2 0 0 1-5.4 1"/>
+          <path d="M15 9.2v2.2h-2.2"/>
+          <path d="M9 17.2V15h2.2"/>
+        </svg>
+      </button>
+      <div class="cam-tip" data-i18n="p_camTip">对准你手中的二维码，自动识别</div>
+    </div>
     <div class="manual-label" data-i18n="p_manualSummary">相机不可用？手动输入二维码内容</div>
     <div class="manual-row">
       <input type="text" id="manualInput" maxlength="64" data-i18n-ph="p_manualPlaceholder" placeholder="输入二维码内容 / 编号" autocomplete="off">
@@ -360,6 +389,9 @@
 
     // 动态区重新渲染
     render();
+
+    // 切换摄像头按钮的 aria/title 也随语言更新
+    updateCamSwitchUI();
   }
 
   /* ---------- Toast ---------- */
@@ -519,46 +551,181 @@
   }
 
   /* ---------- 相机扫码 ---------- */
-  var html5Qr = null;      // Html5Qrcode 实例
-  var camActive = false;   // 相机是否已启动
-  var scanHandled = false; // 本次启动后是否已处理过扫码结果（防重复触发）
+  var DEFAULT_FACING = 'user';  // 默认前置摄像头（扫自己手上的二维码）
+  var html5Qr = null;       // 当前 Html5Qrcode 实例
+  var camActive = false;    // 相机是否已启动
+  var scanHandled = false;  // 本次启动后是否已处理过扫码结果（防重复触发）
+  var camSeq = 0;           // 实例序号：停止/重启时递增，用于丢弃旧实例的迟到回调
+  var camSwitching = false; // 是否正在切换摄像头
+  var camList = [];         // 系统可用摄像头 [{ id, label }]
+  var camIndex = -1;        // 当前使用的摄像头在 camList 中的下标
+  var camDeviceId = '';     // 当前摄像头设备 id（浏览器可能不返回，为空时按朝向兜底）
+  var camHinted = false;    // 「无可切换摄像头」提示是否已展示过
 
-  function stopCamera() {
-    if (html5Qr) {
-      var inst = html5Qr;
-      html5Qr = null;
-      camActive = false;
-      scanHandled = false;
-      inst.stop().then(function () {
-        try { inst.clear(); } catch (e) { /* 忽略 */ }
-      }).catch(function () {
-        try { inst.clear(); } catch (e) { /* 忽略 */ }
-      });
-    }
-    $('camBox').classList.add('hidden');
-    $('camReader').innerHTML = '';
-    $('camBtn').textContent = t('p_openCam');
-    $('camBtn').disabled = false;
+  var BACK_CAM_RE = /(back|rear|environment|後置|后置|背面)/i;
+  var FRONT_CAM_RE = /(front|user|facetime|face|前置|前鏡|前镜|正面)/i;
+
+  /** 相机异常 → 提示文案 */
+  function camErrText(err) {
+    var msg = (err && (err.message || err.name)) || String(err || '');
+    if (/NotAllowedError|Permission|permission/i.test(msg)) return t('p_camDenied');
+    if (/NotFoundError|DevicesNotFound|no.*camera|OverconstrainedError/i.test(msg)) return t('p_camNotFound');
+    if (/NotReadableError|in use|busy|TrackStartError/i.test(msg)) return t('p_camBusy');
+    return t('p_camUnavailable');
   }
 
-  function startCamera() {
-    // 库未加载（CDN 或本地文件缺失/损坏）时提示走手动通道
+  /** 枚举可用摄像头；枚举不可用或无权限时返回空数组（不影响主流程） */
+  function listCameras() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return Promise.resolve([]);
+    return navigator.mediaDevices.enumerateDevices().then(function (list) {
+      var arr = [], i;
+      for (i = 0; i < list.length; i++) {
+        if (list[i].kind === 'videoinput') {
+          arr.push({ id: list[i].deviceId, label: list[i].label || ('Camera ' + (arr.length + 1)) });
+        }
+      }
+      return arr;
+    }).catch(function () { return []; });
+  }
+
+  /** 读取当前预览轨道真实使用的设备 id，用于把 camIndex 定位到实际镜头 */
+  function activeTrackDeviceId() {
+    try {
+      var v = document.querySelector('#camReader video');
+      var stream = v && v.srcObject;
+      var track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+      var st = track && track.getSettings && track.getSettings();
+      return (st && st.deviceId) || '';
+    } catch (e) { return ''; }
+  }
+
+  /** 按标签猜朝向（仅用于优先切到相反镜头，猜不出就按顺序轮换） */
+  function labelFacing(label) {
+    if (BACK_CAM_RE.test(label || '')) return 'back';
+    if (FRONT_CAM_RE.test(label || '')) return 'front';
+    return '';
+  }
+
+  /** 同步「切换摄像头」按钮状态：仅在相机运行时出现，多摄像头才可点 */
+  function updateCamSwitchUI() {
+    var btn = $('camSwitchBtn');
+    if (!btn) return;
+    var multiple = camActive && camList.length >= 2;
+    btn.classList.toggle('hidden', !camActive);
+    btn.disabled = !multiple;
+    var label = (!camActive || multiple) ? t('p_camSwitch') : t('p_camSwitchOnlyOne');
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', label);
+    btn.classList.toggle('busy', camSwitching);
+  }
+
+  /** 启动成功后探测摄像头列表，刷新按钮可用性 */
+  function syncCameraList() {
+    return listCameras().then(function (list) {
+      camList = list;
+      var id = activeTrackDeviceId();
+      if (id) camDeviceId = id;
+      camIndex = -1;
+      for (var i = 0; i < camList.length; i++) {
+        if (camList[i].id === camDeviceId) { camIndex = i; break; }
+      }
+      if (camIndex < 0 && camList.length === 1) camIndex = 0;
+      updateCamSwitchUI();
+      // 单摄像头 / 无法枚举：给一次简洁提示，之后不再打扰
+      if (camActive && !multipleCameras() && !camHinted) {
+        camHinted = true;
+        toast(t('p_camSwitchOnlyOne'));
+      }
+      return camList;
+    });
+  }
+
+  function multipleCameras() { return camList.length >= 2; }
+
+  /** 彻底失败：复位状态、关闭取景框并提示 */
+  function failCamera(err) {
+    camSeq++;
+    var inst = html5Qr;
+    html5Qr = null;
+    camActive = false;
+    camSwitching = false;
+    scanHandled = false;
+    if (inst) {
+      try { inst.stop(); } catch (e) { /* 忽略 */ }
+      try { inst.clear(); } catch (e) { /* 忽略 */ }
+    }
+    $('camReader').innerHTML = '';
+    $('camBox').classList.add('hidden');
+    $('camBtn').disabled = false;
+    $('camBtn').textContent = t('p_openCam');
+    updateCamSwitchUI();
+    if (err) $('scanErr').textContent = camErrText(err);
+  }
+
+  /** 停止并释放当前实例（切换镜头时复用，不改变按钮文案） */
+  function detachScanner() {
+    camSeq++;
+    var inst = html5Qr;
+    html5Qr = null;
+    camActive = false;
+    scanHandled = false;
+    if (!inst) { $('camReader').innerHTML = ''; return Promise.resolve(); }
+    var p;
+    try { p = inst.stop(); } catch (e) { p = null; }
+    return Promise.resolve(p).catch(function () { /* 忽略 */ }).then(function () {
+      try { inst.clear(); } catch (e) { /* 忽略 */ }
+      $('camReader').innerHTML = '';
+    });
+  }
+
+  function stopCamera() {
+    detachScanner().then(function () {
+      $('camBox').classList.add('hidden');
+      $('camBtn').textContent = t('p_openCam');
+      $('camBtn').disabled = false;
+      updateCamSwitchUI();
+    });
+  }
+
+  /** 解码回调：只接受当前实例（token）的结果，切换期间的旧回调直接丢弃 */
+  function onDecoded(token, text) {
+    if (token !== camSeq) return;
+    if (scanHandled) return;
+    scanHandled = true;
+    stopCamera();
+    handleScannedContent(text);
+  }
+
+  /** 启动相机：opts.deviceId 优先（切换镜头用），否则按 facingMode */
+  function startScanner(opts) {
+    opts = opts || {};
     if (typeof Html5Qrcode === 'undefined') {
       $('scanErr').textContent = t('p_camUnavailable');
-      return;
+      return Promise.reject(new Error('Html5Qrcode not loaded'));
     }
-    if (camActive) return;
-    $('scanErr').textContent = '';
+    if (camActive) return Promise.resolve();
 
-    html5Qr = new Html5Qrcode('camReader');
+    camSeq++;
+    var token = camSeq;
+    var inst = new Html5Qrcode('camReader');
+    html5Qr = inst;
     camActive = true;
     scanHandled = false;
+    // 仅记住「本次切换选中的镜头」用于切换流程；重新打开相机时按默认朝向启动
+    camDeviceId = opts.deviceId || '';
+
+    $('scanErr').textContent = '';
     $('camBox').classList.remove('hidden');
     $('camBtn').disabled = true;
     $('camBtn').textContent = t('p_camStarting');
+    updateCamSwitchUI();
 
-    html5Qr.start(
-      { facingMode: 'environment' },
+    var target = opts.deviceId
+      ? { deviceId: { exact: opts.deviceId } }
+      : { facingMode: opts.facingMode || DEFAULT_FACING };
+
+    return inst.start(
+      target,
       {
         fps: 10,
         qrbox: function (vw, vh) {
@@ -567,36 +734,97 @@
         },
         aspectRatio: 1
       },
-      function (decodedText) {
-        // 识别到内容：停止相机并进入登记流程
-        if (scanHandled) return;
-        scanHandled = true;
-        stopCamera();
-        handleScannedContent(decodedText);
-      },
+      function (decodedText) { onDecoded(token, decodedText); },
       function (err) {
         // 忽略每帧的常规解码失败（未对准/模糊等），只处理致命错误
       }
-    ).catch(function (err) {
-      camActive = false;
-      $('camBox').classList.add('hidden');
-      $('camReader').innerHTML = '';
-      $('camBtn').disabled = false;
-      $('camBtn').textContent = t('p_openCam');
-      var msg = (err && (err.message || err.name)) || '';
-      if (/NotAllowedError|Permission|permission/i.test(msg)) {
-        $('scanErr').textContent = t('p_camDenied');
-      } else if (/NotFoundError|DevicesNotFound|no.*camera/i.test(msg)) {
-        $('scanErr').textContent = t('p_camNotFound');
-      } else if (/NotReadableError|in use|busy/i.test(msg)) {
-        $('scanErr').textContent = t('p_camBusy');
-      } else {
-        $('scanErr').textContent = t('p_camUnavailable');
+    ).then(function () {
+      if (token !== camSeq) {           // 启动期间已被停止/替换
+        try { inst.stop(); } catch (e) { /* 忽略 */ }
+        return;
       }
+      return syncCameraList();
+    }).catch(function (err) {
+      // 本次启动失败：立即释放，交回调用方决定「重试 / 回退 / 提示」
+      if (token === camSeq) {
+        var cur = html5Qr;
+        html5Qr = null;
+        camActive = false;
+        scanHandled = false;
+        camSeq++;
+        if (cur) {
+          try { cur.stop(); } catch (e) { /* 忽略 */ }
+          try { cur.clear(); } catch (e) { /* 忽略 */ }
+        }
+        $('camReader').innerHTML = '';
+        updateCamSwitchUI();
+      }
+      throw err;
     });
   }
 
+  function startCamera() {
+    if (camActive) return;
+    // 每次打开都用默认朝向（前置）；用户手动切换只影响本次会话
+    startScanner({ facingMode: DEFAULT_FACING }).catch(function (err) {
+      // 个别设备不支持 facingMode：退回默认镜头再试一次
+      if (/OverconstrainedError|NotFoundError/i.test((err && (err.name || err.message)) || '')) {
+        return startScanner({}).catch(function (e2) { failCamera(e2); });
+      }
+      failCamera(err);
+    });
+  }
+
+  /**
+   * 切换摄像头：先彻底停掉当前实例再以目标 deviceId 重启，
+   * 解码回调沿用同一套逻辑，切换期间旧的迟到回调按 token 丢弃。
+   * 切换失败时回退到原镜头，保证扫码继续可用。
+   */
+  function toggleCamera() {
+    if (camSwitching || !camActive) return;
+    if (!multipleCameras()) { toast(t('p_camSwitchOnlyOne')); return; }
+
+    var fromId = camDeviceId;
+    var base = camIndex >= 0 ? camIndex : 0;
+    var nextIdx = (base + 1) % camList.length;
+
+    // 标签可辨识时优先切到相反朝向的镜头（前置 ↔ 后置）
+    var curFacing = camIndex >= 0 ? labelFacing(camList[camIndex].label) : '';
+    if (curFacing) {
+      for (var i = 1; i < camList.length; i++) {
+        var k = (base + i) % camList.length;
+        if (labelFacing(camList[k].label) !== curFacing) { nextIdx = k; break; }
+      }
+    }
+    var next = camList[nextIdx];
+
+    camSwitching = true;
+    $('scanErr').textContent = '';
+    updateCamSwitchUI();
+
+    detachScanner()
+      .then(function () { return startScanner({ deviceId: next.id }); })
+      .then(function () {
+        camDeviceId = next.id;
+        camIndex = nextIdx;
+        camSwitching = false;
+        updateCamSwitchUI();
+      })
+      .catch(function (err) {
+        // 切换失败：尽力退回原镜头，避免扫码功能中断
+        detachScanner().then(function () {
+          if (!fromId) { failCamera(err); return; }
+          return startScanner({ deviceId: fromId }).catch(function () { failCamera(err); });
+        }).then(function () {
+          camSwitching = false;
+          updateCamSwitchUI();
+          $('scanErr').textContent = t('p_camSwitchFail');
+        });
+      });
+  }
+
   $('camBtn').addEventListener('click', startCamera);
+  $('camSwitchBtn').addEventListener('click', toggleCamera);
 
   /* 手动输入二维码内容 */
   $('manualBtn').addEventListener('click', function () {

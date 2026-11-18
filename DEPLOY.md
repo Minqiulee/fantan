@@ -6,7 +6,7 @@
 
 - 数据层：`db.js`（连接池 + 幂等建表 + 读写函数）
 - 服务入口：`server.js` 启动时 `initDb()` 建表、`loadState()` 恢复上次状态
-- 连接串：环境变量 `DATABASE_URL`
+- 连接串：由三个 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`
 
 ## 数据实体与表结构
 
@@ -22,17 +22,23 @@
 
 ## Fly.io 部署步骤
 
-### 1. 创建 Postgres 实例
+### 1. 准备 Postgres 并写入 secrets
+
+数据库固定连 `postgres` 库。把主机、用户名、密码写进 Fly secrets：
 
 ```bash
-fly pg create --name oddeven-db
+fly secrets set \
+  PG_HOST=your-db-host \
+  PG_USER=your-db-user \
+  PG_PASS='your-db-password' \
+  --app ft-faithful-darkness-5345
 ```
 
-创建完成后，Fly 会把 Postgres 附加到应用，并通过名为 `DATABASE_URL` 的 secret 注入连接串。如需手动附加：
+应用会用这三个值拼出连接串：`postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`。
+设置 secret 会触发一次自动重启。
 
-```bash
-fly postgres attach oddeven-db
-```
+> 如果还在用 `fly postgres attach` 注入的 `DATABASE_URL`，两者同时存在时
+> **以 PG_HOST/PG_USER/PG_PASS 为准**，`DATABASE_URL` 只在三个变量不全时兜底。
 
 ### 2. 部署应用
 
@@ -48,12 +54,12 @@ fly logs
 ```
 
 正常启动日志应包含：
-- `数据持久化: Postgres（DATABASE_URL）`
+- `数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS）`
 - 无 `[db] 数据库初始化失败` 报错
 
 ## 本地开发（可选）
 
-使用本地或任意 Postgres，通过环境变量注入连接串：
+本地不设 `PG_HOST/PG_USER/PG_PASS` 时，回退到 `DATABASE_URL`；两者都不设则连本地默认库：
 
 ```bash
 DATABASE_URL=postgres://user:pass@localhost:5432/oddeven node server.js
@@ -71,11 +77,16 @@ docker run -d --name oddeven-pg \
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `DATABASE_URL` | Postgres 连接串（必填） | 无 |
+| `PG_HOST` | Postgres 主机（Fly secret） | 无 |
+| `PG_USER` | Postgres 用户名（Fly secret） | 无 |
+| `PG_PASS` | Postgres 密码（Fly secret） | 无 |
+| `DATABASE_URL` | 完整连接串，`PG_*` 三个不全时才生效 | 无 |
 | `PORT` | 服务端口 | `3000` |
 | `STAFF_PASSWORD` | 员工端密码 | `123456` |
 
-> 注意：`DATABASE_URL` 在 Fly.io 上由 `fly postgres attach` 自动注入，请勿手动 `fly secrets set` 覆盖，除非你知道自己在做什么。
+> 连接串固定拼成 `postgresql://PG_USER:PG_PASS@PG_HOST:5432/postgres`：端口 5432、库名 `postgres` 写死。
+> 用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。
+> 若目标数据库要求 TLS，需要在 `db.js` 的 `Pool` 配置里加 `ssl`，Fly 内网同组织互访不需要。
 
 ## 说明
 

@@ -11,7 +11,8 @@
  *   - identities 跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
  *
  * 持久化：状态存 Postgres（见 db.js），应用重启后数据仍在。
- * 需要 DATABASE_URL 环境变量提供连接串（Fly.io Postgres 注入）。
+ * 需要 PG_HOST / PG_USER / PG_PASS 三个 secret 提供连接信息（见 db.js），
+ * 或直接用 DATABASE_URL 给出完整连接串。
  *
  * 运行：node server.js （默认 3000 端口，可用 PORT 环境变量覆盖）
  */
@@ -407,7 +408,7 @@ async function start() {
     await loadState(); // 从数据库恢复上次状态
   } catch (e) {
     console.error('[db] 数据库初始化失败，应用无法启动:', e.message);
-    console.error('  请确认 DATABASE_URL 已正确配置（Fly.io: fly secrets set DATABASE_URL=...）');
+    console.error('  请确认 PG_HOST / PG_USER / PG_PASS 已配置（Fly.io: fly secrets set PG_HOST=... PG_USER=... PG_PASS=...），或设置 DATABASE_URL');
     process.exit(1);
   }
 
@@ -423,7 +424,7 @@ async function start() {
   }).listen(PORT, '0.0.0.0', () => {
     console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后扫自己的二维码)');
     console.log('工作人员端入口: http://localhost:' + PORT + '/staff');
-    console.log('数据持久化: Postgres（DATABASE_URL）');
+    console.log('数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS）');
     if (!process.env.STAFF_PASSWORD) {
       console.log('⚠ 工作人员端默认密码为 ' + DEFAULT_PASSWORD + '，建议设置 STAFF_PASSWORD 环境变量覆盖（如 STAFF_PASSWORD=你的密码 node server.js）');
     }
