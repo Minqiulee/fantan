@@ -5,7 +5,7 @@
  *  1. 把归档表改名模拟数据库瞬时故障 → 锁定仍生效，但如实返回 archived:false；
  *  2. 此时 reset 必须 409 拦住，不能把这一轮明细清掉；
  *  3. 恢复后 archive-sync 幂等补齐；
- *  4. 重启时对「已锁定但未归档」的轮次自动回填（首次部署本功能的历史数据也走这条路）。
+ *  4. 重启时对「已锁定但未归档」的轮次自动回填。
  *
  * 注意：测试会临时改名/禁用触发器，仅用于制造故障，生产代码没有这些操作。
  */
@@ -117,7 +117,7 @@ describe('归档故障与恢复', () => {
   });
 
   it('重启时对「已锁定但未归档」的轮次自动回填', async () => {
-    // 制造故障现场：绕过触发器删掉第 2 轮的归档，模拟上线本功能前的历史锁定轮次
+    // 制造故障现场：绕过触发器删掉第 2 轮的归档，模拟锁定时归档写失败后进程重启
     await withDb(async (c) => {
       await c.query('ALTER TABLE round_archive_entry DISABLE TRIGGER USER');
       await c.query('ALTER TABLE round_archive DISABLE TRIGGER USER');

@@ -45,6 +45,7 @@ const SESSION_TTL = 12 * 60 * 60 * 1000; // 员工端会话有效期：12 小时
 const DEFAULT_PASSWORD = '123456';       // 默认员工端密码（可用 STAFF_PASSWORD 环境变量覆盖）
 const MAX_SESSIONS = 4;                  // 单实例同时进行的场次上限
 const MAX_SESSION_NAME = 24;             // 场次名称长度上限
+const FIRST_SESSION_ID = 'main';         // 空库首次启动时创建的场次 ID（固定值，链接可长期复用）
 const DEFAULT_PLAYER_PASSWORD = '8888';  // 默认玩家端场次口令（可用 PLAYER_SESSION_PASSWORD 覆盖）
 const PLAYER_BIND_TTL = 12 * 60 * 60 * 1000; // 玩家场次绑定有效期：12 小时
 const UNLOCK_MAX_FAILS = 5;              // 连续口令错误次数上限
@@ -1044,8 +1045,8 @@ async function handleApi(req, res, url) {
   }
 
   /* 归档补齐（员工端）：把内存里所有「已锁定但没落进归档表」的轮次重新写一遍。
-   * 正常情况下永远用不到（锁定与归档同一事务），它是 deploy 后回填历史锁定轮次、
-   * 以及数据库瞬时故障后的兜底。幂等，可反复调用。 */
+   * 正常情况下永远用不到（锁定与归档同一事务），它是锁定时写库失败、
+   * 或进程在归档落定前重启之后的兜底。幂等，可反复调用。 */
   if (req.method === 'POST' && url.pathname === '/api/archive-sync') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -1175,7 +1176,7 @@ function serveStatic(req, res, url) {
 
 /* ---------------- 启动 ---------------- */
 
-/** 从数据库恢复场次；库中一个场次都没有时建默认场次（老库数据已归到 main）。 */
+/** 从数据库恢复场次；库中一个场次都没有时建首个场次。 */
 async function bootstrapSessions() {
   const list = await db.loadSessions();
   for (const s of list) {
@@ -1183,7 +1184,7 @@ async function bootstrapSessions() {
     gameSessions.set(s.id, s);
   }
   if (gameSessions.size === 0) {
-    const s = createSessionObject(db.DEFAULT_SESSION_ID, '第 1 场', 1);
+    const s = createSessionObject(FIRST_SESSION_ID, '第 1 场', 1);
     gameSessions.set(s.id, s);
     await db.saveSessionMeta(s);
     await db.saveSession(s);
@@ -1193,8 +1194,8 @@ async function bootstrapSessions() {
 }
 
 /**
- * 启动补齐：库里若存在「已锁定但没进归档表」的轮次（典型场景是首次部署本功能前
- * 就已经锁定的那一轮），启动时补写一次。幂等：已归档的轮次不会重写。
+ * 启动补齐：库里若存在「已锁定但没进归档表」的轮次（典型场景是锁定时归档写库失败、
+ * 之后进程重启），启动时补写一次。幂等：已归档的轮次不会重写。
  */
 async function backfillArchives() {
   let filled = 0;
@@ -1213,7 +1214,7 @@ async function start() {
   initPlayerPassword();
 
   try {
-    await db.initDb();        // 幂等建表 + 老库迁移
+    await db.initDb();        // 幂等建表（不改变已有表结构）
     await loadBindSecret();   // 绑定令牌签名密钥（存 app_config，重启复用）
     await bootstrapSessions(); // 从数据库恢复场次状态
     await backfillArchives(); // 已锁定但未归档的轮次补写（幂等）

@@ -30,7 +30,7 @@
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
 | 员工鉴权 | 密码登录 → 会话 token（12 小时），5 次失败锁定 30 秒 |
 | 玩家端口令 | 口令只以 scrypt 哈希存在于进程内存，不落库、不下发；验证通过后签发 HMAC 绑定令牌，按来源 IP 限频（5 次错误锁 30 秒） |
-| 持久化 | Postgres，四张表 + 一张配置表，首次启动自动建表，重启后状态保留 |
+| 持久化 | Postgres，六张表 + 一张配置表，首次启动自动建表，重启后状态保留 |
 
 ---
 
@@ -49,7 +49,7 @@
 ├── test/
 │   ├── run.mjs            # 测试入口：起临时 Postgres（Docker）→ 串行跑全部用例
 │   ├── helpers.mjs        # 基座：起服务、HTTP 客户端、连库、CSV 解析
-│   ├── archive.test.mjs   # 主流程：锁定即归档 / 聚合 / 三种 CSV / reset / 跨场分账 / append-only
+│   ├── archive.test.mjs   # 主流程：锁定即归档 / 聚合 / 两种 CSV / reset / 跨场分账 / append-only
 │   └── archive-failure.test.mjs # 故障路径：归档失败、reset 拦截、archive-sync、重启回填
 ├── Dockerfile             # 多阶段构建，node:26-slim
 ├── fly.toml               # Fly.io 部署配置（可替换为任意平台）
@@ -271,7 +271,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/confirm` | token | `{token, sid, number}` | 锁定该场次本轮数字（唯一写入点，写后不可改） |
 | POST | `/api/reset` | token | `{token, sid}` | 该场次轮次 +1 并清空本场本轮玩家（已锁定轮次必须先归档成功，否则返回 409 `archive_write_failed`） |
 | GET | `/api/archive/summary` | token | `?token=&date=` 或 `?token=&from=&to=` | 当日聚合：场次数、轮次数、去重参与人数、分场次明细。默认今天 |
-| GET | `/api/archive/export.csv` | token | `?token=&level=detail\|member\|round&date=或 from=&to=&sid=` | 对账 CSV（`text/csv`，带 BOM，列头固定见 7.3） |
+| GET | `/api/archive/export.csv` | token | `?token=&level=detail\|round&date=或 from=&to=&sid=` | 对账 CSV（`text/csv`，带 BOM，列头固定见 7.3） |
 | POST | `/api/archive-sync` | token | `{token}` | 把内存里所有「已锁定但未落归档」的轮次重新写一遍（幂等，正常情况用不到） |
 | GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
@@ -411,7 +411,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 ## 8. 数据模型
 
-启动时 `initDb()` 幂等建表（`CREATE TABLE IF NOT EXISTS`），无需手工迁移。
+启动时 `initDb()` 幂等建表（`CREATE TABLE IF NOT EXISTS`），**只负责建出缺失的表，不做任何结构迁移**：表结构以本文档与 `db.js` 的定义为唯一基准，库结构与代码不一致时需先手工对齐 DDL 再启动。
 
 | 表 | 内容 | 写入策略 |
 |---|---|---|
@@ -427,7 +427,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 时间戳统一为毫秒级 `BIGINT`，与代码里的 `Date.now()` 语义一致。`identity.completed_rounds` 在每次开奖时对已提交预测的玩家 +1，这是「老玩家」判定的唯一依据。
 
-同一会员号可以同时存在于多个场次（各场次是独立记录），这是把 `player` / `identity` 主键升级为 `(session_id, id)` 的原因。老库（单场次、无 `session_id`）启动时会自动补列、回填 `session_id = 'main'`、升级主键并补建 `main` 场次实体，历史玩家与新轮次都不会丢。
+同一会员号可以同时存在于多个场次（各场次是独立记录），因此 `player` / `identity` 的主键是 `(session_id, id)`；空库首次启动时由 `bootstrapSessions()` 建出第一个场次（ID 固定为 `main`，员工与玩家链接可长期复用）。
 
 所有写操作按场次走一次事务（`BEGIN` → 清空本场 → 重写 → `COMMIT`）。注意写放大：保存一场会重写该场的 `player` 全表，并对该场的 `identity` 全量 upsert，单次保存成本约为 O(本场玩家数 + 本场历史身份数)。
 
@@ -456,7 +456,7 @@ docker run -d --name oddeven -p 3000:3000 \
 
 `PLAYER_SESSION_PASSWORD` 是玩家选择 / 切换场次用的口令（不设置则回退到默认值 `8888`，启动日志会提示）。它只在内存里以 scrypt 哈希存在，改口令 = 改环境变量 + 重启，无需迁移数据。
 
-镜像为多阶段构建，`.dockerignore` 已排除 `node_modules`、`.git`、`.env`、`game-data.json`（旧版本遗留的文件持久化数据）。
+镜像为多阶段构建，`.dockerignore` 已排除 `node_modules`、`.git`、`.env`、`test`。
 
 ### 9.2 Fly.io
 
@@ -510,7 +510,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 | 文件 | 覆盖 |
 |---|---|
-| `test/archive.test.mjs` | 登录/口令/扫码/预测的全部错误码；锁定与归档同事务；当日聚合口径（场次/轮次/去重人数/命中）；`detail`/`member`/`round` 三种 CSV 的列头、转义、命中判定；`reset` 不清归档；0 人轮次口径；跨场次分账与 `sid` 筛选；日期区间与非法日期；接口鉴权；append-only 触发器拒绝 UPDATE/DELETE/TRUNCATE |
+| `test/archive.test.mjs` | 登录/口令/扫码/预测的全部错误码；锁定与归档同事务；当日聚合口径（场次/轮次/去重人数/命中）；`detail`/`round` 两种 CSV 的列头、转义、命中判定，以及已移除的 `member` 口径返回 400；`reset` 不清归档；0 人轮次口径；跨场次分账与 `sid` 筛选；日期区间与非法日期；接口鉴权；append-only 触发器拒绝 UPDATE/DELETE/TRUNCATE |
 | `test/archive-failure.test.mjs` | 归档表不可写时锁定仍生效且返回 `archived:false`；`reset` 被 409 拦住；恢复后 `archive-sync` 幂等补齐；重启自动回填「已锁定但未归档」的轮次 |
 
 注意：
@@ -532,7 +532,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - **玩家绑定是「防误换」而非强身份认证。** 令牌绑定场次、不可跨场，但任何人拿到这台设备即可沿用其绑定继续玩（与扫码身份同一台设备的既有模型一致）；令牌 12 小时过期，口令本身从不落地，所以清掉 localStorage 只会退回选择界面，仍需口令才能重新进场。
 - **令牌走查询参数。** SSE（EventSource）无法自定义请求头，所以员工 token 与玩家绑定令牌都以 `?token=` / `?ut=` 传递，会进访问日志。反向代理层建议关闭查询串记录，或改走 Cookie。令牌都不含口令，泄露影响是「可读该场次状态」，不能改口令、不能跨场。
 - **没有人数上限校验。** 单场 6–12 位是运营约定，服务端不拦；人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
-- **仅支持单实例。** 员工会话（`sessions`）、SSE 连接集合、状态缓存都在进程内存里；多副本会导致登录态随机失效、状态广播只在单机内生效、`saveState` 的全表重写相互覆盖。多实例需要外置会话存储 + 跨实例广播 + 单写者/乐观锁。
+- **仅支持单实例。** 员工会话（`sessions`）、SSE 连接集合、状态缓存都在进程内存里；多副本会导致登录态随机失效、状态广播只在单机内生效、`saveSession` 的全表重写相互覆盖。多实例需要外置会话存储 + 跨实例广播 + 单写者/乐观锁。
 - 员工会话是内存态，重启即失效，需重新登录（不影响游戏数据）。
 - 托管库强制 TLS 时只能通过 `DATABASE_URL` 加 `sslmode`；`PG_*` 分支无法附加 TLS 参数。
 
@@ -544,7 +544,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - **归档表没有分区与归档清理。** 单场一天几十轮、每轮十来人，量级很小；长期运行（数千场次）后建议按 `locked_at` 做月分区或冷备导出，目前没有实现。
 - 玩家 ID 未做加密或哈希，直接以会员号明文入库并与 `identity` 关联。
 - 写库是"先清空再重写"，没有行级锁或版本校验：一旦以多进程或多实例运行，各进程的全量快照会相互覆盖。
-- `saveState()` 是 fire-and-forget，写失败只打日志、不阻断请求，极端情况下内存状态与数据库会短暂不一致。
+- `saveSession()` 是 fire-and-forget，写失败只打日志、不阻断请求，极端情况下内存状态与数据库会短暂不一致。
 
 **安全**
 

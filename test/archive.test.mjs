@@ -1,5 +1,5 @@
 /**
- * 主流程回归：锁定即归档 → 当日聚合 → 三种 CSV → reset 不动归档 → 跨场次分账。
+ * 主流程回归：锁定即归档 → 当日聚合 → 两种 CSV → reset 不动归档 → 跨场次分账。
  *
  * 这些断言是「对账契约」的可执行版本：
  *  - 列头顺序即契约，改动 CSV_*_HEADER 会在这里直接失败；
@@ -191,10 +191,10 @@ describe('竞猜归档与对账', () => {
   });
 
   it('只有逐人逐轮明细与轮次核对两种口径，会员汇总口径已移除', async () => {
-    const legacy = await exportCsv(api, token, { level: 'member' });
-    assert.equal(legacy.status, 400);
-    assert.equal(legacy.body.code, 'bad_level');
-    assert.deepEqual(legacy.body.levels, ['detail', 'round'], '只保留不聚合的口径');
+    const removedLevel = await exportCsv(api, token, { level: 'member' });
+    assert.equal(removedLevel.status, 400);
+    assert.equal(removedLevel.body.code, 'bad_level');
+    assert.deepEqual(removedLevel.body.levels, ['detail', 'round'], '只保留不聚合的口径');
 
     for (const level of ['detail', 'round']) {
       const t = toTable((await exportCsv(api, token, { level })).text);

@@ -1,7 +1,7 @@
 /**
  * db.js — Postgres 持久化层（多场次版）
  * ------------------------------------------------------------
- * 用 pg 连接池替换原 game-data.json 文件持久化，保证应用重启后数据仍在。
+ * 全部运行态与归档数据都在 Postgres，应用重启后数据仍在。
  *
  * 数据实体与表结构（均含时间戳）：
  *   - game_session  场次实体（名称、状态、创建/关闭时间）—— 一个实例可并行承载 1–4 场
@@ -16,8 +16,8 @@
  *
  * 玩家 ID 统一为「二维码内容 / 用户直接提交的原始 ID」（未经 hash）。
  *
- * 老库迁移：initDb() 幂等补齐 session_id 列、把历史数据归到默认场次 main、
- * 并把 player / identity 的单列主键改成 (session_id, id) 复合主键。
+ * 表结构由 initDb() 建出，CREATE ... IF NOT EXISTS 保证可反复执行；
+ * 本层不做任何结构迁移，以当前定义为准（旧结构库需在升级前自行完成 DDL）。
  *
  * 连接串来源（优先级从高到低）：
  *   1. PG_HOST / PG_USER / PG_PASS —— Fly.io secrets，拼成
@@ -27,9 +27,6 @@
  *   3. 本地默认值
  */
 const { Pool } = require('pg');
-
-/** 历史单场次数据在迁移后归属的场次 ID */
-const DEFAULT_SESSION_ID = 'main';
 
 let pool = null;
 
@@ -59,39 +56,6 @@ function getPool() {
     console.error('[db] 连接池空闲连接错误:', err.message);
   });
   return pool;
-}
-
-/** 读取某表当前主键包含哪些列（按主键内顺序）。表名由调用方硬编码，不接受外部输入。 */
-async function pkColumns(p, table) {
-  const res = await p.query(
-    `SELECT a.attname AS name
-       FROM pg_index i
-       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
-      WHERE i.indrelid = $1::regclass AND i.indisprimary`,
-    [table]
-  );
-  return res.rows.map((r) => r.name);
-}
-
-/**
- * 把(player / identity)的单列主键升级为 (session_id, id) 复合主键。
- * 已是复合主键时直接返回，可反复执行。
- */
-async function ensureCompositePk(p, table) {
-  const cols = await pkColumns(p, table);
-  if (cols.includes('session_id')) return;
-
-  // 先查出真实的主键约束名再删，避免依赖默认命名
-  const con = await p.query(
-    `SELECT conname FROM pg_constraint WHERE conrelid = $1::regclass AND contype = 'p'`,
-    [table]
-  );
-  for (const row of con.rows) {
-    await p.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS "${row.conname}"`);
-  }
-  await p.query(`ALTER TABLE ${table} ALTER COLUMN session_id SET NOT NULL`);
-  await p.query(`ALTER TABLE ${table} ADD PRIMARY KEY (session_id, id)`);
-  console.log('[db] 已升级主键: ' + table + '(session_id, id)');
 }
 
 /* ============================================================
@@ -182,8 +146,9 @@ async function initArchiveTables(p) {
 }
 
 /**
- * 幂等建表 + 老库迁移：首次启动时自动创建所需表，已存在的表补齐场次维度。
- * 所有时间戳统一存毫秒（BIGINT），与现有 state 里的 Date.now() 语义一致。
+ * 幂等建表：首次启动时创建全部表、索引与归档触发器，已存在则跳过。
+ * 只保证「表结构存在」，不做任何列补齐或数据重写。
+ * 所有时间戳统一存毫秒（BIGINT），与 state 里的 Date.now() 语义一致。
  */
 async function initDb() {
   const p = getPool();
@@ -191,7 +156,7 @@ async function initDb() {
   // 场次表
   await p.query(`
     CREATE TABLE IF NOT EXISTS game_session (
-      session_id TEXT PRIMARY KEY,          -- 场次 ID（默认场次为 main，新建场次为随机短串）
+      session_id TEXT PRIMARY KEY,          -- 场次 ID（首个场次固定为 main，新建场次为随机短串）
       name       TEXT NOT NULL,             -- 场次名称（工作人员可命名）
       status     TEXT NOT NULL DEFAULT 'open', -- open | closed
       seq        INTEGER NOT NULL DEFAULT 1,   -- 显示顺序
@@ -209,8 +174,6 @@ async function initDb() {
       locked_at  BIGINT                     -- 锁定时间戳（毫秒）
     );
   `);
-  // 老库（单场次）补列，随后回填默认场次
-  await p.query('ALTER TABLE round ADD COLUMN IF NOT EXISTS session_id TEXT');
 
   // 玩家表：一场内一个玩家一行
   await p.query(`
@@ -223,12 +186,9 @@ async function initDb() {
       registered_at BIGINT NOT NULL,        -- 登记时间戳（毫秒）
       submitted_at  BIGINT,                 -- 提交预测时间戳（毫秒）
       left_at       BIGINT,                 -- 离开现场时间戳（null = 在场；仅大屏展示用）
-      PRIMARY KEY (session_id, id)
+      PRIMARY KEY (session_id, id)          -- 同一 ID 可同时存在于多个场次
     );
   `);
-  await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS session_id TEXT');
-  // 大屏的「离开」标记：老库补列，可反复执行
-  await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS left_at BIGINT');
 
   // 身份档案：一场内一份，跨该场次的轮次累计
   await p.query(`
@@ -238,19 +198,10 @@ async function initDb() {
       last_seen_round  INTEGER NOT NULL,    -- 最近出现的轮次（场次内）
       completed_rounds INTEGER NOT NULL DEFAULT 0,
       created_at       BIGINT NOT NULL,     -- 首次建档时间戳（毫秒）
-      updated_at       BIGINT NOT NULL      -- 最近更新时间戳（毫秒）
+      updated_at       BIGINT NOT NULL,     -- 最近更新时间戳（毫秒）
+      PRIMARY KEY (session_id, id)          -- 同一 ID 可同时存在于多个场次
     );
   `);
-  await p.query('ALTER TABLE identity ADD COLUMN IF NOT EXISTS session_id TEXT');
-
-  // 历史数据归属默认场次
-  await p.query(`UPDATE round    SET session_id = $1 WHERE session_id IS NULL`, [DEFAULT_SESSION_ID]);
-  await p.query(`UPDATE player   SET session_id = $1 WHERE session_id IS NULL`, [DEFAULT_SESSION_ID]);
-  await p.query(`UPDATE identity SET session_id = $1 WHERE session_id IS NULL`, [DEFAULT_SESSION_ID]);
-
-  // 主键升级：同一玩家 ID 可同时存在于多个场次，主键必须带 session_id
-  await ensureCompositePk(p, 'player');
-  await ensureCompositePk(p, 'identity');
 
   // 应用级键值配置：目前只存玩家端绑定令牌的 HMAC 签名密钥。
   // 不存任何口令：口令只在进程内存里保留 scrypt 哈希。
@@ -267,22 +218,6 @@ async function initDb() {
   await p.query('CREATE INDEX IF NOT EXISTS idx_session_status ON game_session(status, seq);');
 
   await initArchiveTables(p);
-
-  // 升级场景：老库有单场次数据但没有场次实体时，补一条 main 场次，
-  // 否则首次启动会把它当成「空场次」，随后的整表重写会把历史玩家覆盖掉。
-  const cnt = await p.query('SELECT count(*)::int AS n FROM game_session');
-  if (cnt.rows[0].n === 0) {
-    const legacy = await p.query('SELECT 1 FROM round WHERE session_id = $1 LIMIT 1', [DEFAULT_SESSION_ID]);
-    const legacyPlayer = await p.query('SELECT 1 FROM player WHERE session_id = $1 LIMIT 1', [DEFAULT_SESSION_ID]);
-    if ((legacy.rowCount || 0) > 0 || (legacyPlayer.rowCount || 0) > 0) {
-      await p.query(
-        `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
-         VALUES ($1, $2, 'open', 1, $3, NULL)`,
-        [DEFAULT_SESSION_ID, '第 1 场', Date.now()]
-      );
-      console.log('[db] 检测到历史单场次数据，已归入场次 ' + DEFAULT_SESSION_ID);
-    }
-  }
 }
 
 /** 行 → 场次对象（players / identities 由调用方填充） */
@@ -691,7 +626,6 @@ async function archiveEntryRows(from, to, sessionId) {
 }
 
 module.exports = {
-  DEFAULT_SESSION_ID,
   initDb,
   loadSessions,
   saveSession,

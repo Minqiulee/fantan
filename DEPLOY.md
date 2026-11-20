@@ -5,7 +5,7 @@
 Postgresql：
 
 - 数据层：`db.js`（连接池 + 幂等建表 + 读写函数）
-- 服务入口：`server.js` 启动时 `initDb()` 建表、`loadState()` 恢复上次状态
+- 服务入口：`server.js` 启动时 `initDb()` 建表、`loadSessions()` 恢复各场次状态
 - 连接串：由 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`
   （`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）
 
@@ -28,6 +28,8 @@ Postgresql：
 **玩家端口令不入库**：只在进程内存保存 scrypt 哈希 + 随机盐，启动时由 `PLAYER_SESSION_PASSWORD` 重算；玩家绑定令牌用 `app_config` 里的随机密钥做 HMAC 签名，因此重启后玩家的场次绑定仍然有效。
 
 表会在应用首次启动时自动创建（幂等，`CREATE TABLE IF NOT EXISTS`），无需手动建表。
+
+> 应用**不做结构迁移**：不会补列、不会改主键、不会回填历史行。升级前请确认目标库的表结构已与本文件一致（例如从早期的单场次结构升级，需要在库里先手工完成 `session_id` 列与复合主键的 DDL）；结构不一致时启动会在第一条读写上报错。
 
 ## Fly.io 部署步骤
 
