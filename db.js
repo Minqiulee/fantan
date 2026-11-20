@@ -8,7 +8,7 @@
  *   - round         场次内的当前轮次状态（开奖数字、锁定时间），每场一行
  *   - player        场次内每个玩家的登记与预测，主键 (session_id, id)
  *   - identity      场次内的跨轮次身份档案，主键 (session_id, id)
- *   - round_archive 结算归档表头（一轮一行，append-only）
+ *   - round_archive 竞猜归档表头（一轮一行，append-only）
  *   - round_archive_entry 归档明细（一人一行，append-only）
  *
  * 所有业务表首列都是 session_id：任何读写都必须带 session_id，
@@ -95,7 +95,7 @@ async function ensureCompositePk(p, table) {
 }
 
 /* ============================================================
- * 结算归档（append-only）
+ * 竞猜归档（append-only）
  * ------------------------------------------------------------
  * 与运行态表彻底分开：round / player 是「当前一轮」的可变快照，
  * 每轮 reset 都会被清空重写；归档表只增不改，是一轮结束后的唯一留痕。
@@ -222,10 +222,13 @@ async function initDb() {
       number        INTEGER,                -- 预测数字
       registered_at BIGINT NOT NULL,        -- 登记时间戳（毫秒）
       submitted_at  BIGINT,                 -- 提交预测时间戳（毫秒）
+      left_at       BIGINT,                 -- 离开现场时间戳（null = 在场；仅大屏展示用）
       PRIMARY KEY (session_id, id)
     );
   `);
   await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS session_id TEXT');
+  // 大屏的「离开」标记：老库补列，可反复执行
+  await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS left_at BIGINT');
 
   // 身份档案：一场内一份，跨该场次的轮次累计
   await p.query(`
@@ -329,7 +332,8 @@ async function loadSessions() {
       oddEven: r.odd_even,
       number: r.number != null ? Number(r.number) : null,
       registeredAt: Number(r.registered_at),
-      submittedAt: r.submitted_at != null ? Number(r.submitted_at) : null
+      submittedAt: r.submitted_at != null ? Number(r.submitted_at) : null,
+      leftAt: r.left_at != null ? Number(r.left_at) : null
     };
   }
 
@@ -350,7 +354,7 @@ async function loadSessions() {
  * 把「当前这一轮」追加进归档（调用方事务内）。
  *
  * 只在轮次已锁定（number 与 lockedAt 都有值）时写入；未锁定的轮次没有任何留痕价值，
- * 也避免把 staff 正在录号的中间态写进结算表。
+ * 也避免把 staff 正在录号的中间态写进归档表。
  *
  * 幂等：表头按 (session_id, round) 唯一，明细按 (archive_id, member_id) 唯一，
  * 全部 ON CONFLICT DO NOTHING —— 重复保存同一轮不会产生第二份归档，
@@ -458,12 +462,13 @@ async function doSaveSession(session) {
       const pl = session.players[id];
       await client.query(
         `INSERT INTO player
-           (session_id, id, round, odd_even, number, registered_at, submitted_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
+           (session_id, id, round, odd_even, number, registered_at, submitted_at, left_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (session_id, id) DO UPDATE SET
            round=EXCLUDED.round, odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
-           submitted_at=EXCLUDED.submitted_at`,
-        [session.id, pl.id, session.round, pl.oddEven, pl.number, pl.registeredAt, pl.submittedAt]
+           submitted_at=EXCLUDED.submitted_at, left_at=EXCLUDED.left_at`,
+        [session.id, pl.id, session.round, pl.oddEven, pl.number, pl.registeredAt, pl.submittedAt,
+          pl.leftAt != null ? pl.leftAt : null]
       );
     }
 
@@ -591,9 +596,7 @@ async function archiveSummary(from, to) {
 
   const m = await p.query(
     `SELECT count(DISTINCT e.member_id)::int AS members,
-            count(DISTINCT e.member_id) FILTER (WHERE e.submitted)::int AS predicted_members,
-            count(*) FILTER (WHERE e.odd_even_hit)::int AS odd_even_hits,
-            count(*) FILTER (WHERE e.number_hit)::int   AS number_hits
+            count(DISTINCT e.member_id) FILTER (WHERE e.submitted)::int AS predicted_members
        FROM round_archive a
        JOIN round_archive_entry e ON e.archive_id = a.archive_id
       WHERE a.locked_at >= $1 AND a.locked_at < $2`,
@@ -636,8 +639,6 @@ async function archiveSummary(from, to) {
     submitted: t.rows[0].submitted,
     members: m.rows[0].members,
     predictedMembers: m.rows[0].predicted_members,
-    oddEvenHits: m.rows[0].odd_even_hits,
-    numberHits: m.rows[0].number_hits,
     bySession: s.rows.map((r) => ({
       sessionId: r.session_id,
       sessionName: r.session_name,
@@ -667,7 +668,11 @@ async function archiveRoundRows(from, to, sessionId) {
   return res.rows;
 }
 
-/** 会员级明细：一人一行（每会员每轮）。积分结算的原始凭据。 */
+/**
+ * 逐人逐轮明细：一人一轮一行，跨场次全部返回。
+ * 排序按「会员号 → 锁定时间」：同一玩家的跨场记录连续排列，方便逐人核对；
+ * 但**不做任何合并或汇总**——每行就是一次猜测及其与实际开奖结果的匹配情况。
+ */
 async function archiveEntryRows(from, to, sessionId) {
   const p = getPool();
   const params = [from, to];
@@ -680,29 +685,7 @@ async function archiveEntryRows(from, to, sessionId) {
       JOIN round_archive_entry e ON e.archive_id = a.archive_id
      WHERE a.locked_at >= $1 AND a.locked_at < $2`;
   if (sessionId) { params.push(sessionId); sql += ` AND a.session_id = $${params.length}`; }
-  sql += ' ORDER BY a.locked_at ASC, a.session_id ASC, a.round ASC, e.registered_at ASC, e.member_id ASC';
-  const res = await p.query(sql, params);
-  return res.rows;
-}
-
-/** 会员汇总：一人一行（跨场次、跨轮次合并），按会员号去重。 */
-async function archiveMemberRows(from, to, sessionId) {
-  const p = getPool();
-  const params = [from, to];
-  let sql = `
-    SELECT e.member_id,
-           count(DISTINCT a.session_id)::int                  AS sessions,
-           count(*)::int                                      AS rounds,
-           count(*) FILTER (WHERE e.submitted)::int           AS predicted,
-           count(*) FILTER (WHERE e.odd_even_hit)::int        AS odd_even_hits,
-           count(*) FILTER (WHERE e.number_hit)::int          AS number_hits,
-           min(a.locked_at)                                   AS first_locked_at,
-           max(a.locked_at)                                   AS last_locked_at
-      FROM round_archive a
-      JOIN round_archive_entry e ON e.archive_id = a.archive_id
-     WHERE a.locked_at >= $1 AND a.locked_at < $2`;
-  if (sessionId) { params.push(sessionId); sql += ` AND a.session_id = $${params.length}`; }
-  sql += ' GROUP BY e.member_id ORDER BY e.member_id ASC';
+  sql += ' ORDER BY e.member_id ASC, a.locked_at ASC, a.session_id ASC, a.round ASC, e.registered_at ASC';
   const res = await p.query(sql, params);
   return res.rows;
 }
@@ -720,6 +703,5 @@ module.exports = {
   archiveExists,
   archiveSummary,
   archiveRoundRows,
-  archiveEntryRows,
-  archiveMemberRows
+  archiveEntryRows
 };

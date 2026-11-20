@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>羊多一點 · 實時大屏</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<script src="/i18n.js"></script>
+<style>
+  /* 现场大屏：会投影/挂在墙上远距离观看，所以字号用 vh/vw 撑开，
+     信息层级只有三层——场次与人数、每个人的当前选项、最近动态。 */
+  :root {
+    --bg1: #2a070c; --bg2: #12050a; --bg3: #4a0d15;
+    --card: rgba(86, 14, 20, .52);
+    --card-border: rgba(212, 166, 83, .30);
+    --card-border-strong: rgba(212, 166, 83, .62);
+    --text: #fff2d6;
+    --muted: #e0c294;
+    --gold: #ffd45e;
+    --gold-deep: #e8a020;
+    --ok: #4ade80;
+    --bad: #ff7b7b;
+    --dim: #8d7160;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; }
+  body {
+    font-family: -apple-system, "PingFang SC", "PingFang HK", "Microsoft YaHei", "STHeiti", sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(1200px 620px at 50% -8%, rgba(255,180,60,.16), transparent 62%),
+      radial-gradient(900px 520px at 108% 108%, rgba(255,70,70,.13), transparent 58%),
+      linear-gradient(165deg, var(--bg1) 0%, var(--bg3) 36%, var(--bg2) 100%);
+    overflow:hidden;
+  }
+  /* 背景暗纹：与玩家端同一套祥云/铜钱，压到很淡，只作质感 */
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.35;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='none' stroke='%23d8b98a' stroke-opacity='.10' stroke-width='1.4'%3E%3Ccircle cx='40' cy='40' r='10'/%3E%3Crect x='34' y='34' width='12' height='12' rx='1.5'/%3E%3Cpath d='M104 34c-5 4-5 12 0 16 5-4 5-12 0-16z'/%3E%3Ccircle cx='112' cy='108' r='9'/%3E%3Cpath d='M44 112c-6 5-6 14 0 19 6-5 6-14 0-19z'/%3E%3C/g%3E%3C/svg%3E");
+    background-size:160px 160px;
+  }
+
+  .board {
+    position:relative; z-index:1; height:100%;
+    display:grid;
+    grid-template-rows: auto auto 1fr auto;
+    gap: clamp(10px, 1.4vh, 20px);
+    padding: clamp(14px, 2vh, 28px) clamp(16px, 2.4vw, 44px);
+  }
+
+  /* ---------- 顶栏 ---------- */
+  .hd { display:flex; align-items:center; gap: clamp(12px, 2vw, 32px); }
+  .hd-brand { display:flex; align-items:baseline; gap:10px; flex:none; }
+  .brand-name {
+    font-size: clamp(20px, 2.6vh, 34px); font-weight:900; letter-spacing:3px;
+    background:linear-gradient(180deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .brand-tag {
+    font-size: clamp(11px, 1.35vh, 15px); font-weight:800; letter-spacing:2px;
+    padding: calc(.4vh + 2px) 12px; border-radius:99px; color:#3a1500;
+    background:linear-gradient(135deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
+  }
+  .hd-mid { flex:1; min-width:0; display:flex; align-items:baseline; gap: clamp(10px,1.4vw,20px); }
+  .hd-sess {
+    font-size: clamp(18px, 2.3vh, 30px); font-weight:800; letter-spacing:1px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .hd-meta { display:flex; align-items:center; gap:10px; color:var(--muted); font-size: clamp(12px,1.5vh,17px); }
+  .hd-meta .sep { opacity:.4; }
+  .state-pill {
+    display:inline-flex; align-items:center; gap:7px; padding:3px 12px; border-radius:99px;
+    border:1px solid var(--card-border-strong); font-weight:700; letter-spacing:1px;
+  }
+  .state-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--gold); animation:pulse 1.5s infinite; }
+  .state-pill.locked { color:var(--ok); border-color:rgba(74,222,128,.5); }
+  .state-pill.locked .dot { background:var(--ok); animation:none; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.72)} }
+
+  .sess-sel {
+    font: inherit; font-size: clamp(12px,1.4vh,15px); color:var(--text); font-weight:700;
+    background:rgba(0,0,0,.35); border:1px solid var(--card-border); border-radius:9px;
+    padding:3px 8px; outline:none; cursor:pointer;
+  }
+  .sess-sel option { background:#2a0a10; }
+
+  .hd-right { flex:none; display:flex; align-items:center; gap: clamp(10px,1.2vw,18px); }
+  .conn { font-size: clamp(12px,1.4vh,15px); color:var(--bad); font-weight:700; display:none; }
+  .conn.on { display:inline; }
+  .clock {
+    font-size: clamp(15px, 1.9vh, 24px); font-weight:700; color:var(--muted);
+    font-variant-numeric: tabular-nums; letter-spacing:1px;
+  }
+  .exit {
+    font: inherit; font-size: clamp(11px,1.35vh,14px); color:var(--muted); cursor:pointer;
+    background:none; border:1px solid var(--card-border); border-radius:99px; padding:5px 12px;
+  }
+  .exit:hover { color:var(--text); border-color:var(--card-border-strong); }
+
+  /* ---------- 概况条 ---------- */
+  .hero { display:flex; align-items:stretch; gap: clamp(10px,1.2vw,20px); }
+  .stats {
+    flex:1; display:grid; grid-template-columns:repeat(4, 1fr); gap: clamp(8px,1vw,16px);
+    background:linear-gradient(180deg, rgba(100,16,24,.42), rgba(50,7,12,.5));
+    border:1px solid var(--card-border); border-radius: clamp(12px,1.4vw,20px);
+    padding: clamp(10px,1.3vh,18px) clamp(12px,1.6vw,26px);
+  }
+  .st { display:flex; flex-direction:column; justify-content:center; gap:2px; }
+  .st .n {
+    font-size: clamp(26px, 4.2vh, 56px); font-weight:900; line-height:1.05;
+    font-variant-numeric: tabular-nums;
+    background:linear-gradient(180deg,#fff0c2,var(--gold) 55%,var(--gold-deep));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .st.pick .n { background:linear-gradient(180deg,#d8ffe8,var(--ok)); -webkit-background-clip:text; background-clip:text; }
+  .st.unpick .n { background:linear-gradient(180deg,#f4e4c8,#c9a173); -webkit-background-clip:text; background-clip:text; }
+  .st.left .n { background:linear-gradient(180deg,#c3b3ab,#7d6a62); -webkit-background-clip:text; background-clip:text; }
+  .st .t { font-size: clamp(11px,1.45vh,16px); color:var(--muted); letter-spacing:2px; }
+
+  .draw {
+    flex:none; min-width: clamp(150px, 15vw, 260px);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    border-radius: clamp(12px,1.4vw,20px); border:1px solid var(--card-border-strong);
+    background:linear-gradient(180deg, rgba(120,26,20,.45), rgba(60,10,12,.6));
+    padding: 6px clamp(14px,1.6vw,26px);
+  }
+  .draw .lab { font-size: clamp(10px,1.3vh,14px); letter-spacing:3px; color:var(--muted); }
+  .draw .num {
+    font-size: clamp(34px, 6vh, 76px); font-weight:900; line-height:1.05;
+    background:linear-gradient(180deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .draw.idle .num { font-size: clamp(18px,2.2vh,28px); letter-spacing:2px; -webkit-text-fill-color: var(--dim); }
+
+  /* ---------- 玩家卡片区 ---------- */
+  .stage { position:relative; min-height:0; display:flex; }
+  .grid {
+    flex:1; display:flex; flex-wrap:wrap; align-content:flex-start;
+    gap: clamp(8px, .9vw, 16px); overflow-y:auto; padding-right:4px;
+  }
+  /* 人少时整块垂直居中（画面不空）；人多时锚定顶部，新卡片只往下方长，不会整屏跳动 */
+  .grid[data-density="sparse"] { align-content: safe center; }
+  .grid::-webkit-scrollbar { width:6px; }
+  .grid::-webkit-scrollbar-thumb { background:rgba(212,166,83,.35); border-radius:99px; }
+
+  /* 固定卡片宽度：不随每行剩余空间伸缩，避免末行卡片被撑大、整屏宽度参差 */
+  .pc {
+    flex: 0 0 clamp(148px, 10vw, 220px);
+    min-height: clamp(96px, 12.5vh, 150px);
+    display:flex; flex-direction:column; gap:4px;
+    padding: clamp(8px,1vh,14px) clamp(10px,1vw,16px);
+    border-radius: clamp(10px,1vw,16px);
+    background:linear-gradient(180deg, var(--card), rgba(40,6,10,.6));
+    border:1.5px solid var(--card-border);
+    position:relative; overflow:hidden;
+    transition: border-color .2s ease, opacity .25s ease, background .2s ease;
+  }
+  /* 卡片顶部一条状态色带：远距离一眼分辨「已选 / 未选 / 离开」 */
+  .pc::before {
+    content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--dim);
+  }
+  .pc[data-state="picked"] { border-color: rgba(255,212,94,.55); background:linear-gradient(180deg, rgba(112,22,26,.62), rgba(48,8,12,.66)); }
+  .pc[data-state="picked"]::before { background:linear-gradient(180deg,var(--gold),var(--gold-deep)); }
+  .pc[data-state="unpicked"] { border-style:dashed; border-color:rgba(200,170,130,.28); }
+  .pc[data-state="unpicked"]::before { background:#6b5548; }
+  .pc[data-state="left"] { opacity:.42; }
+  .pc[data-state="left"]::before { background:#5c4a42; }
+
+  .pc-top { display:flex; align-items:center; gap:6px; min-width:0; }
+  .pc-id {
+    flex:1; min-width:0; font-size: clamp(13px,1.7vh,20px); font-weight:800; letter-spacing:.5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .pc-vet {
+    flex:none; font-size: clamp(9px,1.1vh,12px); font-weight:700; padding:2px 7px; border-radius:99px;
+    color:var(--gold); background:rgba(255,212,94,.16); border:1px solid rgba(255,212,94,.35);
+  }
+  .pc-body { flex:1; display:flex; align-items:center; gap: clamp(8px,1vw,16px); }
+  .pc-oe {
+    font-size: clamp(22px,3.6vh,44px); font-weight:900; line-height:1;
+    color:var(--gold);
+  }
+  .pc-num {
+    font-size: clamp(20px,3.2vh,40px); font-weight:900; line-height:1;
+    font-variant-numeric: tabular-nums; color:var(--text);
+  }
+  .pc[data-state="unpicked"] .pc-oe,
+  .pc[data-state="unpicked"] .pc-num { color:var(--dim); font-weight:700; }
+  .pc[data-state="left"] .pc-oe,
+  .pc[data-state="left"] .pc-num { color:#b9a49a; }
+  .pc-foot {
+    display:flex; align-items:center; gap:6px;
+    font-size: clamp(10px,1.25vh,14px); color:var(--muted); letter-spacing:1px;
+  }
+  .pc-foot .d { width:6px; height:6px; border-radius:50%; background:var(--dim); flex:none; }
+  .pc[data-state="picked"] .pc-foot { color:rgba(255,236,196,.9); }
+  .pc[data-state="picked"] .pc-foot .d { background:var(--gold); }
+  .pc[data-state="left"] .pc-foot .d { background:#8a7568; }
+
+  /* 开奖后：命中/未中直接标在卡片底部状态行（红绿沿用页面既有的结果语义） */
+  .pc-hit { display:flex; gap:5px; margin-left:auto; flex:none; }
+  .pc-foot.nodot .d { display:none; }
+  .pc-hit span { padding:2px 8px; border-radius:99px; font-size: clamp(11px,1.5vh,17px); font-weight:800; letter-spacing:.5px; }
+  .pc-hit .h { color:#0d2a17; background:var(--ok); }
+  .pc-hit .m { color:#3a0c0c; background:rgba(255,123,123,.85); }
+
+  /* 动效：新加入 / 选项变化 / 离开，各自只用一次短动画，避免大屏持续晃眼 */
+  @keyframes cardIn { from { opacity:0; transform:translateY(8px) scale(.96); } to { opacity:1; transform:none; } }
+  @keyframes cardChange { 0% { box-shadow:0 0 0 0 rgba(255,212,94,.85); } 100% { box-shadow:0 0 0 14px rgba(255,212,94,0); } }
+  .pc.enter { animation: cardIn .28s ease both; }
+  .pc.change { animation: cardChange .9s ease-out 1; }
+
+  /* 人少时把卡片放大（远距离也看得清），人多时自动收窄，保证一屏装得下更多人 */
+  .grid[data-density="sparse"] .pc { flex-basis: clamp(210px, 16vw, 360px); min-height: clamp(140px, 20vh, 240px); }
+  .grid[data-density="sparse"] .pc-id { font-size: clamp(16px, 2.2vh, 28px); }
+  .grid[data-density="sparse"] .pc-oe { font-size: clamp(34px, 5.4vh, 66px); }
+  .grid[data-density="sparse"] .pc-num { font-size: clamp(30px, 4.8vh, 60px); }
+  .grid[data-density="dense"] .pc { flex-basis: clamp(120px, 8.2vw, 176px); min-height: clamp(80px, 10vh, 122px); }
+  .grid[data-density="dense"] .pc-id { font-size: clamp(11px, 1.4vh, 17px); }
+  .grid[data-density="dense"] .pc-oe { font-size: clamp(18px, 2.8vh, 34px); }
+  .grid[data-density="dense"] .pc-num { font-size: clamp(16px, 2.5vh, 30px); }
+
+  .empty {
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    font-size: clamp(18px,2.6vh,34px); letter-spacing:4px; color:var(--dim); font-weight:700;
+  }
+  .empty.on { display:flex; }
+
+  /* ---------- 最近动态 ---------- */
+  .ticker {
+    display:flex; align-items:center; gap: clamp(8px,1vw,16px);
+    border-top:1px solid rgba(212,166,83,.22); padding-top: clamp(6px,.9vh,12px);
+    font-size: clamp(11px,1.4vh,15px); color:var(--muted); min-height: clamp(22px,3vh,34px);
+  }
+  .tk-lab { flex:none; letter-spacing:3px; opacity:.75; }
+  .tk-list { display:flex; gap: clamp(8px,1.2vw,20px); overflow:hidden; flex:1;
+    -webkit-mask-image:linear-gradient(90deg,#000 94%,transparent);
+    mask-image:linear-gradient(90deg,#000 94%,transparent); }
+  .tk { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+  .tk b { font-weight:800; color:var(--text); max-width: 16ch; overflow:hidden; text-overflow:ellipsis; }
+  .tk .t { opacity:.55; font-variant-numeric: tabular-nums; }
+  .tk .tg { padding:1px 7px; border-radius:99px; font-weight:800; font-size:.92em; }
+  .tk.join .tg { color:#cfe6ff; background:rgba(79,140,255,.22); }
+  .tk.pick .tg { color:#3a1500; background:linear-gradient(135deg,#ffe58a,var(--gold-deep)); }
+  .tk.change .tg { color:#ffe9b0; background:rgba(255,212,94,.22); }
+  .tk.leave .tg { color:#d8ccc4; background:rgba(255,255,255,.10); }
+  .tk.round .tg { color:#0d2a17; background:var(--ok); }
+
+  /* ---------- 登录门 ---------- */
+  .gate {
+    position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center;
+    background:rgba(8,3,5,.86); backdrop-filter:blur(6px); padding:24px;
+  }
+  .gate.on { display:flex; }
+  .gate-box {
+    width:100%; max-width:400px; text-align:center;
+    border:1px solid var(--card-border); border-radius:20px; padding:28px 24px;
+    background:linear-gradient(180deg,#3a0a10,#220508);
+    box-shadow:0 24px 60px rgba(0,0,0,.6);
+  }
+  .gate-box h2 { font-size:20px; letter-spacing:2px; margin-bottom:8px; }
+  .gate-box p { font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:18px; }
+  .gate-box input {
+    width:100%; font: inherit; font-size:19px; letter-spacing:4px; text-align:center;
+    padding:13px 12px; border-radius:12px; border:1.5px solid var(--card-border);
+    background:rgba(0,0,0,.35); color:var(--text); outline:none;
+  }
+  .gate-box input:focus { border-color:var(--gold); }
+  .gate-box .err { min-height:20px; margin-top:10px; font-size:13px; color:var(--bad); font-weight:700; }
+  .gate-box button {
+    width:100%; margin-top:6px; padding:13px; font: inherit; font-size:17px; font-weight:900; letter-spacing:4px;
+    border:none; border-radius:12px; color:#3a1500; cursor:pointer;
+    background:linear-gradient(180deg,#fff0c2,var(--gold) 45%,var(--gold-deep));
+  }
+  .gate-box button[disabled] { opacity:.45; pointer-events:none; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="board">
+  <header class="hd">
+    <div class="hd-brand">
+      <span class="brand-name" data-i18n="brand">羊多一点</span>
+      <span class="brand-tag" data-i18n="bs_tag">实时大屏</span>
+    </div>
+    <div class="hd-mid">
+      <div class="hd-sess" id="sessName">—</div>
+      <div class="hd-meta">
+        <span id="sessMeta"></span>
+        <select class="sess-sel hidden" id="sessSel" aria-label="session"></select>
+      </div>
+    </div>
+    <div class="hd-right">
+      <span class="conn" id="connTip" data-i18n="connLost">⚠ 连接中断，正在重试…</span>
+      <span class="clock" id="clock">--:--:--</span>
+      <button class="exit" id="exitBtn" type="button" data-i18n="bs_logout">退出大屏</button>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="stats">
+      <div class="st"><div class="n" id="nTotal">0</div><div class="t" data-i18n="bs_total">参与玩家</div></div>
+      <div class="st pick"><div class="n" id="nPicked">0</div><div class="t" data-i18n="bs_picked">已选择</div></div>
+      <div class="st unpick"><div class="n" id="nUnpicked">0</div><div class="t" data-i18n="bs_unpicked">未选择</div></div>
+      <div class="st left"><div class="n" id="nLeft">0</div><div class="t" data-i18n="bs_left">已离开</div></div>
+    </div>
+    <div class="draw idle" id="drawBox">
+      <div class="lab" id="drawLab" data-i18n="bs_draw">本轮开奖数字</div>
+      <div class="num" id="drawNum" data-i18n="bs_drawing">待开奖</div>
+    </div>
+  </section>
+
+  <section class="stage">
+    <div class="grid" id="grid"></div>
+    <div class="empty on" id="empty" data-i18n="bs_waiting">等待玩家扫码…</div>
+  </section>
+
+  <footer class="ticker">
+    <span class="tk-lab" data-i18n="bs_events">最近动态</span>
+    <div class="tk-list" id="tkList"></div>
+  </footer>
+</div>
+
+<div class="gate" id="gate">
+  <div class="gate-box">
+    <h2 data-i18n="bs_gateTitle">进入大屏</h2>
+    <p data-i18n="bs_gateHint">大屏会显示每位玩家的当前选项，仅限工作人员使用。</p>
+    <input type="password" id="gatePwd" autocomplete="off" maxlength="64" data-i18n-ph="bs_pwd" placeholder="管理密码">
+    <div class="err" id="gateErr"></div>
+    <button id="gateBtn" type="button" data-i18n="bs_enter">进入</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  /* 大屏数据流：
+   *   员工登录（复用 /api/staff-login）→ 选定场次 → SSE /api/stream?view=bigscreen
+   * 服务端每次状态变更都用同一套 commitSession 广播全量快照（带场次版本号），
+   * 这里按 version 丢弃过期帧、按 pid 做增量 diff，所以不会出现重复卡片或陈旧选项。 */
+  var TOKEN_KEY = 'oe_bigscreen_token';
+  var SID_KEY = 'oe_bigscreen_sid';
+
+  var token = '';
+  var sid = '';
+  var sessions = [];
+  var es = null;
+  var streamClosed = false;
+  var errCount = 0;
+
+  var lastVersion = -1;   // 已应用的最新场次版本号（小于它的帧直接丢弃）
+  var curRound = null;    // 当前轮次（变化即视为新一轮，整屏清空重来）
+  var hasBaseline = false;// 是否已经渲染过首帧（首帧不产生「加入」动态）
+
+  var cards = new Map();  // pid -> { el, refs, sig, submitted, oddEven, number, left }
+  var events = [];        // 最近动态（只保留 8 条，够看就行）
+
+  var t = window.I18N.t;
+  var $ = function (id) { return document.getElementById(id); };
+  var grid = $('grid');
+
+  /* ---------- 语言 ---------- */
+  window.I18N.init({ storageKey: 'oe_i18n_locale' });
+
+  function applyStaticI18n() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-i18n]'), function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-i18n-ph]'), function (el) {
+      el.placeholder = t(el.getAttribute('data-i18n-ph'));
+    });
+    document.title = t('brand') + ' · ' + t('bs_tag');
+  }
+  // 切换语言后重绘所有动态文本（卡片状态/动态标签都由 t() 生成）
+  document.documentElement.addEventListener('locale-change', function () {
+    applyStaticI18n();
+    if (lastPayload) applyState(lastPayload, true);
+    renderTicker();
+  });
+
+  var lastPayload = null;
+
+  /* ---------- 小工具 ---------- */
+  function hhmmss(ms) {
+    var d = new Date(ms);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 隐私模式忽略 */ } }
+  function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function drop(k) { try { localStorage.removeItem(k); } catch (e) { /* 忽略 */ } }
+
+  setInterval(function () { $('clock').textContent = hhmmss(Date.now()); }, 1000);
+  $('clock').textContent = hhmmss(Date.now());
+
+  /* ---------- 登录门 ---------- */
+  function showGate(msg) {
+    closeStream();
+    $('gate').classList.add('on');
+    $('gateErr').textContent = msg || '';
+    setTimeout(function () { try { $('gatePwd').focus(); } catch (e) { /* 忽略 */ } }, 120);
+  }
+
+  function hideGate() { $('gate').classList.remove('on'); }
+
+  function doLogin() {
+    var pwd = $('gatePwd').value;
+    if (!pwd) { $('gateErr').textContent = t('errEmptyPwd'); return; }
+    $('gateBtn').disabled = true;
+    $('gateErr').textContent = '';
+    fetch('/api/staff-login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      $('gateBtn').disabled = false;
+      if (!d || !d.ok) {
+        $('gateErr').textContent = window.I18N.errCode(d && d.code, d, 'err_') || t('errLoginFailed');
+        return;
+      }
+      $('gatePwd').value = '';
+      setToken(d.token);
+      sessions = d.sessions || [];
+      renderSessions();
+      hideGate();
+      var next = pickSession(d.sid);
+      if (next) switchTo(next);
+      else showNoSession();
+    }).catch(function () {
+      $('gateBtn').disabled = false;
+      $('gateErr').textContent = t('errNetRetry');
+    });
+  }
+
+  $('gateBtn').addEventListener('click', doLogin);
+  $('gatePwd').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+
+  function setToken(tk) { token = tk || ''; if (token) save(TOKEN_KEY, token); else drop(TOKEN_KEY); }
+
+  $('exitBtn').addEventListener('click', function () {
+    closeStream();
+    setToken('');
+    drop(SID_KEY);
+    sid = '';
+    resetBoard();
+    showGate('');
+  });
+
+  /* ---------- 场次 ---------- */
+  function pickSession(preferred) {
+    var i;
+    if (preferred) {
+      for (i = 0; i < sessions.length; i++) if (sessions[i].id === preferred && sessions[i].status === 'open') return preferred;
+    }
+    for (i = 0; i < sessions.length; i++) if (sessions[i].id === sid && sessions[i].status === 'open') return sid;
+    for (i = 0; i < sessions.length; i++) if (sessions[i].status === 'open') return sessions[i].id;
+    return '';
+  }
+
+  function renderSessions() {
+    var open = sessions.filter(function (s) { return s.status === 'open'; });
+    var sel = $('sessSel');
+    sel.classList.toggle('hidden', open.length < 2);
+    sel.innerHTML = '';
+    open.forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.id;
+      o.textContent = s.name + ' · ' + t('bs_round', { n: s.round });
+      if (s.id === sid) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  $('sessSel').addEventListener('change', function () {
+    var next = this.value;
+    if (next && next !== sid) switchTo(next);
+  });
+
+  function refreshSessions() {
+    if (!token) return Promise.resolve([]);
+    return fetch('/api/sessions?token=' + encodeURIComponent(token), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok && d.sessions) { sessions = d.sessions; renderSessions(); return sessions; }
+        return [];
+      })
+      .catch(function () { return []; });
+  }
+
+  /** 切场次：重置本地 diff 状态并重连，避免把上一场的卡片带进来 */
+  function switchTo(next) {
+    if (!next) { showNoSession(); return; }
+    sid = next;
+    save(SID_KEY, sid);
+    $('empty').classList.remove('on');
+    resetBoard();
+    renderSessions();
+    startStream();
+    poll();
+  }
+
+  function showNoSession() {
+    closeStream();
+    $('sessName').textContent = '—';
+    $('sessMeta').textContent = '';
+    resetBoard();
+    $('empty').classList.add('on');
+    $('empty').textContent = t('bs_noSession');
+  }
+
+  function resetBoard() {
+    cards.forEach(function (c) { c.el.remove(); });
+    cards.clear();
+    events = [];
+    lastVersion = -1;
+    curRound = null;
+    hasBaseline = false;
+    lastPayload = null;
+    $('drawBox').classList.add('idle');
+    $('drawNum').textContent = t('bs_drawing');
+    renderTicker();
+    renderStats([]);
+  }
+
+  /* ---------- 渲染：顶栏 / 概览 / 开奖 ---------- */
+  function renderHead(d) {
+    var s = d.session || {};
+    $('sessName').textContent = s.name || '—';
+    var meta = $('sessMeta');
+    meta.innerHTML = '';
+    var pill = document.createElement('span');
+    pill.className = 'state-pill' + (d.locked ? ' locked' : '');
+    var dot = document.createElement('span');
+    dot.className = 'dot';
+    pill.appendChild(dot);
+    pill.appendChild(document.createTextNode(t(d.locked ? 'bs_locked' : 'bs_live')));
+    meta.appendChild(pill);
+    var sep = document.createElement('span');
+    sep.className = 'sep';
+    sep.textContent = '·';
+    meta.appendChild(sep);
+    var rnd = document.createElement('span');
+    rnd.textContent = t('bs_round', { n: d.round });
+    meta.appendChild(rnd);
+
+    var box = $('drawBox');
+    var num = $('drawNum');
+    if (d.locked && d.number != null) {
+      box.classList.remove('idle');
+      num.textContent = d.number;
+      num.removeAttribute('data-i18n');
+    } else {
+      box.classList.add('idle');
+      num.textContent = t('bs_drawing');
+    }
+  }
+
+  function renderStats(list) {
+    var total = list.length, picked = 0, left = 0;
+    list.forEach(function (p) {
+      if (p.submitted) picked += 1;
+      if (p.left) left += 1;
+    });
+    $('nTotal').textContent = total;
+    $('nPicked').textContent = picked;
+    $('nUnpicked').textContent = total - picked;
+    $('nLeft').textContent = left;
+    $('empty').classList.toggle('on', total === 0);
+    if (total === 0) $('empty').textContent = t('bs_waiting');
+    applyDensity(total);
+  }
+
+  /** 卡片密度：按「一行能舒服放下几张」推算，人少放大、人多收窄，尽量把屏幕用满 */
+  var lastCount = 0;
+  function applyDensity(n) {
+    lastCount = n;
+    var w = grid.clientWidth || 1200;
+    var cols = Math.max(1, Math.floor(w / 300));
+    var d = n <= cols * 3 ? 'sparse' : (n <= cols * 6 ? 'normal' : 'dense');
+    if (grid.getAttribute('data-density') !== d) grid.setAttribute('data-density', d);
+  }
+
+  window.addEventListener('resize', function () { applyDensity(lastCount); });
+
+  /* ---------- 渲染：玩家卡片（按 pid 增量 diff） ---------- */
+  function stateOf(p) {
+    if (p.left) return 'left';
+    return p.submitted ? 'picked' : 'unpicked';
+  }
+
+  function sigOf(p) {
+    return [p.submitted ? 1 : 0, p.oddEven || '', p.number == null ? '' : p.number, p.left ? 1 : 0].join('|');
+  }
+
+  function makeCard(p, d) {
+    var el = document.createElement('article');
+    el.className = 'pc';
+    el.setAttribute('data-pid', p.id);
+
+    var top = document.createElement('div');
+    top.className = 'pc-top';
+    var idEl = document.createElement('span');
+    idEl.className = 'pc-id';
+    idEl.textContent = p.id;               // 二维码内容不可信，一律 textContent
+    idEl.title = p.id;
+    top.appendChild(idEl);
+    var vet = document.createElement('span');
+    vet.className = 'pc-vet';
+    vet.textContent = t('bs_vet');
+    top.appendChild(vet);
+
+    var body = document.createElement('div');
+    body.className = 'pc-body';
+    var oe = document.createElement('span');
+    oe.className = 'pc-oe';
+    var num = document.createElement('span');
+    num.className = 'pc-num';
+    body.appendChild(oe);
+    body.appendChild(num);
+
+    var foot = document.createElement('div');
+    foot.className = 'pc-foot';
+    var dot = document.createElement('span');
+    dot.className = 'd';
+    foot.appendChild(dot);
+
+    el.appendChild(top);
+    el.appendChild(body);
+    el.appendChild(foot);
+
+    var card = { el: el, refs: { id: idEl, vet: vet, oe: oe, num: num, foot: foot }, sig: '', locked: false };
+    paintCard(card, p, d);
+    return card;
+  }
+
+  /** 把一份玩家数据画到卡片上（d = 当前状态负载，含 locked / number 用于命中标记） */
+  function paintCard(card, p, d) {
+    card.el.setAttribute('data-state', stateOf(p));
+    card.refs.vet.style.display = p.isVeteran ? '' : 'none';
+    if (p.submitted) {
+      card.refs.oe.textContent = t(p.oddEven === '单' ? 'odd' : 'even');
+      card.refs.num.textContent = p.number == null ? '—' : p.number;
+    } else {
+      card.refs.oe.textContent = '—';
+      card.refs.num.textContent = '';
+    }
+
+    // 状态行：开奖后且已提交 → 直接显示命中/未中，省掉一行文字也不挤；
+    // 其余情况显示「已选择 / 未选择 / 已离开」。
+    var foot = card.refs.foot;
+    while (foot.children.length > 1) foot.removeChild(foot.lastChild);
+    var locked = !!(d && d.locked && d.number != null);
+    if (locked && p.submitted) {
+      var box = document.createElement('div');
+      box.className = 'pc-hit';
+      foot.classList.add('nodot');
+      var n = d.number;
+      box.appendChild(mkHit((p.oddEven === '单') === (n % 2 === 1), t(p.oddEven === '单' ? 'odd' : 'even')));
+      box.appendChild(mkHit(p.number === n, String(p.number)));
+      foot.appendChild(box);
+    } else {
+      foot.classList.remove('nodot');
+      var st = document.createElement('span');
+      st.textContent = t(p.left ? 'bs_stateLeft' : (p.submitted ? 'bs_statePicked' : 'bs_stateUnpicked'));
+      foot.appendChild(st);
+    }
+
+    card.sig = sigOf(p);
+    card.locked = !!(d && d.locked);
+    card.submitted = p.submitted;
+    card.oddEven = p.oddEven;
+    card.number = p.number;
+    card.left = p.left;
+  }
+
+  function mkHit(hit, label) {
+    var s = document.createElement('span');
+    s.className = hit ? 'h' : 'm';
+    s.textContent = label + (hit ? ' ✓' : ' ✗');
+    return s;
+  }
+
+  function flash(el, cls) {
+    el.classList.remove(cls);
+    void el.offsetWidth;   // 强制回流，让同一张卡片连续两次变化也能重新播放
+    el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, 950);
+  }
+
+  function syncCards(list, d) {
+    var seen = Object.create(null);
+    list.forEach(function (p) {
+      seen[p.id] = 1;
+      var card = cards.get(p.id);
+      if (!card) {
+        card = makeCard(p, d);
+        cards.set(p.id, card);
+        grid.appendChild(card.el);
+        if (hasBaseline) { pushEvent('join', p.id); flash(card.el, 'enter'); }
+        return;
+      }
+      var next = sigOf(p);
+      // 开奖/撤销开奖不改变选择签名，但要让命中标记重新画一遍，所以单列一个判断
+      var lockedChanged = (d && d.locked ? 1 : 0) !== (card.locked ? 1 : 0);
+      if (card.sig === next && !lockedChanged) return;
+      var prev = { submitted: card.submitted, oddEven: card.oddEven, number: card.number, left: card.left };
+      paintCard(card, p, d);
+      if (hasBaseline) {
+        if (p.left && !prev.left) pushEvent('leave', p.id);
+        else if (!p.left && prev.left) pushEvent('join', p.id);
+        else if (p.submitted && !prev.submitted) pushEvent('pick', p.id);
+        else if (p.submitted && prev.submitted && (p.oddEven !== prev.oddEven || p.number !== prev.number)) pushEvent('change', p.id);
+      }
+      flash(card.el, 'change');
+    });
+
+    // 不在本帧里的：本轮已重置或玩家被移除，整条移除，避免残留过期数据
+    cards.forEach(function (card, pid) {
+      if (seen[pid]) return;
+      card.el.remove();
+      cards.delete(pid);
+      if (hasBaseline) pushEvent('leave', pid);
+    });
+
+    $('empty').classList.toggle('on', list.length === 0);
+    if (list.length === 0) $('empty').textContent = t('bs_waiting');
+  }
+
+  /* ---------- 最近动态 ---------- */
+  function pushEvent(kind, arg) {
+    events.unshift({ kind: kind, arg: arg, at: Date.now() });
+    if (events.length > 8) events.pop();
+    renderTicker();
+  }
+
+  function renderTicker() {
+    var box = $('tkList');
+    box.innerHTML = '';
+    events.forEach(function (e) {
+      var row = document.createElement('span');
+      row.className = 'tk ' + e.kind;
+      var tag = document.createElement('span');
+      tag.className = 'tg';
+      tag.textContent = t(e.kind === 'join' ? 'bs_evJoin'
+        : e.kind === 'pick' ? 'bs_evPick'
+        : e.kind === 'change' ? 'bs_evChange'
+        : e.kind === 'leave' ? 'bs_evLeave'
+        : 'bs_evRound');
+      var name = document.createElement('b');
+      name.textContent = e.kind === 'round' ? t('bs_round', { n: e.arg }) : e.arg;
+      var time = document.createElement('span');
+      time.className = 't';
+      time.textContent = hhmmss(e.at);
+      row.appendChild(tag);
+      row.appendChild(name);
+      row.appendChild(time);
+      box.appendChild(row);
+    });
+  }
+
+  /* ---------- 状态应用 ---------- */
+  function applyState(d, force) {
+    if (!d || !d.ok) return;
+    // 员工 token 能读已关闭场次的历史快照，但大屏只跟进行中的场次
+    if (d.session && d.session.status === 'closed') { onSessionClosed(); return; }
+    lastPayload = d;
+
+    if (d.session && d.session.id && d.session.id !== sid) {
+      sid = d.session.id;
+      save(SID_KEY, sid);
+      renderSessions();
+    }
+
+    if (d.version != null) {
+      // 过期帧（重连补发、并发请求乱序）一律丢弃，避免把旧选项盖回新选项
+      if (!force && lastVersion >= 0 && d.version < lastVersion) return;
+      if (d.version > lastVersion) lastVersion = d.version;
+    }
+
+    if (curRound != null && d.round !== curRound) {
+      cards.forEach(function (c) { c.el.remove(); });
+      cards.clear();
+      pushEvent('round', d.round);   // 新一轮：整屏清空，只留一条「第 N 轮开始」
+    }
+    curRound = d.round;
+
+    renderHead(d);
+    renderStats(d.players || []);
+    syncCards(d.players || [], d);
+    if (force) {
+      // 切语言后重绘（选择没变，diff 不会触发），让「已选择/老玩家/命中」等文案跟上
+      var byId = Object.create(null);
+      (d.players || []).forEach(function (p) { byId[p.id] = p; });
+      cards.forEach(function (c, pid) { if (byId[pid]) paintCard(c, byId[pid], d); });
+    }
+    hasBaseline = true;
+    $('connTip').classList.remove('on');
+  }
+
+  /* ---------- 网络：SSE + 快照对齐 ---------- */
+  function closeStream() {
+    streamClosed = true;
+    if (es) { es.close(); es = null; }
+  }
+
+  function startStream() {
+    closeStream();
+    if (!token || !sid) return;
+    streamClosed = false;
+    errCount = 0;
+    var url = '/api/stream?sid=' + encodeURIComponent(sid) +
+      '&token=' + encodeURIComponent(token) + '&view=bigscreen';
+    es = new EventSource(url);
+
+    es.onopen = function () {
+      errCount = 0;
+      $('connTip').classList.remove('on');
+      poll();   // 重连成功：补一次全量快照，消除断线期间错过的变更
+    };
+
+    es.addEventListener('state', function (ev) {
+      try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
+    });
+
+    es.addEventListener('session_closed', function (ev) {
+      var d = {};
+      try { d = JSON.parse(ev.data) || {}; } catch (e) { /* 忽略坏帧 */ }
+      if (d.sid && d.sid !== sid) return;
+      onSessionClosed();
+    });
+
+    es.onerror = function () {
+      if (streamClosed) return;
+      if (es && es.readyState === EventSource.CONNECTING) $('connTip').classList.add('on');
+      // 连续失败后主动核对一次准入：密码会话过期/场次被关都会在这里暴露出来
+      if (++errCount >= 3) { errCount = 0; poll(); }
+    };
+  }
+
+  /** 拉一次全量快照（首连、重连、回到前台都走这里，保证与服务端版本对齐） */
+  function poll() {
+    if (!token || !sid) return;
+    fetch('/api/state?sid=' + encodeURIComponent(sid) +
+      '&token=' + encodeURIComponent(token) + '&view=bigscreen', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) { applyState(d); return; }
+        var code = d && d.code;
+        if (code === 'bigscreen_unauthorized' || code === 'session_need_unlock' ||
+            code === 'session_locked' || code === 'session_not_found' ||
+            code === 'session_closed') {
+          // 令牌失效或场次没了：先确认一次会话，再决定是回登录门还是换场
+          if (code === 'session_closed' || code === 'session_not_found') { onSessionClosed(); return; }
+          setToken('');
+          showGate(t('bs_expired'));
+          return;
+        }
+        $('connTip').classList.add('on');
+      })
+      .catch(function () { $('connTip').classList.add('on'); });
+  }
+
+  function onSessionClosed() {
+    closeStream();
+    resetBoard();
+    $('sessName').textContent = '—';
+    $('sessMeta').textContent = '';
+    $('empty').classList.add('on');
+    $('empty').textContent = t('bs_noSession');
+    refreshSessions().then(function () {
+      var next = pickSession('');
+      if (next && next !== sid) { switchTo(next); return; }
+      if (next) { startStream(); return; }
+      // 没有可看的场次：挂机重试，等工作人员开出新场次后自动接上
+      setTimeout(onSessionClosed, 5000);
+    });
+  }
+
+  /* ---------- 启动 ---------- */
+  function bootstrap() {
+    var q = {};
+    try {
+      var sp = new URLSearchParams(location.search);
+      q.token = sp.get('token') || '';
+      q.sid = sp.get('sid') || '';
+    } catch (e) { q.token = ''; q.sid = ''; }
+
+    // 从工作人员端跳转过来时会带 token：只存在本地，并立刻从地址栏抹掉（避免留在历史记录里）
+    if (q.token) {
+      setToken(q.token);
+      try { history.replaceState(null, '', location.pathname + (q.sid ? '?sid=' + encodeURIComponent(q.sid) : '')); } catch (e) { /* 忽略 */ }
+    }
+    if (q.sid) { sid = q.sid; save(SID_KEY, sid); }
+    else sid = load(SID_KEY);
+
+    token = token || load(TOKEN_KEY);
+
+    if (!token) { showGate(''); return; }
+
+    fetch('/api/staff-check?token=' + encodeURIComponent(token))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { setToken(''); showGate(t('bs_expired')); return; }
+        sessions = d.sessions || [];
+        renderSessions();
+        hideGate();
+        var next = pickSession(d.sid);
+        if (!next) { showNoSession(); return; }
+        if (next !== sid) { switchTo(next); return; }
+        startStream();
+        poll();
+      })
+      .catch(function () { showGate(t('errNetRetry')); });
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && token && sid) { startStream(); poll(); }
+  });
+
+  applyStaticI18n();
+  bootstrap();
+})();
+</script>
+</body>
+</html>

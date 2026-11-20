@@ -25,6 +25,7 @@
 | 场次口令 | 多场并行时，玩家选择 / 切换场次必须输入口令；验证后绑定 12 小时，刷新、重开页面、后续操作都固定在该场次，未再次验证不可切换 |
 | 身份档案 | 跨轮次累计每人完成的竞猜轮次数，用于区分「新玩家 / 老玩家」 |
 | 实时同步 | 所有状态变更经 SSE 广播到全部在线页面，含开奖瞬间；断线重连后全量对齐 |
+| 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），区分新加入 / 未选择 / 选项变更 / 已离开；与员工端共用同一套 SSE 广播与场次版本号，过期帧直接丢弃 |
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
 | 员工鉴权 | 密码登录 → 会话 token（12 小时），5 次失败锁定 30 秒 |
 | 玩家端口令 | 口令只以 scrypt 哈希存在于进程内存，不落库、不下发；验证通过后签发 HMAC 绑定令牌，按来源 IP 限频（5 次错误锁 30 秒） |
@@ -41,6 +42,7 @@
 ├── public/
 │   ├── index.html         # 玩家端（扫码 / 预测 / 等待 / 结果）
 │   ├── staff.html         # 工作人员端（登录 / 录入数字 / 结算表 / 开新轮）
+│   ├── bigscreen.html     # 实时大屏（按场次展示每位玩家的当前选项）
 │   ├── i18n.js            # 三语文案与切换逻辑（两端共用）
 │   └── html5-qrcode.min.js # 本地二维码解码库（无 CDN 依赖）
 ├── test/
@@ -55,7 +57,7 @@
 └── package.json           # 仅一个依赖：pg
 ```
 
-请求分流：`/api/stream` → SSE；`/api/*` → JSON 接口；其余 → `public/` 静态文件（`/staff` 重写到 `staff.html`，路径穿越被拦）。
+请求分流：`/api/stream` → SSE；`/api/*` → JSON 接口；其余 → `public/` 静态文件（`/staff` 重写到 `staff.html`，`/bigscreen` 重写到 `bigscreen.html`，路径穿越被拦）。
 
 ---
 
@@ -161,7 +163,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 需求 | 现状 | 影响 |
 |---|---|---|
 | 场次随时增开 / 关闭，不改配置、不重启 | ✅ 支持。员工端「新建 / 切换 / 关闭」，立即生效；关闭后该场玩家端退回场次选择，数据保留可回看 | 开店节奏不再被部署绑定 |
-| 跨场次汇总（当日总参与人数、积分对账） | ✅ 支持。每轮锁定即追加写入归档表（append-only），提供当日聚合接口与三种口径的 CSV 导出，见 6.5 | 人数与积分按 `session_id` 自动分账，无需手工汇总 |
+| 跨场次对账（当日参与人数、逐人猜测明细） | ✅ 支持。每轮锁定即追加写入归档表（append-only），提供当日聚合接口与 CSV 导出，见 6.5 | 按 `session_id` 分账；同一会员号跨场记录逐行导出，不合并不算分 |
 
 
 ### 6.2 一轮的完整生命周期
@@ -194,21 +196,22 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 - 「本轮概况」实时显示已扫码人数与已提交人数
 - 玩家列表用颜色区分新玩家（蓝）与老玩家（金）
 - 每个状态变更都会实时刷新，无需手动刷新页面
-- 页面底部的「当日结算」卡片显示当天的场次数、已归档轮次数、去重参与人数，并可一键导出对账 CSV
+- 页面底部的「当日对账」卡片显示当天的场次数、已归档轮次数、去重参与人数，并可一键导出对账 CSV
 
-### 6.5 结算归档与当日对账
+### 6.5 竞猜归档与当日对账
 
 **归档（append-only）。** 工作人员点「确认并锁定」的那一刻，本轮完整明细会写进归档表：
 
 - 表头 `round_archive`：`session_id` + 场次名称/序号快照 + 轮次号 + 开奖数字 + 开奖单双 + 锁定时间 + 归档时间 + 扫码人数 + 提交人数
-- 明细 `round_archive_entry`：会员号 + 预测单双 + 预测数字 + 是否提交 + 单双命中 + 数字命中 + 登记/提交时间
+- 明细 `round_archive_entry`：会员号 + 预测单双 + 预测数字 + 是否提交 + 单双匹配 + 数字匹配 + 登记/提交时间
+- **不记录任何积分、得分、总分字段**：归档只回答「谁猜了什么、实际开了什么、猜中没猜中」，折算积分是门店侧的事
 - 归档与运行态快照在**同一个事务**里写：要么「已锁定且有归档」，要么整体回滚，不存在只锁不归档的中间态
 - 归档表由数据库触发器守着，`UPDATE` / `DELETE` / `TRUNCATE` 一律抛错；`reset` 只清 `round` / `player`，碰不到归档
 - 唯一键是 `(session_id, round)`：重复保存同一轮不会产生第二份记录，也不会改写既有行
 
 **「当日」的口径。** 一律按 `locked_at`（锁定时间）落在运营时区的自然日内计算，与建档时间、提交时间无关。时区由 `ARCHIVE_TZ_OFFSET_MIN` 决定（默认 `480`，即 UTC+8），按固定偏移切分而不是 IANA 时区库——港/深/澳没有夏令时，日界永远稳定。
 
-**当日聚合**（员工端卡片 / `GET /api/archive/summary`）：
+**当日聚合**（员工端卡片 / `GET /api/archive/summary`）——只统计参与规模，不统计结果：
 
 | 指标 | 定义 |
 |---|---|
@@ -217,15 +220,30 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 参与人数 | 明细里 `member_id` 的去重计数（跨场次去重，同一个会员号在 A 场和 B 场只算 1 人） |
 | 扫码/提交人次 | `sum(player_count)` / `sum(submitted_count)`，按人次而非按人 |
 
-**对账导出**（`GET /api/archive/export.csv`，`level` 三选一）：
+**对账导出**（`GET /api/archive/export.csv`，`level` 二选一）：
 
 | level | 粒度 | 用途 |
 |---|---|---|
-| `detail`（默认） | 一人一轮一行 | 积分结算的原始凭据；未提交的玩家也在表内，命中列写「未提交」 |
-| `member` | 一人一行（跨场次合并） | 直接按人结分：参与场次数、轮次数、有效预测轮次数、命中轮次、命中率 |
+| `detail`（默认） | 一人一轮一行，跨场次全量 | 逐人核对：猜测内容、实际开奖、两项是否匹配；同一会员号在不同场次各占一行，**不合并、不算总分、不算命中率** |
 | `round` | 一轮一行（含 0 人轮次） | 核对「当天到底开了几轮」，与 `detail` 的行数不必然相等 |
 
 CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3。
+
+### 6.6 实时大屏（`/bigscreen`）
+
+**给现场看的第二块屏**：同一场次里每个人的当前选项（单/双 + 数字），玩家一提交就变。
+
+- 入口：员工端场次条上的「大屏」按钮（带当前场次与员工令牌新开窗口），或直接访问 `/bigscreen`（需输入员工密码）；支持 `?sid=&token=` 预置，页面会把令牌从地址栏抹掉后只存本地，刷新不用重输
+- 数据来源：`GET /api/stream?sid=&token=&view=bigscreen`，与员工端、玩家端**同一条 SSE 通道、同一个场次版本号**，没有额外轮询
+- 权限：`view=bigscreen` 会下发开奖前的选项，因此**只认有效员工 token**，否则 403 `bigscreen_unauthorized`；玩家端仍走 `publicPlayers()`，开奖前拿不到任何人的选项
+- 状态识别：
+  - **加入** — 出现新的 `pid`（本轮首次扫码）
+  - **未选择** — 已扫码但 `oddEven` 为空，虚线卡片
+  - **选项变更** — 同一 `pid` 的选项由空变有（或数值变化），卡片闪一次金色描边；业务上「一次提交不可修改」不变，所以这只覆盖「未选择 → 已选择」
+  - **离开** — 玩家页面 `pagehide` 时用 `sendBeacon` 上报 `POST /api/leave`，卡片变灰并保留其已提交的选项；重新扫码或 SSE 重连即撤销标记（刷新、回前台都算回来）
+  - **新一轮** — `round` 变化时整屏清空，只留一条「新一轮」动态，不会把上一轮的人当成离场逐个播报
+- 一致性：客户端按 `version` 丢弃过期帧（重连补发、并发请求乱序都不会把旧选项盖回去），按 `pid` 增量 diff，DOM 上不会出现重复卡片；卡片数量少时自动放大、多了自动收窄
+- 离开标记随 `player.left_at` 落库，服务重启后仍然有效；`reset` 清空本轮玩家时一并消失
 
 ---
 
@@ -243,15 +261,16 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/session-select` | token | `{token, sid}` | 切换该员工会话的归属场次，不影响其他员工 |
 | POST | `/api/session-close` | token | `{token, sid}` | 关闭场次：通知并断开该场玩家端、从玩家端列表移除、数据保留 |
 | POST | `/api/session-unlock` | — | `{sid, password}` 或 `{sid, auto:true}` | 玩家端选择 / 切换场次：校验口令，成功返回绑定令牌 `ut`（12 小时）。`auto` 仅在唯一进行中场次时可用 |
-| GET | `/api/state` | — | `?sid=&ut=&pid=` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me` |
+| GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项），需员工 token |
 | POST | `/api/scan` | — | `{sid, ut, content}` | 登记身份，返回 `{ok, pid, sid, status:"known"}` |
 | POST | `/api/predict` | — | `{sid, ut, pid, oddEven, number}` | `oddEven` 为 `"单"` / `"双"`，`number` 为 1–8 |
+| POST | `/api/leave` | — | `{sid, ut, pid}` | 玩家离开现场：只给大屏打 `left` 标记，不删登记与预测；幂等，重复上报不递增版本号 |
 | POST | `/api/confirm` | token | `{token, sid, number}` | 锁定该场次本轮数字（唯一写入点，写后不可改） |
 | POST | `/api/reset` | token | `{token, sid}` | 该场次轮次 +1 并清空本场本轮玩家（已锁定轮次必须先归档成功，否则返回 409 `archive_write_failed`） |
 | GET | `/api/archive/summary` | token | `?token=&date=` 或 `?token=&from=&to=` | 当日聚合：场次数、轮次数、去重参与人数、分场次明细。默认今天 |
 | GET | `/api/archive/export.csv` | token | `?token=&level=detail\|member\|round&date=或 from=&to=&sid=` | 对账 CSV（`text/csv`，带 BOM，列头固定见 7.3） |
 | POST | `/api/archive-sync` | token | `{token}` | 把内存里所有「已锁定但未落归档」的轮次重新写一遍（幂等，正常情况用不到） |
-| GET | `/api/stream` | — | `?sid=&ut=&pid=` | SSE 长连接，只推送该场次的事件 |
+| GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
 **玩家侧准入（`/api/state`、`/api/scan`、`/api/predict`、`/api/stream` 共用一套判定）**：
 
@@ -293,6 +312,8 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 开奖后 `players[]` 才会补上每人的 `oddEven` 与 `number`；开奖前任何人都拿不到他人的预测内容。`version` 与 `round`、`players` 一样都是**该场次**的，各场次互不影响。
 
+`view=bigscreen`（需员工 token）换成大屏视图，差别只有两处：多了 `"view": "bigscreen"`，且 `players[]` 在开奖前就带 `oddEven` / `number`（外加 `left`、`leftAt`、`registeredAt`、`submittedAt`）。
+
 ### 7.1 SSE 事件
 
 - 连接按 `session_id` 分组，广播只发往该场次的连接，不同场次的客户端互不可见
@@ -327,29 +348,23 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `session_name_too_long` | 400 | 场次名超过 24 字（返回 `maxLen`） |
 | `session_locked` | 403 | 本机已绑定其他场次，请求的 `sid` 与绑定不符（返回 `boundSid`） |
 | `session_need_unlock` | 403 | 未带有效绑定令牌，且当前有 ≥2 个进行中场次，需先过口令 |
+| `bigscreen_unauthorized` | 403 | 请求了 `view=bigscreen` 却未带有效员工 token（大屏会看到未开奖的选项，不对玩家开放） |
 | `unlock_password_required` | 403 | `auto` 绑定仅在唯一进行中场次时允许，多场时被拒 |
 | `player_wrong_password` | 401 | 场次口令错误（超过 5 次后返回 429，见下） |
 | `player_too_many_attempts` | 429 | 该来源 IP 连续 5 次口令错误，锁 30 秒（返回 `retryAfter`） |
 | `bad_date_range` | 400 | `date` / `from` / `to` 不是合法的 `YYYY-MM-DD`（含 `2026-02-31` 这类不存在的日期） |
-| `bad_level` | 400 | `level` 不是 `detail` / `member` / `round` |
+| `bad_level` | 400 | `level` 不是 `detail` / `round`（`member` 已移除：不做跨场汇总） |
 | `archive_write_failed` | 409 | 本轮尚未成功写入归档，拒绝「开始新一轮」（避免抹掉唯一留痕） |
 
 ### 7.3 对账 CSV 列头契约
 
 **列的顺序就是契约**：下游按位置或列名解析，改列名 / 插列等于破坏对账。要加字段只能追加到末尾。
 
-`level=detail`（一人一轮一行，积分结算原始凭据）：
+`level=detail`（一人一轮一行，跨场次全量；按会员号 → 锁定时间排序，同一人的跨场记录连续）：
 
 ```
 场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,
 会员号,预测单双,预测数字,是否提交,单双命中,数字命中,登记时间,提交时间
-```
-
-`level=member`（一人一行，跨场次合并）：
-
-```
-会员号,参与场次数,参与轮次数,有效预测轮次数,单双命中轮次,数字命中轮次,
-单双命中率,数字命中率,首次参与时间,末次参与时间
 ```
 
 `level=round`（一轮一行，含 0 人轮次）：
@@ -362,7 +377,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 - 时间列一律为运营时区（`ARCHIVE_TZ_OFFSET_MIN`）下的 `YYYY-MM-DD HH:mm:ss`，**不带偏移后缀**，跨时区使用请自行按列头口径换算
 - `是否提交`：`是` / `否`；`单双命中` / `数字命中`：`命中` / `未中` / `未提交`
-- 命中率按有效预测轮次计算，保留 1 位小数；无有效预测时留空而不是 `0.0%`
+- **没有任何积分、总分、命中率列**：明细只给逐次匹配结果，跨场不做合并；某会员当天参与几场就看他有几行
 - 含逗号 / 引号 / 换行的字段会被标准 CSV 双引号包裹（会员号来自二维码原文，可能出现任意字符）
 - ⚠️ 会员号是**原文**，不做公式转义：若某个 ID 以 `=` `+` `-` `@` 开头，Excel 可能当成公式。对账请按文本导入，或用 `level=round` 做人数交叉校验
 
@@ -381,8 +396,6 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   "entries": 5,
   "submitted": 4,
   "predictedMembers": 3,
-  "oddEvenHits": 2,
-  "numberHits": 1,
   "bySession": [
     { "sessionId": "main", "sessionName": "第 1 场", "sessionSeq": 1,
       "rounds": 2, "entries": 4, "submitted": 3, "members": 3,
@@ -401,9 +414,9 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 |---|---|---|
 | `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间 | 按 `session_id` upsert |
 | `round` | 每个场次一行：当前轮次、开奖数字、锁定时间（**主键 `session_id`**） | 按场次先 `DELETE` 再 `INSERT` |
-| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**） | 按场次整场重写，不触碰其他场次 |
+| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为大屏用的离开标记，null = 在场 | 按场次整场重写，不触碰其他场次 |
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | `UPSERT`，不删除，跨轮保留 |
-| `round_archive` | 结算归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
+| `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
 | `round_archive_entry` | 归档明细：一人一行，会员号 + 预测内容 + 命中结果（主键 `(archive_id, member_id)`） | 只 `INSERT`，重复行跳过 |
 | `app_config` | 键值配置，目前只存 `player_bind_secret`（绑定令牌签名密钥） | 首次启动生成后 upsert |
 
@@ -544,7 +557,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 以下是已确认需要做、但当前代码尚未实现的事项（原第 1 项「结算归档与跨场次汇总对账」已完成，见 6.5 / 7.3 / 第 8 节）：
 
-1. **积分换算规则**：归档与 CSV 只给「命中口径」（命中轮次、命中率），没有把命中折算成积分的规则表。要真正自动结算，需要先定：单双命中记几分、数字命中记几分、未提交是否计参与分、跨场次是否合并结算。
+1. **积分折算（门店侧，不在本系统）**：系统只留逐次匹配结果，归档与 CSV 都不含积分字段，也不做跨场合并。若门店要按积分发放，由门店侧按 `level=detail` 自行折算（单双与数字各记几分、未提交是否计参与分、跨场是否合并，均由门店规则决定）。
 2. **测试补齐与 CI 接入**：`test/` 已覆盖归档与对账主流程、故障路径、聚合口径与 append-only（见 10.1），仍缺：并发提交、SSE 广播与重连对齐、身份跨轮累计的独立用例；`.github/workflows/` 目前只有部署，尚未在部署前跑 `npm test`。
 3. **玩家 ID 入库前加密**：引入密钥对（公钥加密 / 私钥解密，密钥经环境变量注入），对 `player.id`、`identity.id`、归档表的 `member_id` 及展示用的会员号做加密处理，并配套密钥轮换方案；同时评估现有数据的迁移与清理。注意这与对账口径有冲突，需先定“对账按什么标识”再落加密（归档表是 append-only，加密后历史行不会回写，只能在导出层解密）。
 4. **数据库 TLS 配置化**：在 `Pool` 配置里支持显式 ssl 选项，使 `PG_*` 分支也能启用 TLS，不依赖连接串参数。

@@ -144,7 +144,7 @@
   .p.is-vet .nm { color:#ffe9b0; }
   .p.is-vet .tag-n { background:rgba(255,212,94,.22); color:var(--gold); }
 
-  /* 每日结算（归档对账） */
+  /* 每日对账（归档口径，不含积分） */
   .date-input {
     font-size:13px; padding:6px 9px; border-radius:10px; font-family:inherit;
     border:1px solid var(--card-border); background:rgba(0,0,0,.3); color:var(--text);
@@ -194,6 +194,14 @@
 
   .hidden { display:none !important; }
   .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
+
+  /* 窄屏：场次条让按钮另起一行均分，避免场次名被四个按钮挤成竖排 */
+  @media (max-width: 480px) {
+    .sess-bar { flex-wrap:wrap; }
+    .sess-bar .sb-left { flex:1 1 100%; }
+    .sess-bar .sb-actions { flex:1 1 100%; }
+    .sess-bar .sb-actions .sb-btn { flex:1; text-align:center; padding:8px 6px; }
+  }
 
   /* 语言切换 —— 固定到容器最左上角 */
   .lang-switch {
@@ -296,6 +304,7 @@
       <div class="sb-name"><span id="sbName">—</span><span class="sb-badge hidden" id="sbBadge"></span></div>
     </div>
     <div class="sb-actions">
+      <button class="sb-btn" id="btnBigscreen" data-i18n="bs_open">大屏</button>
       <button class="sb-btn" id="btnSwitchSession" data-i18n="sessionSwitch">切换</button>
       <button class="sb-btn primary" id="btnCreateSession" data-i18n="sessionCreate">新建</button>
       <button class="sb-btn danger" id="btnCloseSession" data-i18n="sessionClose">关闭</button>
@@ -351,11 +360,12 @@
   </div>
   </div><!-- /sessionBody -->
 
-  <!-- 当日结算（归档口径）：只读聚合 + 对账 CSV 导出。
-       不依赖当前场次，也不受 reset 影响 —— 数据源是 append-only 的归档表。 -->
+  <!-- 当日对账（归档口径）：只读聚合 + CSV 导出。
+       不依赖当前场次，也不受 reset 影响 —— 数据源是 append-only 的归档表。
+       导出只含「猜测内容 / 实际结果 / 是否匹配」，系统不记积分、不做汇总。 -->
   <div class="card" id="archiveCard">
     <h2 class="row-head">
-      <span data-i18n="archiveTitle">当日结算</span>
+      <span data-i18n="archiveTitle">当日对账</span>
       <span class="row-head-meta"><input type="date" id="archiveDate" class="date-input"></span>
     </h2>
     <div class="stats">
@@ -364,9 +374,8 @@
       <div class="st"><div class="n" id="arMembers">0</div><div class="t" data-i18n="archiveMembers">参与人数</div></div>
     </div>
     <div class="arch-actions">
-      <button class="sb-btn" type="button" data-level="detail" data-i18n="exportDetail">明细 CSV</button>
-      <button class="sb-btn" type="button" data-level="member" data-i18n="exportMember">会员汇总 CSV</button>
-      <button class="sb-btn" type="button" data-level="round" data-i18n="exportRound">轮次 CSV</button>
+      <button class="sb-btn" type="button" data-level="detail" data-i18n="exportDetail">竞猜明细 CSV</button>
+      <button class="sb-btn" type="button" data-level="round" data-i18n="exportRound">轮次核对 CSV</button>
     </div>
     <div class="arch-hint" data-i18n="archiveTip">按锁定时间统计 · 归档只增不改</div>
   </div>
@@ -683,14 +692,21 @@
     }).catch(function () { toast(t('errNetRetry'), 'err'); });
   }
 
-  $('btnSwitchSession').addEventListener('click', openSessPanel);
-  $('btnCreateSession').addEventListener('click', openSessPanel);
+  $('btnSwitchSession').addEventListener('click', openSessPanel);  $('btnCreateSession').addEventListener('click', openSessPanel);
   $('btnCreateFromEmpty').addEventListener('click', openSessPanel);
   $('sessAddBtn').addEventListener('click', doCreateSession);
   $('sessPanelClose').addEventListener('click', closeSessPanel);
   $('sessMask').addEventListener('click', function (e) { if (e.target === $('sessMask')) closeSessPanel(); });
   $('sessNameInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doCreateSession(); });
   $('btnCloseSession').addEventListener('click', doCloseSession);
+
+  /* 实时大屏：新窗口打开并带上当前场次 + 员工令牌（大屏侧会立刻把令牌从地址栏抹掉、只留本地） */
+  $('btnBigscreen').addEventListener('click', function () {
+    if (!token) { showLogin(); return; }
+    var q = '/bigscreen?token=' + encodeURIComponent(token) +
+      (sid ? '&sid=' + encodeURIComponent(sid) : '');
+    window.open(q, '_blank', 'noopener');
+  });
 
   /* ---------- 渲染 ---------- */
   function render() {
@@ -756,7 +772,7 @@
     }).join('');
   }
 
-  /* ---------- 当日结算（归档口径，与当前场次无关） ---------- */
+  /* ---------- 当日对账（归档口径，与当前场次无关） ---------- */
   var archiveDate = '';   // '' = 由服务端按运营时区决定「今天」
 
   /** 拉取当日聚合：场次数 / 已归档轮次数 / 按会员号去重的参与人数。 */
@@ -778,7 +794,7 @@
       .catch(function () {});
   }
 
-  /** 下载对账 CSV。列头由服务端固定，level 决定口径：detail / member / round。 */
+  /** 下载对账 CSV。列头由服务端固定，level 决定口径：detail（逐人逐轮）/ round（轮次核对）。 */
   function exportArchive(level) {
     if (!token) return;
     var q = '/api/archive/export.csv?level=' + encodeURIComponent(level) +

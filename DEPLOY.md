@@ -17,7 +17,7 @@ Postgresql：
 | `round` | 每个场次一行：轮次与开奖数字 | `locked_at` |
 | `player` | 每轮玩家登记与预测（主键 `(session_id, id)`） | `registered_at`、`submitted_at` |
 | `identity` | 场次内跨轮次玩家身份档案（主键 `(session_id, id)`） | `created_at`、`updated_at` |
-| `round_archive` | 结算归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
+| `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
 | `round_archive_entry` | 归档明细：一人一行，含会员号、预测内容、命中结果（主键 `(archive_id, member_id)`） | `registered_at`、`submitted_at`、`archived_at` |
 | `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥） | `updated_at` |
 

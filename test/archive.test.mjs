@@ -22,17 +22,12 @@ const CSV_DETAIL_HEADER = [
   '锁定时间', '归档时间', '会员号', '预测单双', '预测数字', '是否提交',
   '单双命中', '数字命中', '登记时间', '提交时间'
 ];
-const CSV_MEMBER_HEADER = [
-  '会员号', '参与场次数', '参与轮次数', '有效预测轮次数',
-  '单双命中轮次', '数字命中轮次', '单双命中率', '数字命中率',
-  '首次参与时间', '末次参与时间'
-];
 const CSV_ROUND_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
   '锁定时间', '归档时间', '扫码人数', '提交人数'
 ];
 
-describe('结算归档与对账', () => {
+describe('竞猜归档与对账', () => {
   let srv;
   let api;
   let token;
@@ -150,8 +145,9 @@ describe('结算归档与对账', () => {
     assert.equal(r.body.submitted, 2, '提交 2 人');
     assert.equal(r.body.members, 3, '按会员号去重');
     assert.equal(r.body.predictedMembers, 2);
-    assert.equal(r.body.oddEvenHits, 1, '开奖 4（双）只有 M002 命中单双');
-    assert.equal(r.body.numberHits, 0, '没人猜 4');
+    // 聚合里不出现任何「命中总数 / 积分」口径：匹配情况只保留在逐条明细里
+    assert.equal(r.body.oddEvenHits, undefined, '不汇总命中数');
+    assert.equal(r.body.numberHits, undefined, '不汇总命中数');
 
     assert.equal(r.body.bySession.length, 1);
     const one = r.body.bySession[0];
@@ -194,21 +190,17 @@ describe('结算归档与对账', () => {
     assert.equal(m3['数字命中'], '未提交');
   });
 
-  it('会员 CSV：一人一行、命中率与无预测留空', async () => {
-    const r = await exportCsv(api, token, { level: 'member' });
-    const table = toTable(r.text);
-    assert.deepEqual(table.header, CSV_MEMBER_HEADER);
-    assert.equal(table.rows.length, 3);
+  it('只有逐人逐轮明细与轮次核对两种口径，会员汇总口径已移除', async () => {
+    const legacy = await exportCsv(api, token, { level: 'member' });
+    assert.equal(legacy.status, 400);
+    assert.equal(legacy.body.code, 'bad_level');
+    assert.deepEqual(legacy.body.levels, ['detail', 'round'], '只保留不聚合的口径');
 
-    const m2 = rowOf(table, 'M002');
-    assert.equal(m2['有效预测轮次数'], '1');
-    assert.equal(m2['单双命中率'], '100.0%');
-    assert.equal(m2['数字命中率'], '0.0%');
-
-    const m3 = rowOf(table, 'M,003');
-    assert.equal(m3['参与轮次数'], '1');
-    assert.equal(m3['有效预测轮次数'], '0');
-    assert.equal(m3['单双命中率'], '', '没预测过不能显示 0%');
+    for (const level of ['detail', 'round']) {
+      const t = toTable((await exportCsv(api, token, { level })).text);
+      const joined = t.header.join(',');
+      assert.ok(!/积分|总分|得分|命中率/.test(joined), level + ' 不能出现积分/汇总列');
+    }
   });
 
   it('轮次 CSV：一轮一行，含扫码/提交人数', async () => {
@@ -305,15 +297,16 @@ describe('结算归档与对账', () => {
     assert.equal(onlyB.rows.length, 1);
     assert.equal(onlyB.records[0]['场次ID'], sidB);
 
-    // 跨场合并后按人结分：M001 两轮有效预测、各命中一项
-    const member = toTable((await exportCsv(api, token, { level: 'member' })).text);
-    const m1 = rowOf(member, 'M001');
-    assert.equal(m1['参与场次数'], '2');
-    assert.equal(m1['参与轮次数'], '2');
-    assert.equal(m1['有效预测轮次数'], '2');
-    assert.equal(m1['单双命中轮次'], '1');
-    assert.equal(m1['数字命中轮次'], '1');
-    assert.equal(m1['单双命中率'], '50.0%');
+    // 跨场导出：同一会员号在 A、B 两场各一行，逐行给出猜测与实际结果，不做合并
+    const all = toTable((await exportCsv(api, token, { level: 'detail' })).text);
+    const m1Rows = all.records.filter((x) => x['会员号'] === 'M001');
+    assert.equal(m1Rows.length, 2, '两个场次各一行，不合并成一行');
+    assert.deepEqual(m1Rows.map((x) => x['场次ID']), [sidA, sidB], '按会员聚合展示时同一人的记录连续且按时间排列');
+    assert.deepEqual(m1Rows.map((x) => x['开奖数字']), ['4', '2']);
+    assert.deepEqual(m1Rows.map((x) => x['单双命中']), ['未中', '命中']);
+    assert.deepEqual(m1Rows.map((x) => x['数字命中']), ['未中', '命中']);
+    assert.equal(m1Rows[1]['预测单双'], '双');
+    assert.equal(m1Rows[1]['预测数字'], '2');
   });
 
   it('日期与区间筛选：非法日期返回 400，空区间导出只有表头', async () => {

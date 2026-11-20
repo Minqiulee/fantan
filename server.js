@@ -180,7 +180,7 @@ function resolveSession(sid) {
 
 /* ---------------- SSE（Server-Sent Events）---------------- */
 
-/** SSE 分组：session_id -> Set<client>。client = { res, pid, lastVersion }。
+/** SSE 分组：session_id -> Set<client>。client = { res, pid, view, lastVersion }。
  *  广播只在组内进行，不同场次的客户端互不可见。 */
 const sseClients = new Map();
 
@@ -208,7 +208,7 @@ function broadcastSessionState(session) {
   if (!group) return;
   for (const c of group) {
     if (c.res.writableEnded) { group.delete(c); continue; }
-    if (!sseSend(c.res, 'state', buildStatePayload(session, c.pid), session.version)) {
+    if (!sseSend(c.res, 'state', buildStatePayload(session, c.pid, c.view), session.version)) {
       group.delete(c);
       continue;
     }
@@ -238,17 +238,20 @@ function dropSessionClients(session) {
 }
 
 /** 构建状态负载。pid 传空表示不带 me 字段（工作人员端视角）。
+ *  view='bigscreen' 时改用大屏视图（开奖前也带出每个人的选项），其余一律玩家视图。
  *  负载只包含本场次的数据。 */
-function buildStatePayload(session, pid) {
+function buildStatePayload(session, pid, view) {
+  const bigscreen = view === 'bigscreen';
   const me = pid ? session.players[pid] : null;
   return {
     ok: true,
+    ...(bigscreen ? { view: 'bigscreen' } : {}),
     session: { id: session.id, name: session.name, status: session.status },
     version: session.version,
     round: session.round,
     locked: session.number != null,
     number: session.number != null ? session.number : undefined,
-    players: publicPlayers(session),
+    players: bigscreen ? bigscreenPlayers(session) : publicPlayers(session),
     me: me ? { id: me.id, oddEven: me.oddEven, number: me.number } : null
   };
 }
@@ -465,6 +468,36 @@ function publicPlayers(session) {
     });
 }
 
+/**
+ * 大屏视图：本场次本轮每个玩家的「当前选项」。
+ *
+ * 与 publicPlayers 的唯一区别是开奖前也返回 oddEven / number —— 大屏是现场内部展示，
+ * 需要让所有人看到谁选了单、谁选了双。因此这个视图**只允许员工授权通道**获取
+ * （见 handleStream / /api/state 里的 view=bigscreen 校验），玩家端仍走 publicPlayers。
+ *
+ * 字段语义：
+ *   submitted 已选择（oddEven 非空）；left 已离开现场；leftAt 离开时间；
+ *   isVeteran 本场次老玩家；registeredAt / submittedAt 用于大屏排序与「刚刚提交」高亮。
+ */
+function bigscreenPlayers(session) {
+  return Object.values(session.players)
+    .sort((a, b) => a.registeredAt - b.registeredAt)
+    .map((p) => {
+      const completed = (session.identities[p.id] || {}).completedRounds || 0;
+      return {
+        id: p.id,
+        oddEven: p.oddEven,
+        number: p.number,
+        submitted: p.oddEven != null,
+        left: p.leftAt != null,
+        leftAt: p.leftAt != null ? p.leftAt : null,
+        isVeteran: completed >= 1,
+        registeredAt: p.registeredAt,
+        submittedAt: p.submittedAt
+      };
+    });
+}
+
 /** 校验场次名称：去空白、限长；返回 null 表示合法。 */
 function normalizeSessionName(raw, fallback) {
   let name = String(raw == null ? '' : raw).trim();
@@ -544,23 +577,13 @@ function buildCsv(header, rows) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-/** 命中率：分母为有效预测轮次；无预测时留空而不是 0%。 */
-function hitRate(hits, predicted) {
-  if (!predicted) return '';
-  return ((hits / predicted) * 100).toFixed(1) + '%';
-}
-
 /* 列头常量：**顺序即契约**，下游脚本按位置/列名解析，改动等于破坏对账。
- * 需要新字段时只追加到末尾，不要插在中间、不要改名。 */
+ * 需要新字段时只追加到末尾，不要插在中间、不要改名。
+ * 两套列头都不含积分/总分字段——系统只记录每次猜测与实际开奖是否匹配。 */
 const CSV_DETAIL_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
   '锁定时间', '归档时间', '会员号', '预测单双', '预测数字', '是否提交',
   '单双命中', '数字命中', '登记时间', '提交时间'
-];
-const CSV_MEMBER_HEADER = [
-  '会员号', '参与场次数', '参与轮次数', '有效预测轮次数',
-  '单双命中轮次', '数字命中轮次', '单双命中率', '数字命中率',
-  '首次参与时间', '末次参与时间'
 ];
 const CSV_ROUND_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
@@ -770,7 +793,8 @@ async function handleApi(req, res, url) {
   }
 
   /* 状态查询：某场次的全量状态快照。SSE 客户端在重连/回到前台时调用，用于对齐断线期间错过的变更。
-   * 必须通过场次准入判定：玩家带绑定令牌（以令牌场次为准），员工带 staff token。 */
+   * 必须通过场次准入判定：玩家带绑定令牌（以令牌场次为准），员工带 staff token。
+   * view=bigscreen 是大屏专用视图（开奖前也含每个人的选项），只对员工 token 开放。 */
   if (req.method === 'GET' && url.pathname === '/api/state') {
     const ctx = playerSessionContext(
       url.searchParams.get('sid') || '',
@@ -778,7 +802,11 @@ async function handleApi(req, res, url) {
       url.searchParams.get('token') || ''
     );
     if (rejectPlayerSession(res, ctx)) return;
-    return json(res, 200, buildStatePayload(ctx.session, pid));
+    const view = url.searchParams.get('view') === 'bigscreen' ? 'bigscreen' : '';
+    if (view === 'bigscreen' && !ctx.staff) {
+      return json(res, 403, { ok: false, code: 'bigscreen_unauthorized' });
+    }
+    return json(res, 200, buildStatePayload(ctx.session, pid, view));
   }
 
   /* 二维码识别：内容直接作为玩家唯一 ID（不做 hash）。重复扫码幂等返回同一玩家。
@@ -801,6 +829,7 @@ async function handleApi(req, res, url) {
     if (existing) {
       const idt = session.identities[id];
       if (idt) { idt.lastSeenRound = session.round; }
+      existing.leftAt = null; // 重新扫码 = 回到现场，大屏上的「已离开」标记立刻撤销
       commitSession(session);
       return json(res, 200, { ok: true, pid: id, sid: session.id, status: 'known' });
     }
@@ -822,6 +851,24 @@ async function handleApi(req, res, url) {
     };
     commitSession(session);
     return json(res, 200, { ok: true, pid: id, sid: session.id, status: 'known' });
+  }
+
+  /* 玩家离开现场：只打标记、不删数据。
+   *  - 由玩家端在 pagehide 时用 sendBeacon 上报，因此必须是幂等且极轻的写
+   *  - 不删玩家：已提交的预测仍要参与本轮开奖与归档，大屏只是把它标成「已离开」
+   *  - 重复上报（正在离开 / 已离开）不再递增版本号，避免无意义的全量广播
+   *  - 回来有三个信号都会清掉标记：重新扫码、玩家端 SSE 重连（刷新/回前台） */
+  if (req.method === 'POST' && url.pathname === '/api/leave') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+    const ctx = playerSessionContext(String(body.sid || ''), String(body.ut || ''));
+    if (rejectPlayerSession(res, ctx)) return;
+    const session = ctx.session;
+    const p = session.players[String(body.pid || '')];
+    if (!p || p.leftAt != null) return json(res, 200, { ok: true, ignored: true });
+    p.leftAt = Date.now();
+    commitSession(session);
+    return json(res, 200, { ok: true });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/predict') {
@@ -938,9 +985,9 @@ async function handleApi(req, res, url) {
     });
   }
 
-  /* 对账导出（CSV，列头顺序固定，见 CSV_*_HEADER）。
-   *   ?level=detail（默认）一人一轮一行 —— 积分结算原始凭据
-   *   ?level=member  一人一行（跨场次合并）—— 直接按人结分
+  /* 对账导出（CSV，列头顺序固定，见 CSV_*_HEADER）。只导出「谁猜了什么、实际开了什么、匹配与否」，
+   * 不计算积分、不做跨场汇总——同一会员号在不同场次的记录就是一列行，逐行核对。
+   *   ?level=detail（默认）一人一轮一行，跨场次全量 —— 逐人核对猜测与实际结果
    *   ?level=round   一轮一行（含 0 人轮次）—— 核对当天开了几轮
    * 可选 ?sid= 只导某一场，?date= / ?from=&to= 指定区间（默认今天）。 */
   if (req.method === 'GET' && url.pathname === '/api/archive/export.csv') {
@@ -950,29 +997,14 @@ async function handleApi(req, res, url) {
     if (!range) return json(res, 400, { ok: false, code: 'bad_date_range' });
 
     const level = String(url.searchParams.get('level') || 'detail').toLowerCase();
-    if (!['detail', 'member', 'round'].includes(level)) {
-      return json(res, 400, { ok: false, code: 'bad_level' });
+    if (!['detail', 'round'].includes(level)) {
+      return json(res, 400, { ok: false, code: 'bad_level', levels: ['detail', 'round'] });
     }
     const sidFilter = String(url.searchParams.get('sid') || '');
 
     let header;
     let rows;
-    if (level === 'member') {
-      header = CSV_MEMBER_HEADER;
-      const data = await db.archiveMemberRows(range.from, range.to, sidFilter);
-      rows = data.map((r) => [
-        r.member_id,
-        r.sessions,
-        r.rounds,
-        r.predicted,
-        r.odd_even_hits,
-        r.number_hits,
-        hitRate(r.odd_even_hits, r.predicted),
-        hitRate(r.number_hits, r.predicted),
-        fmtArchiveTime(r.first_locked_at),
-        fmtArchiveTime(r.last_locked_at)
-      ]);
-    } else if (level === 'round') {
+    if (level === 'round') {
       header = CSV_ROUND_HEADER;
       const data = await db.archiveRoundRows(range.from, range.to, sidFilter);
       rows = data.map((r) => [
@@ -1043,6 +1075,7 @@ const SSE_HEARTBEAT_MS = 15000; // 心跳间隔：15 秒发一次，防止代理
 /** 建立 SSE 长连接。必须带 ?sid=<场次ID>；可再带 ?pid=<玩家ID> 以在每次状态事件中附带该玩家视角。
  *  - 连接后立即下发一次本场次的全量状态（事件名 state）
  *  - 期间本场次的状态变更由 commitSession() 广播；其他场次的变更不会推给这条连接
+ *  - ?view=bigscreen 走大屏视图（含每个人的当前选项），必须带有效员工 token
  *  - 客户端断开（含网络中断）后 EventSource 自动重连；重连请求会带
  *    Last-Event-ID 头，服务端据此判断客户端是否已错过事件，错过则补发全量状态
  *  - 每 15 秒发一次心跳（事件名 ping）维持连接
@@ -1051,15 +1084,30 @@ const SSE_HEARTBEAT_MS = 15000; // 心跳间隔：15 秒发一次，防止代理
 function handleStream(req, res, url) {
   const sid = url.searchParams.get('sid') || '';
   const pid = url.searchParams.get('pid') || '';
+  const view = url.searchParams.get('view') === 'bigscreen' ? 'bigscreen' : '';
   const ctx = playerSessionContext(sid, url.searchParams.get('ut') || '', url.searchParams.get('token') || '');
 
   if (ctx.err) {
     // SSE 无法读 JSON 错误体，用状态码 + JSON 体让客户端判断
     return json(res, ctx.err.status, { ok: false, code: ctx.err.code, sessions: ctx.err.sessions || null });
   }
+  // 大屏视图会暴露未开奖的选项，只认员工会话
+  if (view === 'bigscreen' && !ctx.staff) {
+    return json(res, 403, { ok: false, code: 'bigscreen_unauthorized' });
+  }
   const session = ctx.session;
   if (session.status !== 'open') {
     return json(res, 409, { ok: false, code: 'session_closed' });
+  }
+
+  // 玩家端重连即视为「回到现场」：撤销 pagehide 时上报的离开标记。
+  // 浏览器刷新 / 从后台切回 / 切场次回来都会走到这里，所以离开状态不会黏住。
+  if (!view && pid) {
+    const self = session.players[pid];
+    if (self && self.leftAt != null) {
+      self.leftAt = null;
+      commitSession(session);
+    }
   }
 
   res.writeHead(200, {
@@ -1071,9 +1119,9 @@ function handleStream(req, res, url) {
   res.write('retry: 2000\n\n'); // 告知客户端断线后 2 秒重连
 
   // 首条事件：本场次的全量状态（复用场次版本号作为事件 id）
-  sseSend(res, 'state', buildStatePayload(session, pid), session.version);
+  sseSend(res, 'state', buildStatePayload(session, pid, view), session.version);
 
-  const client = { res, pid, lastVersion: session.version };
+  const client = { res, pid, view, lastVersion: session.version };
   let group = sseClients.get(session.id);
   if (!group) { group = new Set(); sseClients.set(session.id, group); }
   group.add(client);
@@ -1112,6 +1160,7 @@ function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/' || rel === '') rel = '/index.html';          // 玩家端入口
   if (rel === '/staff') rel = '/staff.html';                    // 工作人员端入口（别名）
+  if (rel === '/bigscreen') rel = '/bigscreen.html';            // 实时大屏入口（别名）
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
   fs.readFile(file, (err, buf) => {
@@ -1186,6 +1235,7 @@ async function start() {
   }).listen(PORT, '0.0.0.0', () => {
     console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后选场次并扫自己的二维码)');
     console.log('工作人员端入口: http://localhost:' + PORT + '/staff');
+    console.log('实时大屏入口: http://localhost:' + PORT + '/bigscreen （需员工密码，按场次实时展示每位玩家的当前选项）');
     console.log('多场次: 单实例最多并行 ' + MAX_SESSIONS + ' 场，员工端可运行时新建/切换/关闭');
     console.log('玩家端口令: ≥2 场并行时，选择/切换场次需输入口令（验证后绑定 12 小时，期间不可切换）');
     console.log('数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS，端口与库名可用 PG_PORT/PG_DB 覆盖）');

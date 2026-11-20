@@ -1307,6 +1307,20 @@
     if (window.I18N.setLocale(next)) applyI18n();
   });
 
+  /* ---------- 离开上报：只给大屏打「已离开」标记，不动本轮登记与预测 ----------
+     用 sendBeacon 保证页面关闭时也能发出；刷新/回前台时 SSE 重连会自动撤销该标记。 */
+  window.addEventListener('pagehide', function (e) {
+    if (e.persisted) return;              // 进 bfcache 不算离开（返回时页面原样恢复）
+    if (!sid || !pid) return;
+    var body = JSON.stringify({ sid: sid, ut: ut, pid: pid });
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon('/api/leave', body)) return;
+    } catch (err) { /* 走下面的兜底 */ }
+    try {
+      fetch('/api/leave', { method: 'POST', body: body, keepalive: true });
+    } catch (err) { /* 忽略 */ }
+  });
+
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) {
       // 回到前台：重连 SSE 并立即对齐一次
