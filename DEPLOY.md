@@ -4,8 +4,9 @@
 
 Postgresql：
 
-- 数据层：`db.js`（连接池 + 幂等建表 + 读写函数）
-- 服务入口：`server.js` 启动时 `initDb()` 建表、`loadSessions()` 恢复各场次状态
+- 数据层：`db.js`（连接池 + 幂等建表 + 快照读写 + 会话/限频）
+- 会话存储：`store.js`（读缓存 + 乐观锁提交 + 变更事件）、`pubsub.js`（跨实例 LISTEN/NOTIFY）
+- 服务入口：`server.js` 启动时 `initDb()` 建表，`bootstrapSessions()` 自举首场次，`backfillArchives()` 补写未归档轮次；状态本体始终在库里，进程内只有可丢弃的读缓存
 - 连接串：由 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`
   （`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）
 
@@ -20,6 +21,9 @@ Postgresql：
 | `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
 | `round_archive_entry` | 归档明细：一人一行，含会员号、预测内容、命中结果（主键 `(archive_id, member_id)`） | `registered_at`、`submitted_at`、`archived_at` |
 | `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥） | `updated_at` |
+| `session_state` | 每个场次一行：状态版本号（多实例乐观锁凭据） | `updated_at` |
+| `staff_session` | 员工登录会话（token、归属场次、过期时间），跨实例共享 | `expires_at`、`created_at` |
+| `auth_throttle` | 登录 / 场次口令错误计数（`staff` 或 `player:<ip>`），跨实例共享 | `updated_at` |
 
 **归档表是 append-only 的**：`round_archive` / `round_archive_entry` 由触发器 `archive_block_mutation()` 守着，任何 `UPDATE` / `DELETE` / `TRUNCATE` 都会抛异常。要修正历史只能追加新记录（或走导出层处理），不要直连数据库改这两张表。`reset` 只清 `round` / `player`，不影响归档。
 
@@ -30,6 +34,30 @@ Postgresql：
 表会在应用首次启动时自动创建（幂等，`CREATE TABLE IF NOT EXISTS`），无需手动建表。
 
 > 应用**不做结构迁移**：不会补列、不会改主键、不会回填历史行。升级前请确认目标库的表结构已与本文件一致（例如从早期的单场次结构升级，需要在库里先手工完成 `session_id` 列与复合主键的 DDL）；结构不一致时启动会在第一条读写上报错。
+
+## 多实例部署
+
+同一套 `DATABASE_URL` 可以起多个实例（多副本 / 多机 / 滚动发布），无需粘性会话：
+
+- **状态**：全部在 Postgres，进程内只有 TTL 5 秒的读缓存；任一实例写入后其他实例读到的都是最新值
+- **广播**：每次提交后 `pg_notify('oddeven_session_events', {type,sid,version})`；其他实例收到后回库读最新快照，再推给本机的 SSE 连接
+- **并发写**：`session_state.version` 乐观锁（CAS 失败即重读重试，最多 6 次）；新建场次的「上限 + 序号」用 `pg_advisory_xact_lock` 串行化
+- **会话**：`staff_session` 落库，A 实例签发的 token 在 B 实例有效，重启也不掉登录；限频计数同样落库，是全集群口径
+
+部署检查项：
+
+1. **数据库连接不能是事务级池**：`LISTEN` 要求连接长期归属同一会话。pgbouncer 用 `pool_mode=session`，或让应用直连（Fly Postgres 直连即可）。
+2. **每个实例一条额外连接**：`pubsub.js` 会自建一条长连接用于 `LISTEN` + `pg_notify`，容量规划时按「实例数 + 池大小」算 `max_connections`。
+3. **可选 `INSTANCE_ID`**：日志与通知里用于区分实例（默认 `i-<pid>-<随机>`），排查跨实例问题（如「谁提交了这一版」）时有用。
+4. **滚动发布**：新旧版本可短暂共存；若改了通知通道名或 payload 结构，属于协议变更，需一次性全量升级。
+5. **验证**：任意实例 `curl /api/sessions` 都应返回同一份场次列表；`fly logs` 里能看到 `[pubsub] 已订阅 oddeven_session_events（实例 xxx）`。
+
+```bash
+# 起第二个实例（本地验证多实例行为）
+DATABASE_URL=postgres://... PORT=3001 INSTANCE_ID=node-b node server.js
+DATABASE_URL=postgres://... PORT=3002 INSTANCE_ID=node-c node server.js
+# 在 3001 登录拿 token，拿去 3002 调 /api/staff-check 必须 ok:true
+```
 
 ## Fly.io 部署步骤
 

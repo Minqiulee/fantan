@@ -10,6 +10,9 @@
  *   - identity      场次内的跨轮次身份档案，主键 (session_id, id)
  *   - round_archive 竞猜归档表头（一轮一行，append-only）
  *   - round_archive_entry 归档明细（一人一行，append-only）
+ *   - session_state 场次状态版本号（多实例乐观锁）
+ *   - staff_session 员工登录会话（跨实例共享）
+ *   - auth_throttle 登录/口令错误限频（跨实例共享）
  *
  * 所有业务表首列都是 session_id：任何读写都必须带 session_id，
  * 场次之间不共享任何可变状态（连「老玩家」累计轮次也按场次独立计数）。
@@ -18,6 +21,14 @@
  *
  * 表结构由 initDb() 建出，CREATE ... IF NOT EXISTS 保证可反复执行；
  * 本层不做任何结构迁移，以当前定义为准（旧结构库需在升级前自行完成 DDL）。
+ *
+ * 多实例前提（本轮改造）：
+ *   - 运行态不在任何进程内存里，Postgres 是唯一事实来源；实例只保留可随时丢弃的读缓存
+ *   - session_state.version 是每个场次的乐观锁凭据，所有状态提交都是
+ *     「先 CAS 抢版本，再写快照」，抢不到就重新读取重试（写覆盖不可能发生）
+ *   - 员工登录会话（staff_session）与登录限频（auth_throttle）同样落库，
+ *     因此任一实例签发的 token 在任意实例都有效
+ *   - 跨实例通知不经过数据库表，走 LISTEN/NOTIFY（见 pubsub.js），本层只负责写与读
  *
  * 连接串来源（优先级从高到低）：
  *   1. PG_HOST / PG_USER / PG_PASS —— Fly.io secrets，拼成
@@ -213,6 +224,42 @@ async function initDb() {
     );
   `);
 
+  // 场次状态版本号：多实例乐观锁的唯一凭据。
+  // 每次状态提交都在事务里先做 `UPDATE ... WHERE version = $expected`，
+  // 更新不到行就说明别的实例抢先提交过，调用方重新读取后重试（见 store.js）。
+  // 只加不覆盖，版本号单调递增，可直接用作 SSE 的 Last-Event-ID。
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS session_state (
+      session_id TEXT PRIMARY KEY,          -- 所属场次
+      version    BIGINT NOT NULL DEFAULT 1,  -- 状态版本号（每次提交 +1）
+      updated_at BIGINT NOT NULL             -- 最近提交时间戳（毫秒）
+    );
+  `);
+
+  // 员工登录会话：跨实例共享，任一实例签发的 token 在任意实例都有效。
+  // 过期行按需清理（读取时顺手删），不做定时任务。
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS staff_session (
+      token      TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL DEFAULT '',  -- 该员工当前归属的场次
+      expires_at BIGINT NOT NULL,           -- 过期时间戳（毫秒）
+      created_at BIGINT NOT NULL
+    );
+  `);
+  await p.query('CREATE INDEX IF NOT EXISTS idx_staff_session_expires ON staff_session(expires_at);');
+
+  // 登录 / 场次口令的错误计数：key = 'staff' 或 'player:<ip>'。
+  // 放库里是为了让「连续 5 次错误锁 30 秒」在多实例下仍然是全局口径，
+  // 而不是每个实例各算一遍（那样等于把阈值放大 N 倍）。
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS auth_throttle (
+      key          TEXT PRIMARY KEY,
+      fails        INTEGER NOT NULL DEFAULT 0,
+      locked_until BIGINT  NOT NULL DEFAULT 0,
+      updated_at   BIGINT  NOT NULL
+    );
+  `);
+
   await p.query('CREATE INDEX IF NOT EXISTS idx_player_session ON player(session_id, registered_at);');
   await p.query('CREATE INDEX IF NOT EXISTS idx_round_session ON round(session_id);');
   await p.query('CREATE INDEX IF NOT EXISTS idx_session_status ON game_session(status, seq);');
@@ -220,70 +267,124 @@ async function initDb() {
   await initArchiveTables(p);
 }
 
-/** 行 → 场次对象（players / identities 由调用方填充） */
+/* ============================================================
+ * 运行态读写：快照 + 乐观锁
+ * ------------------------------------------------------------
+ * 每个场次的运行态由四张表拼成一份快照（round / player / identity / session_state）。
+ * 读：一条 SQL 用 LATERAL 聚合出整场快照，避免多次查询之间出现撕裂读。
+ * 写：同一事务内先 CAS 版本号，再写快照；版本被别的实例改过就整体回滚，
+ *     由调用方重新读取后重试（store.js 的重试循环）。
+ * 归档：在同一个事务里用 SAVEPOINT 包住，归档写失败只回滚归档这一段，
+ *     锁定本身照常提交 —— 这与改造前「锁定生效但如实返回 archived:false」的语义一致。
+ * ============================================================ */
+
+/** 快照行 → 场次对象（与改造前内存里的结构完全一致，前端/SSE 负载不用改）。 */
 function rowToSession(r) {
-  return {
+  const s = {
     id: r.session_id,
     name: r.name,
     status: r.status,
     seq: Number(r.seq),
     createdAt: Number(r.created_at),
     closedAt: r.closed_at != null ? Number(r.closed_at) : null,
-    round: 1,
-    number: null,
-    lockedAt: null,
+    round: r.round_no != null ? Number(r.round_no) : 1,
+    number: r.round_number != null ? Number(r.round_number) : null,
+    lockedAt: r.locked_at != null ? Number(r.locked_at) : null,
     players: {},
-    identities: {}
+    identities: {},
+    version: r.version != null ? Number(r.version) : 1
   };
+  for (const p of r.players || []) {
+    s.players[p.id] = {
+      id: p.id,
+      oddEven: p.odd_even,
+      number: p.number != null ? Number(p.number) : null,
+      registeredAt: Number(p.registered_at),
+      submittedAt: p.submitted_at != null ? Number(p.submitted_at) : null,
+      leftAt: p.left_at != null ? Number(p.left_at) : null
+    };
+  }
+  for (const it of r.identities || []) {
+    s.identities[it.id] = {
+      lastSeenRound: Number(it.last_seen_round),
+      completedRounds: Number(it.completed_rounds)
+    };
+  }
+  return s;
+}
+
+const SNAPSHOT_SQL = `
+  SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
+         st.version AS version,
+         r.round AS round_no, r.number AS round_number, r.locked_at,
+         pl.j AS players, idt.j AS identities
+    FROM game_session gs
+    LEFT JOIN session_state st ON st.session_id = gs.session_id
+    LEFT JOIN round r ON r.session_id = gs.session_id
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object(
+               'id', p.id, 'odd_even', p.odd_even, 'number', p.number,
+               'registered_at', p.registered_at, 'submitted_at', p.submitted_at,
+               'left_at', p.left_at) ORDER BY p.registered_at ASC) AS j
+        FROM player p WHERE p.session_id = gs.session_id
+    ) pl ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object(
+               'id', i.id, 'last_seen_round', i.last_seen_round,
+               'completed_rounds', i.completed_rounds)) AS j
+        FROM identity i WHERE i.session_id = gs.session_id
+    ) idt ON TRUE
+`;
+
+/**
+ * 读取单个场次的完整快照（含版本号）。不存在返回 null。
+ * 老库里没有 session_state 行时顺手补一行（版本 1），保证后续 CAS 有行可更。
+ */
+async function loadSessionSnapshot(sessionId) {
+  const p = getPool();
+  const r = await p.query(SNAPSHOT_SQL + ' WHERE gs.session_id = $1', [sessionId]);
+  if (!r.rows.length) return null;
+  const row = r.rows[0];
+  if (row.version == null) {
+    await p.query(
+      `INSERT INTO session_state (session_id, version, updated_at) VALUES ($1, 1, $2)
+       ON CONFLICT (session_id) DO NOTHING`,
+      [sessionId, Date.now()]
+    );
+  }
+  return rowToSession(row);
 }
 
 /**
- * 从数据库加载全部场次及其状态。
- * 返回 [{ id, name, status, seq, createdAt, closedAt, round, number, lockedAt, players, identities }]。
+ * 场次摘要列表（不含 players 明细）—— 列表页、准入判定、上限计数都用它。
+ * 返回 [{ id, name, status, seq, createdAt, closedAt, round, number, lockedAt, playerCount, version }]。
  */
-async function loadSessions() {
+async function listSessionSummaries() {
   const p = getPool();
-
-  const sRes = await p.query('SELECT * FROM game_session ORDER BY seq ASC, created_at ASC');
-  const list = sRes.rows.map(rowToSession);
-  const byId = {};
-  for (const s of list) byId[s.id] = s;
-
-  const roundRes = await p.query('SELECT session_id, round, number, locked_at FROM round');
-  for (const r of roundRes.rows) {
-    const s = byId[r.session_id];
-    if (!s) continue; // 没有对应场次的孤儿行：忽略，不参与运行态
-    s.round = Number(r.round);
-    s.number = r.number != null ? Number(r.number) : null;
-    s.lockedAt = r.locked_at != null ? Number(r.locked_at) : null;
-  }
-
-  const playersRes = await p.query('SELECT * FROM player ORDER BY session_id, registered_at ASC');
-  for (const r of playersRes.rows) {
-    const s = byId[r.session_id];
-    if (!s) continue;
-    s.players[r.id] = {
-      id: r.id,
-      oddEven: r.odd_even,
-      number: r.number != null ? Number(r.number) : null,
-      registeredAt: Number(r.registered_at),
-      submittedAt: r.submitted_at != null ? Number(r.submitted_at) : null,
-      leftAt: r.left_at != null ? Number(r.left_at) : null
-    };
-  }
-
-  const idtRes = await p.query('SELECT * FROM identity');
-  for (const r of idtRes.rows) {
-    const s = byId[r.session_id];
-    if (!s) continue;
-    s.identities[r.id] = {
-      lastSeenRound: Number(r.last_seen_round),
-      completedRounds: Number(r.completed_rounds)
-    };
-  }
-
-  return list;
+  const r = await p.query(`
+    SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
+           st.version, r.round AS round_no, r.number AS round_number, r.locked_at,
+           (SELECT count(*)::int FROM player p WHERE p.session_id = gs.session_id) AS player_count
+      FROM game_session gs
+      LEFT JOIN session_state st ON st.session_id = gs.session_id
+      LEFT JOIN round r ON r.session_id = gs.session_id
+     ORDER BY gs.seq ASC, gs.created_at ASC
+  `);
+  return r.rows.map((x) => ({
+    id: x.session_id,
+    name: x.name,
+    status: x.status,
+    seq: Number(x.seq),
+    createdAt: Number(x.created_at),
+    closedAt: x.closed_at != null ? Number(x.closed_at) : null,
+    round: x.round_no != null ? Number(x.round_no) : 1,
+    number: x.round_number != null ? Number(x.round_number) : null,
+    lockedAt: x.locked_at != null ? Number(x.locked_at) : null,
+    playerCount: Number(x.player_count || 0),
+    version: x.version != null ? Number(x.version) : 1
+  }));
 }
+
 
 /**
  * 把「当前这一轮」追加进归档（调用方事务内）。
@@ -371,104 +472,74 @@ async function archiveRoundInTx(client, session) {
   return archiveId;
 }
 
+/** 全局锁键：新建场次时用它把「数上限 + 分配序号 + 插入」串成临界区（跨实例）。 */
+const SESSION_CREATE_LOCK = 882014501;
+
+/** 把快照里的玩家数组摊成批量写入用的并列数组。 */
+function playerColumns(players) {
+  const ids = [];
+  const rounds = [];
+  const oes = [];
+  const nums = [];
+  const regs = [];
+  const subs = [];
+  const lefts = [];
+  for (const pl of players) {
+    ids.push(pl.id);
+    rounds.push(pl.round);
+    oes.push(pl.oddEven);
+    nums.push(pl.number);
+    regs.push(pl.registeredAt);
+    subs.push(pl.submittedAt != null ? pl.submittedAt : null);
+    lefts.push(pl.leftAt != null ? pl.leftAt : null);
+  }
+  return { ids, rounds, oes, nums, regs, subs, lefts };
+}
+
 /**
- * 单个场次的全量落库（事务内）。
- * 只删写本场次的行：round 删除后重插一行，player 本场次清空后重写，
- * identity 按 (session_id, id) upsert（历史累计不能删）。
+ * 提交一个场次的完整快照 —— 多实例下唯一的状态写入口。
  *
- * 归档也在同一个事务里写：锁定后的轮次一旦落库就同时有归档记录，
- * 不会出现「运行态已开奖、归档表缺这一轮」的中间态。
+ * 事务结构（顺序即正确性）：
+ *   1. CAS：`UPDATE session_state SET version = version + 1 WHERE session_id = $1 AND version = $2`
+ *      更新不到行 → 说明别的实例在这期间提交过，整体回滚并返回 { conflict: true }
+ *      （此后的快照写入根本不会执行，所以不存在「盖掉别人写入」的可能）
+ *   2. 抢到版本后再写 game_session / round / player / identity
+ *   3. 归档用 SAVEPOINT 隔开：归档失败只回滚归档这一段，锁定照常提交，
+ *      调用方据此返回 archived:false（可稍后由 archive-sync 补齐）
+ *
+ * 玩家行改成「批量 unnest upsert + 删掉不在快照里的行」：
+ * 一场 N 人从 N 条 SQL 降到 2 条，锁持有时间不再随人数线性增长（多实例下这点很关键）。
+ *
+ * 返回：
+ *   成功 { ok: true, version, archived, archiveError }
+ *   冲突 { ok: false, conflict: true }
  */
-async function doSaveSession(session) {
+async function commitSnapshot(sessionId, expectedVersion, session) {
   const p = getPool();
   const client = await p.connect();
   const now = Date.now();
+  let archived = false;
+  let archiveError = null;
+
   try {
     await client.query('BEGIN');
 
-    await client.query('DELETE FROM round WHERE session_id = $1', [session.id]);
+    // 1. 抢版本（乐观锁）。先抢再写，避免半场数据落库。
+    const cas = await client.query(
+      `UPDATE session_state
+          SET version = version + 1, updated_at = $2
+        WHERE session_id = $1 AND version = $3
+        RETURNING version`,
+      [sessionId, now, expectedVersion]
+    );
+    if (!cas.rowCount) {
+      await client.query('ROLLBACK');
+      return { ok: false, conflict: true };
+    }
+    const version = Number(cas.rows[0].version);
+
+    // 2. 元信息 + 轮次 + 玩家 + 身份档案
     await client.query(
-      'INSERT INTO round (session_id, round, number, locked_at) VALUES ($1,$2,$3,$4)',
-      [session.id, session.round, session.number, session.lockedAt]
-    );
-
-    await client.query('DELETE FROM player WHERE session_id = $1', [session.id]);
-    for (const id of Object.keys(session.players)) {
-      const pl = session.players[id];
-      await client.query(
-        `INSERT INTO player
-           (session_id, id, round, odd_even, number, registered_at, submitted_at, left_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (session_id, id) DO UPDATE SET
-           round=EXCLUDED.round, odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
-           submitted_at=EXCLUDED.submitted_at, left_at=EXCLUDED.left_at`,
-        [session.id, pl.id, session.round, pl.oddEven, pl.number, pl.registeredAt, pl.submittedAt,
-          pl.leftAt != null ? pl.leftAt : null]
-      );
-    }
-
-    for (const id of Object.keys(session.identities)) {
-      const it = session.identities[id];
-      await client.query(
-        `INSERT INTO identity
-           (session_id, id, last_seen_round, completed_rounds, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (session_id, id) DO UPDATE SET
-           last_seen_round=EXCLUDED.last_seen_round,
-           completed_rounds=EXCLUDED.completed_rounds,
-           updated_at=EXCLUDED.updated_at`,
-        [session.id, id, it.lastSeenRound, it.completedRounds, now, now]
-      );
-    }
-
-    // 归档：本轮已锁定则追加写；未锁定直接跳过。
-    // 注意这里只有 INSERT，没有任何 DELETE / UPDATE —— reset 走的也是这条路径，
-    // 它清的是 round / player，碰不到归档表。
-    await archiveRoundInTx(client, session);
-
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * 写队列：同一场次的写入串行化，避免事务重叠导致旧快照覆盖新快照；
- * 不同场次之间互不阻塞。写入本身仍是「快照重写」，所以快照取的是执行时的实时状态。
- */
-const writeChains = new Map();
-
-/**
- * 入队并返回 { ok, error }。不向外抛异常（历史调用点都是 fire-and-forget），
- * 但把结果交给调用方 —— 锁定这一轮必须等到「写入 + 归档」真正成功才算结算完成。
- */
-function enqueueWrite(sessionId, fn) {
-  const prev = writeChains.get(sessionId) || Promise.resolve();
-  const next = prev
-    .then(fn, fn)
-    .then(
-      () => ({ ok: true }),
-      (e) => {
-        console.error('[db] 保存场次失败(' + sessionId + '):', e.message);
-        return { ok: false, error: e.message };
-      }
-    );
-  writeChains.set(sessionId, next);
-  return next;
-}
-
-/** 持久化某个场次的全量状态（round / player / identity / 已锁定轮次的归档）。 */
-function saveSession(session) {
-  return enqueueWrite(session.id, () => doSaveSession(session));
-}
-
-/** 持久化场次元信息（名称、状态、关闭时间）。新建与关闭时调用。 */
-function saveSessionMeta(session) {
-  return enqueueWrite(session.id, async () => {
-    await getPool().query(
       `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
        VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (session_id) DO UPDATE SET
@@ -476,8 +547,161 @@ function saveSessionMeta(session) {
          closed_at=EXCLUDED.closed_at`,
       [session.id, session.name, session.status, session.seq, session.createdAt, session.closedAt]
     );
-  });
+
+    await client.query(
+      `INSERT INTO round (session_id, round, number, locked_at) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (session_id) DO UPDATE SET
+         round=EXCLUDED.round, number=EXCLUDED.number, locked_at=EXCLUDED.locked_at`,
+      [session.id, session.round, session.number, session.lockedAt]
+    );
+
+    const players = Object.values(session.players).map((pl) => ({
+      ...pl,
+      round: session.round
+    }));
+    const cols = playerColumns(players);
+
+    // 快照里没有的玩家行要删掉（reset 清场就靠这一句）
+    await client.query(
+      'DELETE FROM player WHERE session_id = $1 AND NOT (id = ANY($2::text[]))',
+      [session.id, cols.ids]
+    );
+
+    if (players.length) {
+      await client.query(
+        `INSERT INTO player
+           (session_id, id, round, odd_even, number, registered_at, submitted_at, left_at)
+         SELECT $1, u.id, u.round, u.odd_even, u.number, u.registered_at, u.submitted_at, u.left_at
+           FROM unnest($2::text[], $3::int[], $4::text[], $5::int[],
+                       $6::bigint[], $7::bigint[], $8::bigint[])
+             AS u(id, round, odd_even, number, registered_at, submitted_at, left_at)
+         ON CONFLICT (session_id, id) DO UPDATE SET
+           round=EXCLUDED.round, odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
+           submitted_at=EXCLUDED.submitted_at, left_at=EXCLUDED.left_at`,
+        [session.id, cols.ids, cols.rounds, cols.oes, cols.nums, cols.regs, cols.subs, cols.lefts]
+      );
+    }
+
+    const identities = Object.entries(session.identities).map(([id, it]) => ({
+      id,
+      lastSeenRound: it.lastSeenRound,
+      completedRounds: it.completedRounds || 0
+    }));
+    if (identities.length) {
+      await client.query(
+        `INSERT INTO identity
+           (session_id, id, last_seen_round, completed_rounds, created_at, updated_at)
+         SELECT $1, u.id, u.last_seen_round, u.completed_rounds, $2, $2
+           FROM unnest($3::text[], $4::int[], $5::int[]) AS u(id, last_seen_round, completed_rounds)
+         ON CONFLICT (session_id, id) DO UPDATE SET
+           last_seen_round=EXCLUDED.last_seen_round,
+           completed_rounds=EXCLUDED.completed_rounds,
+           updated_at=EXCLUDED.updated_at`,
+        [session.id, now, identities.map((x) => x.id),
+          identities.map((x) => x.lastSeenRound), identities.map((x) => x.completedRounds)]
+      );
+    }
+
+    // 3. 归档：只有 INSERT，没有 DELETE / UPDATE。
+    // reset 走的是同一条路径，它清的是 round / player，碰不到归档表。
+    if (session.number != null && session.lockedAt != null) {
+      await client.query('SAVEPOINT archive_write');
+      try {
+        await archiveRoundInTx(client, session);
+        archived = true;
+      } catch (e) {
+        // 归档写不进去（表缺失 / 磁盘满 / 触发器异常）不能让锁定白做：
+        // 回滚归档这一段，锁定继续提交，由调用方返回 archived:false。
+        await client.query('ROLLBACK TO SAVEPOINT archive_write');
+        archiveError = e.message;
+        console.error('[db] 归档写入失败 sid=' + session.id + ' round=' + session.round + ': ' + e.message);
+      }
+    }
+
+    await client.query('COMMIT');
+    return { ok: true, version, archived, archiveError };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* 连接已断 */ }
+    return { ok: false, error: e.message };
+  } finally {
+    client.release();
+  }
 }
+
+/**
+ * 新建场次：跨实例临界区。
+ * 在全局 advisory lock 内「数进行中场次 → 分配序号 → 插入」，因此两台实例同时点「新建」
+ * 也不会突破上限、不会撞序号。名称留空时按序号自动命名（与员工端默认名一致）。
+ *
+ * 返回 { ok:true, session } / { ok:false, code:'session_limit', open } / { ok:false, error }
+ */
+async function createSessionRow({ id, name, maxOpen }) {
+  const p = getPool();
+  const client = await p.connect();
+  const now = Date.now();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [SESSION_CREATE_LOCK]);
+
+    const cnt = await client.query("SELECT count(*)::int AS n FROM game_session WHERE status = 'open'");
+    const open = cnt.rows[0].n;
+    if (open >= maxOpen) {
+      await client.query('ROLLBACK');
+      return { ok: false, code: 'session_limit', open };
+    }
+
+    const seqRes = await client.query('SELECT coalesce(max(seq), 0)::int AS s FROM game_session');
+    const seq = Number(seqRes.rows[0].s) + 1;
+    const finalName = name || '第 ' + seq + ' 场';
+
+    await client.query(
+      `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
+       VALUES ($1,$2,'open',$3,$4,NULL)`,
+      [id, finalName, seq, now]
+    );
+    await client.query(
+      'INSERT INTO session_state (session_id, version, updated_at) VALUES ($1, 1, $2)',
+      [id, now]
+    );
+    await client.query(
+      'INSERT INTO round (session_id, round, number, locked_at) VALUES ($1, 1, NULL, NULL)',
+      [id]
+    );
+
+    await client.query('COMMIT');
+    return { ok: true, session: { id, name: finalName, seq } };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    return { ok: false, error: e.message, code: e.code };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 单独把某个场次「已锁定但未归档」的轮次补写进归档表（幂等）。
+ * 不碰运行态、不递增版本号：它只追加归档，供 archive-sync / 启动补齐 / reset 前兜底使用。
+ * 冲突由唯一索引 + ON CONFLICT DO NOTHING 吸收，多实例同时补写不会产生第二份。
+ */
+async function archiveSnapshot(session) {
+  if (session.number == null || session.lockedAt == null) return { ok: true, skipped: true };
+  const p = getPool();
+  const client = await p.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['archive:' + session.id]);
+    await archiveRoundInTx(client, session);
+    await client.query('COMMIT');
+    return { ok: true };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    console.error('[db] 归档补写失败 sid=' + session.id + ' round=' + session.round + ': ' + e.message);
+    return { ok: false, error: e.message };
+  } finally {
+    client.release();
+  }
+}
+
 
 /** 读取一个配置项，不存在返回 null。 */
 async function getConfig(key) {
@@ -495,6 +719,115 @@ async function setConfig(key, value) {
     [key, value, Date.now()]
   );
 }
+
+/* ============================================================
+ * 员工登录会话（跨实例共享）
+ * ------------------------------------------------------------
+ * 改造前 token 存在进程内存里，多实例部署时「A 登录、B 校验」必然 401。
+ * 现在会话落库：任一实例签发的 token 在任意实例都有效，实例重启也不掉登录。
+ * 过期行不做定时清理，读取时顺手删（带 expires_at 索引，代价极低）。
+ * ============================================================ */
+
+async function createStaffSession(token, sessionId, expiresAt) {
+  await getPool().query(
+    `INSERT INTO staff_session (token, session_id, expires_at, created_at)
+     VALUES ($1, $2, $3, $4)`,
+    [token, sessionId || '', expiresAt, Date.now()]
+  );
+}
+
+/** 取有效会话（过期视为不存在，并顺手清掉）。 */
+async function getStaffSession(token) {
+  if (!token) return null;
+  const p = getPool();
+  const now = Date.now();
+  const r = await p.query(
+    'SELECT token, session_id, expires_at FROM staff_session WHERE token = $1 AND expires_at > $2',
+    [token, now]
+  );
+  if (!r.rows.length) {
+    p.query('DELETE FROM staff_session WHERE token = $1 AND expires_at <= $2', [token, now])
+      .catch(() => { /* 清理失败不影响判定 */ });
+    return null;
+  }
+  return {
+    token: r.rows[0].token,
+    sessionId: r.rows[0].session_id || '',
+    expiresAt: Number(r.rows[0].expires_at)
+  };
+}
+
+async function deleteStaffSession(token) {
+  if (!token) return;
+  await getPool().query('DELETE FROM staff_session WHERE token = $1', [token]);
+}
+
+/** 改绑某个员工会话的场次归属（切换场次 / 场次关闭后回退）。 */
+async function setStaffSessionScope(token, sessionId) {
+  await getPool().query(
+    'UPDATE staff_session SET session_id = $2 WHERE token = $1',
+    [token, sessionId || '']
+  );
+}
+
+/** 场次关闭后，把所有归属该场次的员工会话统一改绑到下一个场次。 */
+async function rebindStaffSessions(fromSid, toSid) {
+  await getPool().query(
+    'UPDATE staff_session SET session_id = $2 WHERE session_id = $1',
+    [fromSid, toSid || '']
+  );
+}
+
+/* ============================================================
+ * 登录 / 口令错误限频（跨实例共享）
+ * ------------------------------------------------------------
+ * key = 'staff' 或 'player:<ip>'。放在库里是为了让「连续 N 次错锁 M 秒」
+ * 在多实例下仍是全局口径，而不是每台实例各算一遍（那等于把阈值放大 N 倍）。
+ * ============================================================ */
+
+/** 当前计数与锁定状态。 */
+async function throttleState(key) {
+  const r = await getPool().query(
+    'SELECT fails, locked_until FROM auth_throttle WHERE key = $1',
+    [key]
+  );
+  if (!r.rows.length) return { fails: 0, lockedUntil: 0 };
+  return { fails: Number(r.rows[0].fails), lockedUntil: Number(r.rows[0].locked_until) };
+}
+
+/**
+ * 记一次失败。达到阈值即锁定，计数归零（与改造前的语义一致：
+ * 锁定期间不再继续累加，锁满一轮重新从 0 开始数）。
+ * 返回记完之后的状态。
+ */
+async function throttleFail(key, maxFails, lockMs) {
+  const now = Date.now();
+  const r = await getPool().query(
+    `INSERT INTO auth_throttle (key, fails, locked_until, updated_at)
+     VALUES ($1, 1, 0, $2)
+     ON CONFLICT (key) DO UPDATE SET
+       fails = CASE
+                 WHEN auth_throttle.locked_until > $2 THEN auth_throttle.fails
+                 WHEN auth_throttle.fails + 1 >= $3 THEN 0
+                 ELSE auth_throttle.fails + 1
+               END,
+       locked_until = CASE
+                 WHEN auth_throttle.locked_until > $2 THEN auth_throttle.locked_until
+                 WHEN auth_throttle.fails + 1 >= $3 THEN $2 + $4
+                 ELSE 0
+               END,
+       updated_at = $2
+     RETURNING fails, locked_until`,
+    [key, now, maxFails, lockMs]
+  );
+  return { fails: Number(r.rows[0].fails), lockedUntil: Number(r.rows[0].locked_until) };
+}
+
+/** 清空某个 key 的失败计数（验证通过时调用）。 */
+async function throttleClear(key) {
+  await getPool().query('DELETE FROM auth_throttle WHERE key = $1', [key]);
+}
+
 
 /* ============================================================
  * 归档读取：当日聚合 + 对账导出
@@ -627,13 +960,31 @@ async function archiveEntryRows(from, to, sessionId) {
 
 module.exports = {
   initDb,
-  loadSessions,
-  saveSession,
-  saveSessionMeta,
-  getConfig,
-  setConfig,
   getPool,
   lineOfNumber,
+
+  // 运行态（快照 + 乐观锁）
+  loadSessionSnapshot,
+  listSessionSummaries,
+  commitSnapshot,
+  createSessionRow,
+  archiveSnapshot,
+
+  // 员工会话 / 限频
+  createStaffSession,
+  getStaffSession,
+  deleteStaffSession,
+  setStaffSessionScope,
+  rebindStaffSessions,
+  throttleState,
+  throttleFail,
+  throttleClear,
+
+  // 配置
+  getConfig,
+  setConfig,
+
+  // 归档读取
   archiveExists,
   archiveSummary,
   archiveRoundRows,

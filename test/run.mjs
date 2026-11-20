@@ -17,7 +17,7 @@ import { Client } from 'pg';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTAINER = 'oddeven-test-pg';
-const FILES = ['test/archive.test.mjs', 'test/archive-failure.test.mjs'];
+const FILES = ['test/archive.test.mjs', 'test/archive-failure.test.mjs', 'test/multi-instance.test.mjs'];
 
 let url = process.env.TEST_DATABASE_URL || '';
 let containerStarted = false;
