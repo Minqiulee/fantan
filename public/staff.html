@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>羊多一點 · 工作人員端</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
 <script src="i18n.js"></script>
 <style>
   :root {
@@ -49,6 +50,27 @@
     backdrop-filter: blur(8px);
   }
   .card h2 { font-size:18px; margin-bottom:14px; }
+  .card h2.row-head { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  .card h2 .row-head-meta { margin-left:auto; font-size:13px; font-weight:400; color:var(--muted); }
+
+  /* 场次条 */
+  .sess-bar { display:flex; align-items:center; gap:12px; padding:16px 18px; }
+  .sb-left { min-width:0; flex:1; }
+  .sb-lab { font-size:12px; color:var(--muted); letter-spacing:1px; }
+  .sb-name { font-size:18px; font-weight:700; margin-top:4px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .sb-badge { font-size:11px; font-weight:700; padding:2px 9px; border-radius:99px;
+    background:rgba(52,211,153,.16); color:var(--ok); border:1px solid rgba(52,211,153,.45); }
+  .sb-badge.closed { background:rgba(148,163,184,.14); color:var(--muted); border-color:rgba(148,163,184,.4); }
+  .sb-actions { display:flex; gap:8px; flex:none; }
+  .sb-btn { font-size:13px; font-weight:600; padding:8px 13px; border-radius:11px; cursor:pointer;
+    background:rgba(255,255,255,.08); color:var(--text); border:1px solid var(--card-border); }
+  .sb-btn:active { transform:scale(.96); }
+  .sb-btn.primary { background:linear-gradient(135deg,#4f8cff,#2f6fe0); border-color:transparent; }
+  .sb-btn.danger { background:rgba(248,113,113,.16); color:#ffb4b4; border-color:rgba(248,113,113,.45); }
+  .sb-btn[disabled] { opacity:.35; pointer-events:none; }
+
+  .empty-session { text-align:center; padding:8px 4px 4px; }
+  .empty-session p { color:var(--muted); font-size:14px; line-height:1.7; margin:8px 0 4px; }
 
   .btn {
     width:100%; margin-top:14px; padding:16px; font-size:19px; font-weight:700; letter-spacing:2px;
@@ -175,6 +197,47 @@
   .lang-btn svg { width:18px; height:18px; flex:none; }
   .lang-btn .lang-code { font-size:13px; font-weight:600; letter-spacing:.5px; }
   .lang-btn:active { transform:scale(.96); }
+
+  /* 场次面板（底部抽屉） */
+  .sess-mask { position:fixed; inset:0; z-index:210; display:flex; align-items:flex-end; justify-content:center;
+    background:rgba(8,12,24,.62); backdrop-filter:blur(4px);
+    opacity:0; pointer-events:none; transition:opacity .18s ease; }
+  .sess-mask.show { opacity:1; pointer-events:auto; }
+  .sess-panel { width:100%; max-width:640px; background:#15203a; border:1px solid var(--card-border);
+    border-bottom:none; border-radius:20px 20px 0 0;
+    padding:18px 18px calc(16px + env(safe-area-inset-bottom));
+    transform:translateY(14px); transition:transform .18s ease;
+    max-height:84vh; overflow:auto; box-shadow:0 -12px 40px rgba(0,0,0,.4); }
+  .sess-mask.show .sess-panel { transform:translateY(0); }
+  .sess-panel h3 { font-size:17px; margin-bottom:6px; }
+  .sess-hint { font-size:12px; color:var(--muted); line-height:1.6; margin-bottom:14px; }
+
+  .sess-item { display:flex; align-items:center; gap:10px; padding:13px 14px; border-radius:14px;
+    background:rgba(0,0,0,.25); border:1px solid var(--card-border); margin-bottom:9px; cursor:pointer;
+    transition:border-color .12s ease, background .12s ease; }
+  .sess-item.cur { border-color:rgba(79,140,255,.7); background:rgba(79,140,255,.14); }
+  .sess-item.closed { opacity:.55; cursor:default; }
+  .sess-item .si-main { flex:1; min-width:0; }
+  .sess-item .si-name { font-size:15px; font-weight:700; display:flex; align-items:center; gap:7px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sess-item .si-meta { font-size:12px; color:var(--muted); margin-top:4px; }
+  .sess-item .si-tag { font-size:10px; font-weight:700; padding:2px 7px; border-radius:99px; flex:none;
+    background:rgba(79,140,255,.22); color:#9dc2ff; }
+  .sess-item .si-tag.closed { background:rgba(148,163,184,.16); color:var(--muted); }
+
+  .sess-create { display:flex; gap:9px; margin-top:14px; }
+  .sess-create input[type=text] {
+    flex:1; min-width:0; font-size:15px; padding:12px 13px; border-radius:12px;
+    border:1.5px solid var(--card-border); background:rgba(0,0,0,.28); color:var(--text); outline:none;
+  }
+  .sess-create input[type=text]:focus { border-color:var(--accent); }
+  .sess-create input[type=text]::placeholder { color:#68789a; }
+  .sess-add { flex:none; padding:0 16px; font-size:14px; font-weight:700; border:none; border-radius:12px;
+    cursor:pointer; color:#fff; background:linear-gradient(135deg,#4f8cff,#2f6fe0); }
+  .sess-add[disabled] { opacity:.4; pointer-events:none; }
+  .sess-foot { display:flex; gap:10px; margin-top:14px; }
+  .sess-foot button { flex:1; padding:13px 0; font-size:15px; font-weight:700; border-radius:12px;
+    cursor:pointer; border:1px solid var(--card-border); background:rgba(255,255,255,.08); color:var(--text); }
 </style>
 </head>
 <body>
@@ -193,7 +256,7 @@
 
   <header>
     <h1><span data-i18n="brand">羊多一点</span><span class="tag" data-i18n="staffTag">工作人员端</span></h1>
-    <div class="round" id="roundInfo">第 1 轮</div>
+    <div class="round" id="roundInfo">—</div>
   </header>
 
   <!-- 登录锁 -->
@@ -214,6 +277,29 @@
 
   <!-- 主内容（登录后显示） -->
   <div id="mainContent" class="hidden">
+
+  <!-- 场次条：当前场次 + 切换 / 新建 / 关闭 -->
+  <div class="card sess-bar">
+    <div class="sb-left">
+      <div class="sb-lab" data-i18n="sessionLabel">当前场次</div>
+      <div class="sb-name"><span id="sbName">—</span><span class="sb-badge hidden" id="sbBadge"></span></div>
+    </div>
+    <div class="sb-actions">
+      <button class="sb-btn" id="btnSwitchSession" data-i18n="sessionSwitch">切换</button>
+      <button class="sb-btn primary" id="btnCreateSession" data-i18n="sessionCreate">新建</button>
+      <button class="sb-btn danger" id="btnCloseSession" data-i18n="sessionClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- 无可用场次 -->
+  <div class="card hidden" id="noSessionCard">
+    <div class="empty-session">
+      <p data-i18n="sessionEmpty">当前没有进行中的场次，请先新建一个。</p>
+      <button class="btn" id="btnCreateFromEmpty" data-i18n="sessionCreateOk">新建场次</button>
+    </div>
+  </div>
+
+  <div id="sessionBody">
   <div class="status-pill st-input" id="statusPill"><span class="dot"></span><span id="statusText">待录入</span></div>
 
   <!-- 本轮玩家统计 -->
@@ -227,7 +313,7 @@
 
   <!-- 本轮玩家列表（新老玩家区分） -->
   <div class="card">
-    <h2><span data-i18n="playerListTitle">本轮玩家</span><span style="margin-left:auto;font-size:13px;color:var(--muted);font-weight:400" id="plistCount"></span></h2>
+    <h2 class="row-head"><span data-i18n="playerListTitle">本轮玩家</span><span class="row-head-meta" id="plistCount"></span></h2>
     <div class="plist" id="playerList"></div>
   </div>
 
@@ -252,6 +338,7 @@
     <div id="resultTableWrap"></div>
     <button class="btn warn" id="resetBtn" data-i18n="resetRound">开始新一轮</button>
   </div>
+  </div><!-- /sessionBody -->
 
   <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
   <button class="logout-link" id="logoutBtn" data-i18n="logout">退出登录</button>
@@ -272,11 +359,29 @@
   </div>
 </div>
 
+<!-- 场次面板 -->
+<div class="sess-mask" id="sessMask">
+  <div class="sess-panel">
+    <h3 data-i18n="sessionListTitle">场次列表</h3>
+    <div class="sess-hint" data-i18n="sessionListHint"></div>
+    <div id="sessList"></div>
+    <div class="sess-create">
+      <input type="text" id="sessNameInput" maxlength="24" data-i18n-placeholder="sessionNamePlaceholder" autocomplete="off">
+      <button class="sess-add" id="sessAddBtn" data-i18n="sessionCreateOk">新建场次</button>
+    </div>
+    <div class="sess-foot">
+      <button id="sessPanelClose" data-i18n="modalCancelText">取消</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
   var TOKEN_KEY = 'oe_staff_token';
   var token = sessionStorage.getItem(TOKEN_KEY) || '';
+  var sid = '';                 // 当前归属的场次（服务端 token 绑定为准，这里保存一份用于渲染）
+  var sessions = [];            // 场次列表（员工视角，含已关闭）
   var state = null, selNum = null, confirming = false;
   window.I18N.init({ storageKey: 'oe_staff_locale' });
   var t = window.I18N.t;
@@ -297,6 +402,8 @@
     var next = window.I18N.nextLocale();
     if (window.I18N.setLocale(next)) {
       applyStaticI18n();
+      renderSessionBar();
+      renderSessionList();
       render();
     }
   });
@@ -315,11 +422,11 @@
 
   var toastTimer = null;
   function toast(msg, type) {
-    var t = $('toast');
-    t.textContent = msg;
-    t.className = 'show ' + (type || '');
+    var el = $('toast');
+    el.textContent = msg;
+    el.className = 'show ' + (type || '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = ''; }, 2600);
+    toastTimer = setTimeout(function () { el.className = ''; }, 2600);
   }
 
   /* ---------- 自定义确认弹窗 ---------- */
@@ -355,9 +462,9 @@
   $('modalCancel').addEventListener('click', function () { closeModal(false); });
   $('modalMask').addEventListener('click', function (e) { if (e.target === $('modalMask')) closeModal(false); });
 
-  function setAuth(t) {
-    token = t;
-    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+  function setAuth(tk) {
+    token = tk;
+    if (tk) sessionStorage.setItem(TOKEN_KEY, tk);
     else sessionStorage.removeItem(TOKEN_KEY);
   }
 
@@ -377,10 +484,188 @@
     });
   }
 
+  /* ---------- 场次：渲染 ---------- */
+  function currentSession() {
+    for (var i = 0; i < sessions.length; i++) if (sessions[i].id === sid) return sessions[i];
+    return null;
+  }
+
+  /** 场次条：名称 + 状态徽标 + 按钮可用性 */
+  function renderSessionBar() {
+    var cur = currentSession();
+    $('sbName').textContent = cur ? cur.name : '—';
+    var badge = $('sbBadge');
+    if (cur) {
+      badge.classList.remove('hidden');
+      badge.textContent = t(cur.status === 'open' ? 'sessionStatusOpen' : 'sessionStatusClosed');
+      badge.className = 'sb-badge' + (cur.status === 'open' ? '' : ' closed');
+    } else {
+      badge.classList.add('hidden');
+    }
+    $('btnSwitchSession').disabled = sessions.length === 0;
+    $('btnCreateSession').disabled = openCount() >= 4;
+    $('btnCloseSession').disabled = !cur || cur.status !== 'open';
+    // 没有归属场次时，隐藏轮次相关内容，只留「新建场次」入口
+    $('sessionBody').classList.toggle('hidden', !cur);
+    $('noSessionCard').classList.toggle('hidden', !!cur);
+  }
+
+  function openCount() {
+    return sessions.filter(function (s) { return s.status === 'open'; }).length;
+  }
+
+  /** 场次面板里的列表 */
+  function renderSessionList() {
+    var box = $('sessList');
+    if (!sessions.length) {
+      box.innerHTML = '<div class="empty">' + t('sessionEmpty') + '</div>';
+      return;
+    }
+    box.innerHTML = sessions.map(function (s) {
+      var cls = 'sess-item';
+      if (s.id === sid) cls += ' cur';
+      if (s.status !== 'open') cls += ' closed';
+      var tag = s.status === 'open'
+        ? (s.id === sid ? t('sessionCurTag') : '')
+        : t('sessionStatusClosed');
+      var meta = t('roundInfo', { round: s.round }) + ' · ' +
+        (s.status === 'open' ? (s.locked ? t('roundLocked') : t('roundOngoing')) + ' · ' : '') +
+        t('sessionPlayersCount', { n: s.players });
+      return '<div class="' + cls + '" data-sid="' + esc(s.id) + '">' +
+        '<div class="si-main">' +
+          '<div class="si-name">' + esc(s.name) +
+            (tag ? ' <span class="si-tag' + (s.status === 'open' ? '' : ' closed') + '">' + esc(tag) + '</span>' : '') +
+          '</div>' +
+          '<div class="si-meta">' + esc(meta) + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.sess-item'), function (el) {
+      el.addEventListener('click', function () {
+        if (el.classList.contains('closed')) return;
+        var id = el.getAttribute('data-sid');
+        if (id && id !== sid) doSelectSession(id);
+        else closeSessPanel();
+      });
+    });
+    $('sessAddBtn').disabled = openCount() >= 4;
+  }
+
+  /** 员工视角刷新场次列表（含已关闭） */
+  function refreshSessions() {
+    if (!token) return Promise.resolve();
+    return fetch('/api/sessions?token=' + encodeURIComponent(token), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok && d.sessions) { sessions = d.sessions; renderSessionBar(); renderSessionList(); }
+      })
+      .catch(function () {});
+  }
+
+  /* ---------- 场次：交互 ---------- */
+  function openSessPanel() {
+    renderSessionList();
+    refreshSessions();
+    $('sessMask').classList.add('show');
+  }
+  function closeSessPanel() {
+    $('sessMask').classList.remove('show');
+    $('sessNameInput').value = '';
+  }
+
+  function postJson(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); });
+  }
+
+  /** 切换场次：只改自己的绑定，重建 SSE 连接并拉取该场次状态 */
+  function doSelectSession(id) {
+    postJson('/api/session-select', { token: token, sid: id }).then(function (d) {
+      if (d.ok) {
+        applySessionSwitch(d.sid, d.sessions);
+        var cur = currentSession();
+        toast(t('toastSessionSwitched', { name: cur ? cur.name : '' }), 'ok');
+        closeSessPanel();
+      } else if (d.code === 'unauthorized') { forceLogout(); }
+      else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  }
+
+  /** 场次切换后的本地复位：清空选择、重建连接、重新拉状态 */
+  function applySessionSwitch(nextSid, list) {
+    sid = nextSid || '';
+    if (list) sessions = list;
+    state = null;
+    resetNumberSelection();
+    renderSessionBar();
+    renderSessionList();
+    if (sid) { startStream(); poll(); }
+    else { closeStream(); render(); }
+  }
+
+  function resetNumberSelection() {
+    selNum = null;
+    $('selShow').textContent = '—';
+    $('confirmBtn').disabled = true;
+    $('inputErr').textContent = '';
+    Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) { x.classList.remove('sel'); });
+  }
+
+  function doCreateSession() {
+    var name = $('sessNameInput').value.trim();
+    postJson('/api/session-create', { token: token, name: name }).then(function (d) {
+      if (d.ok) {
+        sessions = d.sessions || [];
+        $('sessNameInput').value = '';
+        applySessionSwitch(d.sid, sessions);
+        var cur = currentSession();
+        toast(t('toastSessionCreated', { name: cur ? cur.name : d.session.name }), 'ok');
+        closeSessPanel();
+      } else if (d.code === 'unauthorized') { forceLogout(); }
+      else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  }
+
+  function doCloseSession() {
+    var cur = currentSession();
+    if (!cur || cur.status !== 'open') return;
+    confirmModal({
+      type: 'warn',
+      title: t('modalCloseSessionTitle'),
+      body: t('modalCloseSessionBody', { name: esc(cur.name) }),
+      okText: t('modalCloseSessionOk'),
+      cancelText: t('modalCancelText')
+    }).then(function (sure) {
+      if (!sure) return;
+      return postJson('/api/session-close', { token: token, sid: cur.id }).then(function (d) {
+        if (d.ok) {
+          sessions = d.sessions || [];
+          toast(t('toastSessionClosed', { name: cur.name }), 'ok');
+          applySessionSwitch(d.nextSid || '', sessions);
+        } else if (d.code === 'unauthorized') { forceLogout(); }
+        else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
+      });
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  }
+
+  $('btnSwitchSession').addEventListener('click', openSessPanel);
+  $('btnCreateSession').addEventListener('click', openSessPanel);
+  $('btnCreateFromEmpty').addEventListener('click', openSessPanel);
+  $('sessAddBtn').addEventListener('click', doCreateSession);
+  $('sessPanelClose').addEventListener('click', closeSessPanel);
+  $('sessMask').addEventListener('click', function (e) { if (e.target === $('sessMask')) closeSessPanel(); });
+  $('sessNameInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doCreateSession(); });
+  $('btnCloseSession').addEventListener('click', doCloseSession);
+
   /* ---------- 渲染 ---------- */
   function render() {
-    var s = state; if (!s) return;
-    $('roundInfo').textContent = t('roundInfo', { round: s.round }) +
+    var s = state;
+    if (!s) { $('roundInfo').textContent = '—'; return; }
+
+    $('roundInfo').textContent = s.session.name + ' · ' + t('roundInfo', { round: s.round }) +
       (s.locked ? ' · ' + t('roundLocked') : ' · ' + t('roundOngoing'));
 
     var locked = s.locked;
@@ -444,10 +729,14 @@
   var streamClosed = false; // 手动关闭标记
 
   function applyState(s) {
-    if (!s.ok) return;
+    if (!s || !s.ok) return;
     $('connLost').classList.add('hidden');
     var wasLocked = state ? state.locked : false;
     state = s;
+    if (s.session) {
+      // 场次名称可能被别的员工端改过（当前无改名功能，此处仅保持同步）
+      sid = s.session.id;
+    }
     render();
     if (!wasLocked && s.locked) toast(t('toastNumberLocked', { number: s.number }), 'ok');
   }
@@ -458,11 +747,14 @@
     if (es) { es.close(); es = null; }
   }
 
-  /** 建立 SSE 连接。 */
+  /** 建立 SSE 连接：绑定当前场次，只收本场次的事件。
+   *  带员工 token：员工视角不受玩家场次口令约束。 */
   function startStream() {
     closeStream();
+    if (!sid) return;
     streamClosed = false;
-    es = new EventSource('/api/stream');
+    es = new EventSource('/api/stream?sid=' + encodeURIComponent(sid) +
+      (token ? '&token=' + encodeURIComponent(token) : ''));
 
     es.onopen = function () {
       $('connLost').classList.add('hidden');
@@ -473,6 +765,20 @@
       try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
     });
 
+    // 场次被关闭（可能是别的员工端关的）
+    es.addEventListener('session_closed', function (ev) {
+      var d = {};
+      try { d = JSON.parse(ev.data) || {}; } catch (e) { /* 忽略坏帧 */ }
+      if (d.sid && d.sid !== sid) return;
+      closeStream();
+      toast(t('toastSessionClosed', { name: (currentSession() || {}).name || '' }), 'err');
+      refreshSessions().then(function () {
+        var next = '';
+        for (var i = 0; i < sessions.length; i++) { if (sessions[i].status === 'open') { next = sessions[i].id; break; } }
+        applySessionSwitch(next, sessions);
+      });
+    });
+
     es.onerror = function () {
       if (streamClosed) return;
       if (es && es.readyState === EventSource.CONNECTING) {
@@ -481,13 +787,21 @@
     };
   }
 
-  /** 拉取一次全量状态快照，用于对齐 SSE 断线/回到前台期间错过的变更。 */
+  /** 拉取一次当前场次的全量状态快照，用于对齐 SSE 断线/回到前台期间错过的变更。 */
   function poll() {
-    fetch('/api/state', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
-      applyState(s);
-    }).catch(function () {
-      $('connLost').classList.remove('hidden');
-    });
+    if (!sid) return;
+    fetch('/api/state?sid=' + encodeURIComponent(sid) + (token ? '&token=' + encodeURIComponent(token) : ''), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (s && s.ok) applyState(s);
+        else if (s && s.code === 'session_not_found') {
+          // 场次已不存在：回退到列表里的第一个进行中场次
+          refreshSessions();
+        }
+      })
+      .catch(function () {
+        $('connLost').classList.remove('hidden');
+      });
   }
 
   /* ---------- 交互 ---------- */
@@ -505,7 +819,7 @@
   });
 
   $('confirmBtn').addEventListener('click', async function () {
-    if (confirming || state.locked) return;
+    if (confirming || !state || state.locked) return;
     if (selNum == null || !Number.isInteger(selNum) || selNum < 1 || selNum > 8) {
       $('inputErr').textContent = t('errPickNumber');
       return;
@@ -531,10 +845,7 @@
     });
     if (!sure) return;
     confirming = true; $('confirmBtn').disabled = true;
-    fetch('/api/confirm', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number: selNum, token: token })
-    }).then(function (r) { return r.json(); }).then(function (d) {
+    postJson('/api/confirm', { number: selNum, token: token, sid: sid }).then(function (d) {
       if (d.ok) { toast(t('toastLocked', { number: d.number }), 'ok'); poll(); }
       else if (d.code === 'unauthorized') { forceLogout(); }
       else { $('inputErr').textContent = window.I18N.errCode(d.code, d) || t('errConfirmFailed'); $('confirmBtn').disabled = false; poll(); }
@@ -545,7 +856,7 @@
   });
 
   $('resetBtn').addEventListener('click', async function () {
-    if (!state.locked) return;
+    if (!state || !state.locked) return;
     var sure = await confirmModal({
       type: 'plain',
       title: t('modalResetTitle'),
@@ -554,15 +865,9 @@
       cancelText: t('modalCancelText')
     });
     if (!sure) return;
-    fetch('/api/reset', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token })
-    }).then(function (r) { return r.json(); }).then(function (d) {
+    postJson('/api/reset', { token: token, sid: sid }).then(function (d) {
       if (d.ok) {
-        selNum = null;
-        $('selShow').textContent = '—';
-        $('confirmBtn').disabled = true;
-        Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) { x.classList.remove('sel'); });
+        resetNumberSelection();
         toast(t('toastNewRound', { round: d.round }), 'ok');
         poll();
       } else if (d.code === 'unauthorized') { forceLogout(); }
@@ -574,6 +879,7 @@
   function forceLogout() {
     closeStream();
     setAuth('');
+    sessions = []; sid = ''; state = null;
     showLogin();
     toast(t('errSessionExpired'), 'err');
   }
@@ -583,15 +889,13 @@
     $('loginErr').textContent = '';
     if (!pw) { $('loginErr').textContent = t('errEmptyPwd'); return; }
     $('loginBtn').disabled = true;
-    fetch('/api/staff-login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw })
-    }).then(function (r) { return r.json(); }).then(function (d) {
+    postJson('/api/staff-login', { password: pw }).then(function (d) {
       if (d.ok) {
         setAuth(d.token);
         $('pwdInput').value = '';
+        sessions = d.sessions || [];
         showMain();
-        startStream();
+        applySessionSwitch(d.sid || '', sessions);
       } else { $('loginErr').textContent = window.I18N.errCode(d.code, d) || t('errLoginFailed'); }
     }).catch(function () { $('loginErr').textContent = t('errNetRetry'); })
       .finally(function () { $('loginBtn').disabled = false; });
@@ -603,18 +907,19 @@
 
   $('logoutBtn').addEventListener('click', function () {
     closeStream();
-    fetch('/api/staff-logout', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token })
-    });
+    postJson('/api/staff-logout', { token: token });
     setAuth('');
+    sessions = []; sid = ''; state = null;
     showLogin();
   });
 
-  /* 启动时校验会话有效性 */
+  /* 启动时校验会话有效性，并取回绑定的场次 */
   fetch('/api/staff-check?token=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.ok) { showMain(); startStream(); }
-    else showLogin();
+    if (d.ok) {
+      sessions = d.sessions || [];
+      showMain();
+      applySessionSwitch(d.sid || '', sessions);
+    } else showLogin();
   }).catch(function () { showLogin(); });
 
   document.addEventListener('visibilitychange', function () {
@@ -625,6 +930,7 @@
   /* 初始化语言：应用静态文本 */
   updateLangButton();
   applyStaticI18n();
+  renderSessionBar();
 })();
 </script>
 </body>

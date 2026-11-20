@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>羊多一點 · 玩家端</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
 <script src="/i18n.js"></script>
 <script src="/html5-qrcode.min.js"></script>
 <style>
@@ -242,13 +243,69 @@
   #toast.err { border-color:rgba(255,120,120,.7); }
   #toast.ok { border-color:rgba(255,212,94,.7); }
 
+  /* 场次选择 */
+  .top-right { display:flex; align-items:center; gap:8px; }
+  .sess-btn {
+    font-size:13px; padding:6px 14px; border-radius:99px; cursor:pointer;
+    background:rgba(60,8,12,.6); border:1px solid var(--card-border); color:var(--muted); font-weight:600;
+    transition:all .12s ease;
+  }
+  .sess-btn:active { transform:scale(.96); }
+  .sess-pick { display:flex; flex-direction:column; gap:10px; }
+  .sess-opt {
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left; cursor:pointer;
+    padding:15px 16px; border-radius:14px; font-size:17px; font-weight:800; letter-spacing:1px;
+    background:linear-gradient(180deg, rgba(140,24,32,.8), rgba(90,10,16,.85));
+    color:var(--text); border:1.5px solid var(--card-border);
+    box-shadow:0 4px 12px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,210,120,.15);
+    transition:all .12s ease;
+  }
+  .sess-opt:active { transform:scale(.98); }
+  .sess-opt .so-main { flex:1; min-width:0; }
+  .sess-opt .so-meta { display:block; font-size:12px; font-weight:500; color:var(--muted); margin-top:5px; letter-spacing:0; }
+  .sess-opt .so-go { color:var(--gold); font-size:20px; flex:none; }
+  .sess-opt.cur { border-color:rgba(255,212,94,.75); box-shadow:0 0 0 1px rgba(255,212,94,.35) inset; }
+  .sess-opt.cur .so-go { color:var(--ok); }
+  .sess-cancel {
+    display:block; width:100%; margin-top:12px; padding:11px; border-radius:12px; cursor:pointer;
+    background:none; border:1px solid var(--card-border); color:var(--muted); font-size:14px; font-weight:600;
+  }
+
+  /* 场次口令弹层 */
+  .pw-mask {
+    position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+    padding:22px; background:rgba(0,0,0,.66); opacity:0; pointer-events:none; transition:opacity .16s ease;
+  }
+  .pw-mask.show { opacity:1; pointer-events:auto; }
+  .pw-box {
+    width:100%; max-width:360px; border-radius:18px; padding:22px 20px 18px;
+    background:linear-gradient(180deg, #3a0a10, #260509); border:1px solid var(--card-border);
+    box-shadow:0 22px 50px rgba(0,0,0,.6);
+  }
+  .pw-box h3 { font-size:18px; font-weight:800; margin-bottom:6px; letter-spacing:1px; }
+  .pw-sess { font-size:13px; color:var(--gold); font-weight:700; margin-bottom:14px; }
+  .pw-box input {
+    width:100%; font-size:20px; letter-spacing:6px; text-align:center; padding:13px 12px; border-radius:12px;
+    border:1.5px solid var(--card-border); background:rgba(0,0,0,.32); color:var(--text); outline:none;
+  }
+  .pw-box input:focus { border-color:var(--gold); }
+  .pw-err { min-height:18px; margin-top:9px; font-size:13px; color:var(--danger, #ff8080); font-weight:600; }
+  .pw-acts { display:flex; gap:10px; margin-top:14px; }
+  .pw-acts button {
+    flex:1; padding:12px; border-radius:12px; font-size:15px; font-weight:800; cursor:pointer; border:1px solid var(--card-border);
+  }
+  .pw-cancel { background:none; color:var(--muted); }
+  .pw-ok { background:linear-gradient(180deg,#ffd45e,#e0a92a); color:#3a0a10; border-color:transparent; }
+  .pw-ok:disabled { opacity:.55; cursor:default; }
+  .pw-hint { margin-top:10px; font-size:11.5px; color:var(--muted); line-height:1.5; }
+
   .hidden { display:none !important; }
   .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <!-- 顶栏：语言切换 + 登出 -->
+  <!-- 顶栏：语言切换 + 切换场次 + 登出 -->
   <div class="topbar">
     <button class="lang-btn" id="langBtn" type="button" aria-label="切换语言">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -258,7 +315,10 @@
       </svg>
       <span class="lang-code" id="langCode">繁體</span>
     </button>
-    <button class="logout-btn hidden" id="logoutBtn" data-i18n="p_logout">登出</button>
+    <div class="top-right">
+      <button class="sess-btn hidden" id="switchSessBtn" data-i18n="p_switchSession">切换场次</button>
+      <button class="logout-btn hidden" id="logoutBtn" data-i18n="p_logout">登出</button>
+    </div>
   </div>
 
   <header>
@@ -267,6 +327,14 @@
   </header>
 
   <div class="status-pill st-unreg" id="statusPill"><span class="dot"></span><span id="statusText"></span></div>
+
+  <!-- ⓪ 选择场次（未选场次 / 本场已结束 / 主动切换） -->
+  <div class="card hidden" id="cardSession">
+    <h2><span data-i18n="p_pickTitle">选择场次</span></h2>
+    <div class="sess-pick" id="sessPick"></div>
+    <button class="sess-cancel hidden" id="sessCancel" type="button" data-i18n="p_cancelSwitch">取消切换</button>
+    <div class="hint" data-i18n="p_pickHint">选择你所在的场次需输入场次口令；选错场次看不到本场的开奖结果。</div>
+  </div>
 
   <!-- ① 扫描自己的二维码 -->
   <div class="card" id="cardScan">
@@ -335,15 +403,56 @@
 
   <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
 </div>
+
+<!-- 场次口令弹层：选择 / 切换场次时校验，失败则留在原场次 -->
+<div class="pw-mask" id="pwMask">
+  <div class="pw-box" role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+    <h3 id="pwTitle" data-i18n="p_pwTitle">输入场次口令</h3>
+    <div class="pw-sess" id="pwSess"></div>
+    <input type="password" id="pwInput" inputmode="numeric" autocomplete="off" maxlength="32"
+           data-i18n-ph="p_pwPlaceholder" placeholder="场次口令">
+    <div class="pw-err" id="pwErr"></div>
+    <div class="pw-acts">
+      <button class="pw-cancel" id="pwCancel" type="button" data-i18n="p_cancel">取消</button>
+      <button class="pw-ok" id="pwBtn" type="button" data-i18n="p_pwConfirm">确认</button>
+    </div>
+    <div class="pw-hint" data-i18n="p_pwHint">口令由工作人员提供；验证通过后本机将固定在该场次，刷新或重开页面无需再次输入。</div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
 (function () {
   'use strict';
-  var PID_KEY = 'oe_pid';
-  var pid = localStorage.getItem(PID_KEY) || '';
+  /* 场次绑定：验证口令后由服务端签发令牌，本地只保存 { sid, ut, exp }。
+     口令本身从不落地（不写 localStorage、不进 URL、不回显）。 */
+  var BIND_KEY = 'oe_bind';
+  var PID_PREFIX = 'oe_pid:';    // 每个场次独立记住自己的身份：oe_pid:<sid>
+
+  /** 读取本地绑定，过期或结构不对一律视为无绑定 */
+  function loadBind() {
+    try {
+      var raw = localStorage.getItem(BIND_KEY);
+      if (!raw) return null;
+      var b = JSON.parse(raw);
+      if (!b || !b.sid || !b.ut) return null;
+      if (b.exp && Number(b.exp) <= Date.now()) { localStorage.removeItem(BIND_KEY); return null; }
+      return { sid: String(b.sid), ut: String(b.ut), exp: Number(b.exp) || 0 };
+    } catch (e) { return null; }
+  }
+
+  var bind = loadBind();
+  var sid = bind ? bind.sid : '';
+  var ut = bind ? bind.ut : '';
+  var pid = '';
+  var sessList = [];             // 服务端返回的进行中场次
   var state = null;
+  var picking = false;           // 是否正在展开场次选择（切换时不打断当前场次）
   var selOE = null, selNum = null, submitting = false;
+
+  /** 某场次下本机保存的玩家身份 key */
+  function pidKey(s) { return PID_PREFIX + (s || ''); }
 
   window.I18N.init({ storageKey: 'oe_lang' });
   var t = window.I18N.t;
@@ -412,13 +521,15 @@
 
   /* ---------- 状态判定 ---------- */
   function phase(s) {
-    if (!s.me) return 'unreg';                 // 未扫码（或新一轮）
+    if (!sid) return 'pick';                   // 还没选场次（或本场已结束被清空）
+    if (!s || !s.me) return 'unreg';           // 未扫码（或新一轮）
     if (s.me.oddEven == null) return 'ready';  // 已登记待预测
     if (!s.locked) return 'wait';              // 已预测等待开奖
     return 'done';                             // 已出结果
   }
 
   var PHASE_META = {
+    pick:  { cls: 'st-unreg', text: function () { return t('p_pickTitle'); } },
     unreg: { cls: 'st-unreg', text: function () { return t('p_st_unreg'); } },
     ready: { cls: 'st-ready', text: function () { return t('p_st_ready'); } },
     wait:  { cls: 'st-wait',  text: function () { return t('p_st_wait'); } },
@@ -427,27 +538,36 @@
 
   /* ---------- 渲染 ---------- */
   function render() {
-    var s = state; if (!s) return;
+    var s = state;
 
     // 身份有效性判定：唯一权威信号是服务端 players 里是否还有这个 pid（s.me 是否非空）。
     // 服务端 /api/reset 开始新一轮时会清空 players，此时 s.me 变 null，即为「身份失效，需重新扫码」。
     // 不再用本地轮次比对（该机制在提交预测/确认数字后可能因轮次残留误判而误清 pid）。
-    if (pid && !s.me) { pid = ''; localStorage.removeItem(PID_KEY); }
-
-    $('roundInfo').textContent = t('p_round', { n: s.round }) + (s.locked ? t('p_locked') : t('p_inProgress'));
+    if (sid && pid && (!s || !s.me)) { pid = ''; localStorage.removeItem(pidKey(sid)); }
 
     var ph = phase(s);
     var meta = PHASE_META[ph];
     $('statusPill').className = 'status-pill ' + meta.cls;
     $('statusText').textContent = meta.text();
 
-    $('cardScan').classList.toggle('hidden', ph !== 'unreg');
-    $('cardPred').classList.toggle('hidden', ph !== 'ready');
-    $('cardWait').classList.toggle('hidden', ph !== 'wait');
-    $('cardResult').classList.toggle('hidden', ph !== 'done');
+    // 场次 + 轮次标题（未选场次时留空）
+    $('roundInfo').textContent = (sid && s)
+      ? t('p_sessionRound', { name: s.session.name, n: s.round }) + (s.locked ? t('p_locked') : t('p_inProgress'))
+      : '';
 
-    // 登出按钮：有本地身份时才显示
-    $('logoutBtn').classList.toggle('hidden', !pid);
+    $('cardSession').classList.toggle('hidden', !(picking || ph === 'pick'));
+    $('cardScan').classList.toggle('hidden', picking || ph !== 'unreg');
+    $('cardPred').classList.toggle('hidden', picking || ph !== 'ready');
+    $('cardWait').classList.toggle('hidden', picking || ph !== 'wait');
+    $('cardResult').classList.toggle('hidden', picking || ph !== 'done');
+
+    // 切换态下给出「取消」出口，避免卡在选择界面
+    var cancel = $('sessCancel');
+    if (cancel) cancel.classList.toggle('hidden', !(picking && sid));
+
+    // 顶栏按钮：选了场次才能切换；有本地身份才能登出
+    $('switchSessBtn').classList.toggle('hidden', !sid || picking);
+    $('logoutBtn').classList.toggle('hidden', !pid || picking);
 
     if (ph === 'wait') {
       $('myPred').innerHTML =
@@ -475,14 +595,20 @@
   /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
   var es = null;          // EventSource 实例
   var streamClosed = false; // 手动关闭标记（登出/页面隐藏时置 true，避免误判为断线）
+  var streamErrs = 0;     // 连续连接失败次数（用于触发准入复核）
 
   function fetchState() {
-    var url = '/api/state' + (pid ? '?pid=' + encodeURIComponent(pid) : '');
+    if (!sid) return Promise.resolve({ ok: false });
+    var url = '/api/state?sid=' + encodeURIComponent(sid) +
+      (ut ? '&ut=' + encodeURIComponent(ut) : '') +
+      (pid ? '&pid=' + encodeURIComponent(pid) : '');
     return fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); });
   }
 
   function applyState(s) {
-    if (!s.ok) return;
+    if (!s || !s.ok) return;
+    // 场次已被关闭：退回场次选择（正常情况下服务端会先推 session_closed 事件）
+    if (s.session && s.session.status === 'closed') { onSessionClosed(); return; }
     $('connLost').classList.add('hidden');
     var prevPh = state ? phase(state) : null;
     state = s;
@@ -496,22 +622,38 @@
     if (es) { es.close(); es = null; }
   }
 
-  /** 建立 SSE 连接：登录/扫码后 pid 变化时重连。 */
+  /** 建立 SSE 连接：订阅当前场次，pid 变化或切换场次时重连。
+   *  连接同样要带绑定令牌，否则服务端拒连——避免有人手工拼 URL 偷看别场。 */
   function startStream() {
     closeStream();
+    if (!sid) return;
     streamClosed = false;
-    var url = '/api/stream' + (pid ? '?pid=' + encodeURIComponent(pid) : '');
+    var url = '/api/stream?sid=' + encodeURIComponent(sid) +
+      (ut ? '&ut=' + encodeURIComponent(ut) : '') +
+      (pid ? '&pid=' + encodeURIComponent(pid) : '');
     es = new EventSource(url);
 
     // 连接建立（含自动重连成功）：立即拉一次全量状态对齐，消除断线期间错过的变更
     es.onopen = function () {
+      streamErrs = 0;
       $('connLost').classList.add('hidden');
-      fetchState().then(applyState).catch(function () {});
+      fetchState().then(function (d) {
+        if (handleAuthFail(d)) return;
+        applyState(d);
+      }).catch(function () {});
     };
 
-    // 服务端推送的状态快照（事件名 state）
+    // 服务端推送的本场次状态快照（事件名 state）
     es.addEventListener('state', function (ev) {
       try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
+    });
+
+    // 场次被工作人员关闭：提示并退回场次选择
+    es.addEventListener('session_closed', function (ev) {
+      var d = {};
+      try { d = JSON.parse(ev.data) || {}; } catch (e) { /* 忽略坏帧 */ }
+      if (d.sid && d.sid !== sid) return;
+      onSessionClosed();
     });
 
     // 心跳事件：无需处理，仅用于保持连接活性（浏览器层面已处理）
@@ -520,30 +662,266 @@
     // 重连成功后 onopen 再次触发并全量对齐
     es.onerror = function () {
       if (streamClosed) return; // 手动关闭导致的 error 不提示
+      streamErrs++;
       // readyState 为 CONNECTING 表示正在重连；CLOSED 才彻底失败
       if (es && es.readyState === EventSource.CONNECTING) {
         $('connLost').classList.remove('hidden');
       }
+      // 连续失败若干次后主动核对一次准入结果：
+      // 若绑定已失效（令牌过期/场次关闭），服务端会返回 403/409，这里据此退回选择界面，
+      // 避免对着一个永远连不上的场次无限重连。
+      if (streamErrs >= 3) { streamErrs = 0; poll(); }
     };
   }
 
   /** 拉取一次全量状态快照，用于对齐 SSE 断线/回到前台期间错过的变更。 */
   function poll() {
-    fetchState().then(applyState).catch(function () {
+    if (!sid) return;
+    fetchState().then(function (d) {
+      if (handleAuthFail(d)) return;
+      applyState(d);
+    }).catch(function () {
       $('connLost').classList.remove('hidden');
+    });
+  }
+
+  /** 统一的准入失败处理：绑定失效 / 场次关闭 → 清掉本地绑定并回到选择界面。
+   *  返回 true 表示已经处理（调用方不要再渲染状态）。 */
+  function handleAuthFail(d) {
+    if (!d || d.ok !== false) return false;
+    if (d.code === 'session_closed') { onSessionClosed(); return true; }
+    if (d.code === 'session_need_unlock' || d.code === 'session_locked' || d.code === 'session_not_found') {
+      requirePick('p_err_need_unlock');
+      return true;
+    }
+    return false;
+  }
+
+  /* ---------- 场次（口令验证 / 选择 / 切换 / 关闭后的回退） ---------- */
+
+  var sessNeedPassword = false;   // 服务端告知：当前是否需要口令才能入场
+
+  /** 拉取进行中的场次列表，并渲染选择卡 */
+  function loadSessions() {
+    return fetch('/api/sessions', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        sessList = (d && d.sessions) || [];
+        sessNeedPassword = !!(d && d.needPassword);
+        renderSessionPick();
+        return sessList;
+      })
+      .catch(function () {
+        sessList = [];
+        renderSessionPick();
+        return sessList;
+      });
+  }
+
+  function renderSessionPick() {
+    var box = $('sessPick');
+    if (!sessList.length) {
+      box.innerHTML = '<div class="hint" style="margin:0">' + esc(t('p_noSession')) + '</div>';
+      return;
+    }
+    box.innerHTML = sessList.map(function (s) {
+      var meta = t('p_round', { n: s.round }) + (s.locked ? t('p_locked') : t('p_inProgress'));
+      var cur = s.id === sid ? ' cur' : '';
+      return '<button class="sess-opt' + cur + '" type="button" data-sid="' + esc(s.id) + '">' +
+        '<span class="so-main">' + esc(s.name) +
+        '<span class="so-meta">' + esc(meta) + '</span></span>' +
+        '<span class="so-go">' + (cur ? '✓' : '›') + '</span></button>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.sess-opt'), function (b) {
+      b.addEventListener('click', function () { chooseSession(b.getAttribute('data-sid')); });
+    });
+  }
+
+  /** 清空预测区的勾选（切换场次时避免把上一场的选项带过去） */
+  function clearPredSelection() {
+    Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (x) { x.classList.remove('sel'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) { x.classList.remove('sel'); });
+    $('predErr').textContent = '';
+  }
+
+  /** 清掉本地场次绑定（只清 sid/令牌，不碰各场次记住的身份） */
+  function clearBind() {
+    sid = '';
+    ut = '';
+    bind = null;
+    pid = '';
+    state = null;
+    try { localStorage.removeItem(BIND_KEY); } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  /** 点选某个场次：已绑定的同一场次直接收起；其他场次必须先过口令 */
+  function chooseSession(id) {
+    if (!id) return;
+    if (id === sid && ut) { picking = false; render(); return; }
+    openPwModal(id);
+  }
+
+  /* ----- 口令弹层 ----- */
+
+  var pwTarget = '';   // 当前正在验证的场次
+
+  function sessionName(id) {
+    for (var i = 0; i < sessList.length; i++) if (sessList[i].id === id) return sessList[i].name;
+    return id;
+  }
+
+  function openPwModal(id) {
+    pwTarget = id;
+    $('pwSess').textContent = sessionName(id);
+    $('pwInput').value = '';
+    $('pwErr').textContent = '';
+    $('pwBtn').disabled = false;
+    $('pwMask').classList.add('show');
+    setTimeout(function () { try { $('pwInput').focus(); } catch (e) { /* 忽略 */ } }, 120);
+  }
+
+  function closePwModal() {
+    $('pwMask').classList.remove('show');
+    $('pwInput').value = '';
+    $('pwErr').textContent = '';
+    pwTarget = '';
+  }
+
+  /** 调服务端校验口令；成功返回绑定令牌（口令只在这次请求里出现，不落地） */
+  function unlock(id, password) {
+    var body = password ? { sid: id, password: password } : { sid: id, auto: true };
+    return fetch('/api/session-unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); });
+  }
+
+  /** 应用绑定：本地只写 sid + 令牌 + 过期时间，然后复位界面、重连 */
+  function applyBind(d) {
+    sid = d.sid;
+    ut = d.ut;
+    bind = { sid: d.sid, ut: d.ut, exp: Number(d.expiresAt) || 0 };
+    try { localStorage.setItem(BIND_KEY, JSON.stringify(bind)); } catch (e) { /* 忽略 */ }
+    pid = localStorage.getItem(pidKey(sid)) || '';
+    state = null;
+    selOE = null; selNum = null;
+    picking = false;
+    clearPredSelection();
+    $('scanErr').textContent = '';
+    render();
+    startStream();
+    poll();
+  }
+
+  function submitPw() {
+    if (!pwTarget) return;
+    var pwd = $('pwInput').value;
+    if (!pwd) { $('pwErr').textContent = t('p_err_pw_empty'); $('pwInput').focus(); return; }
+    $('pwBtn').disabled = true;
+    $('pwErr').textContent = '';
+    unlock(pwTarget, pwd).then(function (d) {
+      $('pwBtn').disabled = false;
+      if (!d || !d.ok) {
+        $('pwErr').textContent = window.I18N.errCode(d && d.code, d, 'p_err_') || t('p_err_pw_fail');
+        try { $('pwInput').select(); } catch (e) { /* 忽略 */ }
+        return;
+      }
+      var name = d.session && d.session.name ? d.session.name : sessionName(d.sid);
+      closePwModal();
+      applyBind(d);
+      toast(t('p_toast_sessionIn', { name: name }), 'ok');
+    }).catch(function () {
+      $('pwBtn').disabled = false;
+      $('pwErr').textContent = t('p_scanNetErr');
+    });
+  }
+
+  /** 单场次场景：免口令自动绑定（服务端只在「唯一进行中」时允许） */
+  function autoBind(id) {
+    unlock(id, '').then(function (d) {
+      if (d && d.ok) { applyBind(d); return; }
+      // 期间又开出别的场次 → 转为要求输入口令
+      clearBind();
+      picking = false;
+      render();
+      loadSessions().then(function () { openPwModal(id); });
+    }).catch(function () {
+      clearBind();
+      render();
+    });
+  }
+
+  /** 绑定失效 / 需要重新验证：清绑定并回到选择界面 */
+  function requirePick(msgKey) {
+    closeStream();
+    clearBind();
+    picking = false;
+    render();
+    loadSessions();
+    if (msgKey) toast(t(msgKey), 'err');
+  }
+
+  /** 场次被关闭（或已失效）：回到场次选择 */
+  function onSessionClosed() {
+    if (!sid) return;
+    closeStream();
+    clearBind();
+    picking = false;
+    render();
+    toast(t('p_sessionClosed'), 'err');
+    loadSessions();
+  }
+
+  /** 启动时决定进入哪个场次：
+   *  本地已有有效绑定 → 直接沿用（刷新 / 重开页面都不再询问，也不允许改场）；
+   *  无绑定 → 唯一场次自动绑定，多场并行则要求先输口令。 */
+  function bootstrap() {
+    var urlSid = '';
+    try { urlSid = new URLSearchParams(location.search).get('s') || ''; } catch (e) { urlSid = ''; }
+
+    if (bind && bind.sid) {
+      sid = bind.sid;
+      ut = bind.ut;
+      pid = localStorage.getItem(pidKey(sid)) || '';
+      render();
+      startStream();
+      fetchState().then(function (d) {
+        if (handleAuthFail(d)) return;
+        applyState(d);
+      }).catch(function () { /* 断网时由 SSE 重连兜底 */ });
+      return;
+    }
+
+    loadSessions().then(function (list) {
+      if (!list.length) { clearBind(); render(); return; }
+      if (list.length === 1) { autoBind(list[0].id); return; }
+
+      clearBind();
+      render();
+      if (urlSid && list.some(function (s) { return s.id === urlSid; })) {
+        openPwModal(urlSid);          // 带 ?s= 的入口：直接对准该场次索要口令
+      } else {
+        toast(t('p_needPw'), 'err');
+      }
     });
   }
 
   /* ---------- 扫码识别（手动输入通道） ---------- */
   function handleScannedContent(content) {
     $('scanErr').textContent = '';
+    if (!sid) { $('scanErr').textContent = t('p_pickHint'); return; }
     fetch('/api/scan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: content })
+      body: JSON.stringify({ content: content, sid: sid, ut: ut })
     }).then(function (r) { return r.json(); }).then(function (d) {
-      if (!d.ok) { $('scanErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_scanFail'); return; }
+      if (!d.ok) {
+        if (handleAuthFail(d)) return;
+        $('scanErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_scanFail');
+        return;
+      }
       pid = d.pid;
-      localStorage.setItem(PID_KEY, pid);
+      localStorage.setItem(pidKey(sid), pid);
       toast(t('p_welcome', { n: d.pid }), 'ok');
       startStream(); // pid 变化，重连以获取 me 视角
       poll();
@@ -863,12 +1241,13 @@
     submitting = true; $('predBtn').disabled = true;
     fetch('/api/predict', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid: pid, oddEven: selOE, number: selNum })
+      body: JSON.stringify({ pid: pid, sid: sid, ut: ut, oddEven: selOE, number: selNum })
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.ok) {
         toast(t('p_predSubmitting'), 'ok');
         poll();
       } else {
+        if (handleAuthFail(d)) { $('predBtn').disabled = false; return; }
         $('predErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_predSubmitFail');
         $('predBtn').disabled = false;
         // 已提交过预测（可能多端/刷新后重复点击）→ 同步状态
@@ -880,18 +1259,46 @@
     }).finally(function () { submitting = false; });
   });
 
-  /* ---------- 登出 ---------- */
+  /* ---------- 登出（只清本机身份，保留场次绑定：仍在同一场次，避免被判为切换） ---------- */
   $('logoutBtn').addEventListener('click', function () {
     if (!confirm(t('p_logoutConfirm'))) return;
     stopCamera();
     pid = '';
-    localStorage.removeItem(PID_KEY);
+    localStorage.removeItem(pidKey(sid));
     selOE = null; selNum = null;
+    clearPredSelection();
     state = null;
     $('logoutBtn').classList.add('hidden');
     toast(t('p_loggedOut'), 'ok');
     startStream(); // 清除 pid 后重连
     poll();
+  });
+
+  /* ---------- 切换场次：展开选择，但要真正切过去必须重新验证口令 ---------- */
+  $('switchSessBtn').addEventListener('click', function () {
+    stopCamera();
+    picking = true;       // 不关闭当前场次连接：取消选择可原样退回
+    render();
+    loadSessions();
+  });
+
+  /* ---------- 口令弹层事件 ---------- */
+  $('pwBtn').addEventListener('click', submitPw);
+  $('pwCancel').addEventListener('click', function () {
+    closePwModal();
+    picking = false;   // 取消即退出选择态：有绑定则原样回到当前场次，无绑定则留在选择界面
+    render();
+  });
+  $('pwInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitPw(); }
+    if (e.key === 'Escape') { e.preventDefault(); $('pwCancel').click(); }
+  });
+  $('pwMask').addEventListener('click', function (e) {
+    if (e.target === $('pwMask')) $('pwCancel').click();
+  });
+  $('sessCancel').addEventListener('click', function () {
+    picking = false;
+    render();
   });
 
   /* ---------- 语言切换 ---------- */
@@ -903,18 +1310,16 @@
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) {
       // 回到前台：重连 SSE 并立即对齐一次
-      startStream();
-      poll();
+      if (sid) { startStream(); poll(); }
     } else {
       stopCamera();
       closeStream(); // 后台关闭连接，省资源；回前台时重连
     }
   });
 
-  /* 初始化：应用语言后建立 SSE 连接（替代轮询） */
+  /* 初始化：应用语言 → 决定进入哪个场次 → 建立该场次的 SSE 连接 */
   applyI18n();
-  startStream();
-  poll();
+  bootstrap();
 })();
 </script>
 </body>
