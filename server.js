@@ -1258,6 +1258,7 @@ function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/' || rel === '') rel = '/index.html';          // 玩家端入口
   if (rel === '/staff') rel = '/staff.html';                    // 工作人员端入口（别名）
+  if (rel === '/admin') rel = '/admin.html';                    // 管理界面入口（别名）
   if (rel === '/bigscreen') rel = '/bigscreen.html';            // 实时大屏入口（别名）
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
@@ -1379,6 +1380,7 @@ async function start() {
   }).listen(PORT, '0.0.0.0', () => {
     console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后选场次并扫自己的二维码)');
     console.log('工作人员端入口: http://localhost:' + PORT + '/staff');
+    console.log('管理界面入口: http://localhost:' + PORT + '/admin （当日对账 / 大屏 / 新建场次 / 关闭场次）');
     console.log('实时大屏入口: http://localhost:' + PORT + '/bigscreen （需员工密码，按场次实时展示每位玩家的当前选项）');
     console.log('多场次: 全集群最多并行 ' + MAX_SESSIONS + ' 场，员工端可运行时新建/切换/关闭');
     console.log('玩家端口令: ≥2 场并行时，选择/切换场次需输入口令（验证后绑定 12 小时，期间不可切换）');
