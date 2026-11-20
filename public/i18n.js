@@ -219,6 +219,15 @@
       p_logoutConfirm: '确认登出？将清除本机身份，需重新扫码。',
       p_loggedOut: '已登出',
 
+      /* 登录后规则介绍（10 秒自动关闭） */
+      p_rulesTitle: '玩法说明',
+      p_rule1: '扫描会员码完成登记，即进入本场',
+      p_rule2: '先猜本轮开奖数字是「单」还是「双」',
+      p_rule3: '再猜一个 1-8 的数字，两项各只有一次机会，提交后不可修改',
+      p_rule4: '工作人员锁定数字后立即公布结果，命中按门店规则计分',
+      p_rulesTap: '点击任意位置立即开始',
+      p_rulesCountdown: '{n} 秒后自动关闭',
+
       /* 场次选择 */
       p_sessionLabel: '场次',
       p_sessionRound: '{name} · 第 {n} 轮',
@@ -461,6 +470,15 @@
       p_logoutConfirm: '確認登出？將清除本機身份，需重新掃碼。',
       p_loggedOut: '已登出',
 
+      /* 登入後規則介紹（10 秒自動關閉） */
+      p_rulesTitle: '玩法說明',
+      p_rule1: '掃描會員碼完成登記，即進入本場',
+      p_rule2: '先猜本輪開獎數字是「單」還是「雙」',
+      p_rule3: '再猜一個 1-8 的數字，兩項各只有一次機會，提交後不可修改',
+      p_rule4: '工作人員鎖定數字後立即公佈結果，命中按門店規則計分',
+      p_rulesTap: '點擊任意位置立即開始',
+      p_rulesCountdown: '{n} 秒後自動關閉',
+
       /* 場次選擇 */
       p_sessionLabel: '場次',
       p_sessionRound: '{name} · 第 {n} 輪',
@@ -701,6 +719,15 @@
       p_predSubmitFail: 'Submit failed',
       p_logoutConfirm: 'Log out? This clears your local identity and requires re-scanning.',
       p_loggedOut: 'Logged out',
+
+      /* Rules shown after sign-in (auto-close in 10s) */
+      p_rulesTitle: 'How to Play',
+      p_rule1: 'Scan your member code to register for this session',
+      p_rule2: 'Guess whether the winning number is Odd or Even',
+      p_rule3: 'Then pick a number from 1-8 — one guess each, no changes after submitting',
+      p_rule4: 'Results show as soon as staff lock the number; hits earn points per store rules',
+      p_rulesTap: 'Tap anywhere to start now',
+      p_rulesCountdown: 'Closes in {n}s',
 
       /* Session picker */
       p_sessionLabel: 'Session',

@@ -299,6 +299,53 @@
   .pw-ok:disabled { opacity:.55; cursor:default; }
   .pw-hint { margin-top:10px; font-size:11.5px; color:var(--muted); line-height:1.5; }
 
+  /* ---------- 登录后规则介绍：10 秒自动关闭，点击任意处立即开始 ---------- */
+  .rules-mask {
+    position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center;
+    padding:22px; background:rgba(0,0,0,.74);
+    opacity:0; transition:opacity .2s ease;
+    -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px);
+    -webkit-tap-highlight-color:transparent; cursor:pointer;
+  }
+  .rules-mask.show { opacity:1; }
+  .rules-mask.out { opacity:0; pointer-events:none; }
+  .rules-box {
+    width:100%; max-width:360px; max-height:100%; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    border-radius:20px; padding:24px 20px 20px; cursor:default;
+    background:linear-gradient(180deg,#420c13,#260509);
+    border:1px solid var(--card-border-strong);
+    box-shadow:0 24px 60px rgba(0,0,0,.65), inset 0 1px 0 rgba(255,220,150,.16);
+  }
+  .rules-box h3 {
+    text-align:center; font-size:21px; font-weight:900; letter-spacing:3px; margin-bottom:2px;
+    background:linear-gradient(180deg,#fff0c2 0%,var(--gold) 50%,var(--gold-deep) 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent; text-shadow:none;
+    filter:drop-shadow(0 2px 2px rgba(0,0,0,.45));
+  }
+  .rules-list { list-style:none; margin:18px 0 0; }
+  .rules-list li { display:flex; gap:10px; font-size:14.5px; line-height:1.62; margin-bottom:12px; color:var(--text); }
+  .rules-list li .no {
+    flex:none; width:21px; height:21px; margin-top:1px; border-radius:7px;
+    display:inline-flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:900; color:#3a1500;
+    background:linear-gradient(135deg,#fff0c2,var(--gold) 55%,var(--gold-deep));
+    box-shadow:0 1px 3px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.5); text-shadow:none;
+  }
+  .rules-foot { margin-top:16px; padding-top:14px; border-top:1px dashed rgba(255,212,94,.28); text-align:center; }
+  .rules-tap { font-size:13.5px; font-weight:800; letter-spacing:1px; color:var(--gold); animation:rulesPulse 1.7s ease-in-out infinite; }
+  .rules-time { margin-top:8px; font-size:12px; letter-spacing:.5px; color:var(--muted); text-shadow:none; }
+  @keyframes rulesPulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }
+  /* 页面最下方的细倒计时条（随剩余时间收缩） */
+  .rules-bar {
+    position:fixed; left:0; right:0; bottom:0; height:4px; z-index:101; pointer-events:none;
+    background:rgba(255,240,200,.16);
+  }
+  .rules-bar i {
+    display:block; height:100%; width:100%; transform-origin:left center;
+    background:linear-gradient(90deg,#ffe58a 0%,#f0a71c 55%,#e2571c 100%);
+    box-shadow:0 0 12px rgba(255,200,80,.65);
+  }
+
   .hidden { display:none !important; }
   .conn-lost { text-align:center; color:var(--muted); font-size:13px; padding:8px 0; }
 </style>
@@ -422,6 +469,24 @@
 
 <div id="toast"></div>
 
+<!-- 登录后规则介绍：10 秒倒计时，点击任意处立即关闭 -->
+<div class="rules-mask hidden" id="rulesMask" role="dialog" aria-modal="true" aria-labelledby="rulesTitle" aria-describedby="rulesTap">
+  <div class="rules-box">
+    <h3 id="rulesTitle" data-i18n="p_rulesTitle">玩法说明</h3>
+    <ul class="rules-list">
+      <li><span class="no">1</span><span data-i18n="p_rule1"></span></li>
+      <li><span class="no">2</span><span data-i18n="p_rule2"></span></li>
+      <li><span class="no">3</span><span data-i18n="p_rule3"></span></li>
+      <li><span class="no">4</span><span data-i18n="p_rule4"></span></li>
+    </ul>
+    <div class="rules-foot">
+      <div class="rules-tap" id="rulesTap" data-i18n="p_rulesTap">点击任意位置立即开始</div>
+      <div class="rules-time" id="rulesTime" aria-live="off"></div>
+    </div>
+  </div>
+  <div class="rules-bar" aria-hidden="true"><i id="rulesBarFill"></i></div>
+</div>
+
 <script>
 (function () {
   'use strict';
@@ -499,6 +564,9 @@
     // 动态区重新渲染
     render();
 
+    // 规则层正在展示时，语言切换后立刻重绘倒计时文案（不等下一帧）
+    if (rulesOpen()) { rulesLastSec = -1; paintRules(rulesEndAt - Date.now()); }
+
     // 切换摄像头按钮的 aria/title 也随语言更新
     updateCamSwitchUI();
   }
@@ -518,6 +586,111 @@
       return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
     });
   }
+
+  /* ---------- 玩家端规则介绍（登录成功后自动展示 10 秒） ----------
+     触发点只有一个：扫码/手动登记成功（handleScannedContent）。
+     同一身份在本次页面里最多展示一次；刷新页面（已有本地身份）不会重放。
+     关闭方式：点击任意区域立即关闭，或倒计时结束自动关闭。
+     关闭后遮罩从布局与点击链路中彻底移除，不影响后续扫码/预测/语言切换。 */
+  var RULES_MS = 10000;
+  var rulesEndAt = 0;        // 本轮展示的结束时间戳（ms）
+  var rulesRemain = 0;       // 切到后台时暂存的剩余毫秒
+  var rulesRaf = 0;          // rAF 句柄
+  var rulesLastSec = -1;     // 上次渲染的秒数（避免每帧重写文本）
+  var rulesPaused = false;   // 页面隐藏时暂停倒计时
+  var rulesClosing = false;  // 正在淡出
+  var rulesShownFor = '';    // 已展示过规则的身份，防止重复触发
+  var rulesSeq = 0;          // 展示序号：用于丢弃上一次淡出的延迟收尾
+
+  function rulesEl() { return $('rulesMask'); }
+
+  function rulesOpen() {
+    var m = rulesEl();
+    return !!m && !m.classList.contains('hidden') && !rulesClosing;
+  }
+
+  /** 渲染倒计时文案与底部细条宽度 */
+  function paintRules(remain) {
+    var ms = Math.max(0, remain);
+    var sec = Math.ceil(ms / 1000);
+    if (sec !== rulesLastSec) {
+      rulesLastSec = sec;
+      $('rulesTime').textContent = t('p_rulesCountdown', { n: sec });
+    }
+    $('rulesBarFill').style.transform = 'scaleX(' + (ms / RULES_MS).toFixed(4) + ')';
+  }
+
+  function rulesTick() {
+    rulesRaf = 0;
+    if (!rulesOpen() || rulesPaused) return;
+    var remain = rulesEndAt - Date.now();
+    if (remain <= 0) { closeRules(); return; }
+    paintRules(remain);
+    rulesRaf = requestAnimationFrame(rulesTick);
+  }
+
+  function scheduleRules() {
+    if (rulesRaf) cancelAnimationFrame(rulesRaf);
+    rulesRaf = requestAnimationFrame(rulesTick);
+  }
+
+  /** 展示规则：pidForRules 变化才会再展示一次。返回 true 表示确实展示了 */
+  function startRules(pidForRules) {
+    if (!pidForRules) return false;
+    if (rulesShownFor === pidForRules) return false;
+    if (rulesOpen()) return false;
+    rulesShownFor = pidForRules;
+
+    var m = rulesEl();
+    rulesSeq++;
+    rulesClosing = false;
+    rulesPaused = false;
+    rulesLastSec = -1;
+    rulesEndAt = Date.now() + RULES_MS;
+    paintRules(RULES_MS);
+
+    m.classList.remove('hidden', 'out');
+    void m.offsetWidth;              // 强制回流，保证淡入过渡生效
+    m.classList.add('show');
+    m.removeAttribute('aria-hidden');
+    scheduleRules();
+    return true;
+  }
+
+  /** 关闭规则（点击或倒计时结束共用）：先解除点击拦截，再淡出并隐藏 */
+  function closeRules() {
+    var m = rulesEl();
+    if (!m || m.classList.contains('hidden') || rulesClosing) return;
+    rulesClosing = true;
+    var seq = ++rulesSeq;
+    if (rulesRaf) { cancelAnimationFrame(rulesRaf); rulesRaf = 0; }
+    m.classList.remove('show');
+    m.classList.add('out');          // out 带 pointer-events:none，立刻不再拦截点击
+    m.setAttribute('aria-hidden', 'true');
+    setTimeout(function () {
+      if (seq !== rulesSeq) return;  // 期间又重新展示过，交给新一轮管理
+      m.classList.add('hidden');
+      m.classList.remove('out');
+      rulesClosing = false;
+    }, 220);
+  }
+
+  /** 页面隐藏/恢复时暂停与续算倒计时，避免玩家没看到就被关掉 */
+  function pauseRules() {
+    if (!rulesOpen() || rulesPaused) return;
+    rulesPaused = true;
+    rulesRemain = Math.max(0, rulesEndAt - Date.now());
+    if (rulesRaf) { cancelAnimationFrame(rulesRaf); rulesRaf = 0; }
+  }
+
+  function resumeRules() {
+    if (!rulesOpen() || !rulesPaused) return;
+    rulesPaused = false;
+    rulesEndAt = Date.now() + rulesRemain;
+    scheduleRules();
+  }
+
+  rulesEl().addEventListener('click', function () { closeRules(); });
 
   /* ---------- 状态判定 ---------- */
   function phase(s) {
@@ -922,7 +1095,8 @@
       }
       pid = d.pid;
       localStorage.setItem(pidKey(sid), pid);
-      toast(t('p_welcome', { n: d.pid }), 'ok');
+      // 登录成功 → 展示规则介绍（10 秒 / 点击即关）；规则层已占用全屏时不再叠 toast
+      if (!startRules(pid)) toast(t('p_welcome', { n: d.pid }), 'ok');
       startStream(); // pid 变化，重连以获取 me 视角
       poll();
     }).catch(function () { $('scanErr').textContent = t('p_scanNetErr'); });
@@ -1263,6 +1437,8 @@
   $('logoutBtn').addEventListener('click', function () {
     if (!confirm(t('p_logoutConfirm'))) return;
     stopCamera();
+    closeRules();             // 登出顺带收起规则层，避免残留遮挡
+    rulesShownFor = '';       // 下次登录（重新扫码）再展示一次
     pid = '';
     localStorage.removeItem(pidKey(sid));
     selOE = null; selNum = null;
@@ -1325,9 +1501,11 @@
     if (!document.hidden) {
       // 回到前台：重连 SSE 并立即对齐一次
       if (sid) { startStream(); poll(); }
+      resumeRules();
     } else {
       stopCamera();
       closeStream(); // 后台关闭连接，省资源；回前台时重连
+      pauseRules();
     }
   });
 
