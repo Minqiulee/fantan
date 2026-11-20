@@ -8,6 +8,8 @@
  *   - round         场次内的当前轮次状态（开奖数字、锁定时间），每场一行
  *   - player        场次内每个玩家的登记与预测，主键 (session_id, id)
  *   - identity      场次内的跨轮次身份档案，主键 (session_id, id)
+ *   - round_archive 结算归档表头（一轮一行，append-only）
+ *   - round_archive_entry 归档明细（一人一行，append-only）
  *
  * 所有业务表首列都是 session_id：任何读写都必须带 session_id，
  * 场次之间不共享任何可变状态（连「老玩家」累计轮次也按场次独立计数）。
@@ -92,6 +94,93 @@ async function ensureCompositePk(p, table) {
   console.log('[db] 已升级主键: ' + table + '(session_id, id)');
 }
 
+/* ============================================================
+ * 结算归档（append-only）
+ * ------------------------------------------------------------
+ * 与运行态表彻底分开：round / player 是「当前一轮」的可变快照，
+ * 每轮 reset 都会被清空重写；归档表只增不改，是一轮结束后的唯一留痕。
+ *
+ *   round_archive        一轮一行：场次快照 + 轮次号 + 开奖数字 + 锁定时间
+ *   round_archive_entry  一人一行：会员号 + 预测内容 + 命中结果
+ *
+ * 写入时机：锁定（/api/confirm）那一刻，与运行态快照写在同一个事务里，
+ * 所以「锁定成功」与「归档成功」要么同时成立，要么同时回滚。
+ *
+ * 不可变性：由数据库触发器兜底——任何 UPDATE / DELETE / TRUNCATE 直接抛错，
+ * 不只是「代码里不写 delete」的口头约定。要更正只能追加新记录。
+ * ============================================================ */
+
+/** 数字 → 单/双（与前端、玩家端同一套字形；正文里只认这两个字面值） */
+function lineOfNumber(n) {
+  return Number(n) % 2 === 1 ? '单' : '双';
+}
+
+/** 建归档表 + append-only 触发器。可反复执行。 */
+async function initArchiveTables(p) {
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS round_archive (
+      archive_id      BIGSERIAL PRIMARY KEY,
+      session_id      TEXT    NOT NULL,   -- 场次 ID（对账/分账的唯一维度）
+      session_name    TEXT    NOT NULL,   -- 场次名称快照（事后改名不影响历史）
+      session_seq     INTEGER NOT NULL,   -- 场次显示序号快照
+      round           INTEGER NOT NULL,   -- 场次内轮次号
+      number          INTEGER NOT NULL,   -- 开奖数字 1–8
+      odd_even        TEXT    NOT NULL,   -- 开奖单双（由 number 派生，便于直接对账）
+      locked_at       BIGINT  NOT NULL,   -- 锁定时间戳（毫秒）—— 当日汇总按此列切分
+      archived_at     BIGINT  NOT NULL,   -- 归档写入时间戳（毫秒）
+      player_count    INTEGER NOT NULL DEFAULT 0, -- 本轮扫码人数
+      submitted_count INTEGER NOT NULL DEFAULT 0  -- 本轮提交预测人数
+    );
+  `);
+  await p.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_round_archive_session_round
+      ON round_archive (session_id, round);
+  `);
+  await p.query('CREATE INDEX IF NOT EXISTS idx_round_archive_locked ON round_archive (locked_at);');
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS round_archive_entry (
+      archive_id    BIGINT  NOT NULL REFERENCES round_archive (archive_id), -- 所属轮次（不级联删除：归档行永不被删）
+      member_id     TEXT    NOT NULL,   -- 会员号（二维码内容 / 玩家原始 ID）
+      odd_even      TEXT,               -- 预测单双（null = 未提交）
+      number        INTEGER,            -- 预测数字（null = 未提交）
+      submitted     BOOLEAN NOT NULL DEFAULT FALSE, -- 是否提交过预测
+      odd_even_hit  BOOLEAN NOT NULL DEFAULT FALSE, -- 单双是否命中（未提交恒为 false）
+      number_hit    BOOLEAN NOT NULL DEFAULT FALSE, -- 数字是否命中（未提交恒为 false）
+      registered_at BIGINT  NOT NULL,   -- 扫码登记时间戳（毫秒）
+      submitted_at  BIGINT,             -- 提交预测时间戳（毫秒）
+      archived_at   BIGINT  NOT NULL,   -- 归档写入时间戳（毫秒）
+      PRIMARY KEY (archive_id, member_id)
+    );
+  `);
+  await p.query('CREATE INDEX IF NOT EXISTS idx_round_archive_entry_member ON round_archive_entry (member_id);');
+  await p.query('CREATE INDEX IF NOT EXISTS idx_round_archive_entry_session ON round_archive_entry (archive_id, submitted);');
+
+  // append-only 兜底：任何改写历史的尝试在数据库层就被拒
+  await p.query(`
+    CREATE OR REPLACE FUNCTION archive_block_mutation() RETURNS trigger AS $fn$
+    BEGIN
+      RAISE EXCEPTION 'append-only 表 % 不允许 %', TG_TABLE_NAME, TG_OP
+        USING HINT = '结算归档只允许 INSERT；需要更正请追加新记录，不要改写历史。';
+    END;
+    $fn$ LANGUAGE plpgsql;
+  `);
+  for (const table of ['round_archive', 'round_archive_entry']) {
+    await p.query(`DROP TRIGGER IF EXISTS trg_${table}_no_update_delete ON ${table};`);
+    await p.query(
+      `CREATE TRIGGER trg_${table}_no_update_delete
+         BEFORE UPDATE OR DELETE ON ${table}
+         FOR EACH ROW EXECUTE FUNCTION archive_block_mutation();`
+    );
+    await p.query(`DROP TRIGGER IF EXISTS trg_${table}_no_truncate ON ${table};`);
+    await p.query(
+      `CREATE TRIGGER trg_${table}_no_truncate
+         BEFORE TRUNCATE ON ${table}
+         FOR EACH STATEMENT EXECUTE FUNCTION archive_block_mutation();`
+    );
+  }
+}
+
 /**
  * 幂等建表 + 老库迁移：首次启动时自动创建所需表，已存在的表补齐场次维度。
  * 所有时间戳统一存毫秒（BIGINT），与现有 state 里的 Date.now() 语义一致。
@@ -173,6 +262,8 @@ async function initDb() {
   await p.query('CREATE INDEX IF NOT EXISTS idx_player_session ON player(session_id, registered_at);');
   await p.query('CREATE INDEX IF NOT EXISTS idx_round_session ON round(session_id);');
   await p.query('CREATE INDEX IF NOT EXISTS idx_session_status ON game_session(status, seq);');
+
+  await initArchiveTables(p);
 
   // 升级场景：老库有单场次数据但没有场次实体时，补一条 main 场次，
   // 否则首次启动会把它当成「空场次」，随后的整表重写会把历史玩家覆盖掉。
@@ -256,9 +347,98 @@ async function loadSessions() {
 }
 
 /**
+ * 把「当前这一轮」追加进归档（调用方事务内）。
+ *
+ * 只在轮次已锁定（number 与 lockedAt 都有值）时写入；未锁定的轮次没有任何留痕价值，
+ * 也避免把 staff 正在录号的中间态写进结算表。
+ *
+ * 幂等：表头按 (session_id, round) 唯一，明细按 (archive_id, member_id) 唯一，
+ * 全部 ON CONFLICT DO NOTHING —— 重复保存同一轮不会产生第二份归档，
+ * 也不会覆盖既有行的任何字段（append-only 的前提）。
+ *
+ * 返回 archive_id（未锁定返回 null）。
+ */
+async function archiveRoundInTx(client, session) {
+  if (session.number == null || session.lockedAt == null) return null;
+
+  const players = Object.values(session.players);
+  const submitted = players.filter((pl) => pl.oddEven != null).length;
+  const oddEven = lineOfNumber(session.number);
+  const now = Date.now();
+
+  const ins = await client.query(
+    `INSERT INTO round_archive
+       (session_id, session_name, session_seq, round, number, odd_even,
+        locked_at, archived_at, player_count, submitted_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (session_id, round) DO NOTHING
+     RETURNING archive_id`,
+    [
+      session.id, session.name, Number(session.seq) || 1, session.round,
+      session.number, oddEven, session.lockedAt, now, players.length, submitted
+    ]
+  );
+
+  let archiveId;
+  if (ins.rows.length) {
+    archiveId = Number(ins.rows[0].archive_id);
+  } else {
+    const ex = await client.query(
+      'SELECT archive_id FROM round_archive WHERE session_id = $1 AND round = $2',
+      [session.id, session.round]
+    );
+    if (!ex.rows.length) return null; // 理论上不可达：唯一索引冲突必然能查到
+    archiveId = Number(ex.rows[0].archive_id);
+  }
+
+  if (!players.length) return archiveId;
+
+  // 分批插明细：每批 200 行，避免单条 SQL 参数过多
+  const BATCH = 200;
+  for (let i = 0; i < players.length; i += BATCH) {
+    const chunk = players.slice(i, i + BATCH);
+    const params = [];
+    const tuples = [];
+    for (const pl of chunk) {
+      const hasPred = pl.oddEven != null;
+      const base = params.length;
+      tuples.push(
+        `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},` +
+        `$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10})`
+      );
+      params.push(
+        archiveId,
+        pl.id,
+        hasPred ? pl.oddEven : null,
+        hasPred && pl.number != null ? Number(pl.number) : null,
+        hasPred,
+        // 命中判定：单双按开奖数字奇偶性，数字按相等。未提交一律 false
+        hasPred && pl.oddEven === oddEven,
+        hasPred && pl.number != null && Number(pl.number) === Number(session.number),
+        pl.registeredAt,
+        pl.submittedAt != null ? pl.submittedAt : null,
+        now
+      );
+    }
+    await client.query(
+      `INSERT INTO round_archive_entry
+         (archive_id, member_id, odd_even, number, submitted,
+          odd_even_hit, number_hit, registered_at, submitted_at, archived_at)
+       VALUES ${tuples.join(',')}
+       ON CONFLICT (archive_id, member_id) DO NOTHING`,
+      params
+    );
+  }
+  return archiveId;
+}
+
+/**
  * 单个场次的全量落库（事务内）。
  * 只删写本场次的行：round 删除后重插一行，player 本场次清空后重写，
  * identity 按 (session_id, id) upsert（历史累计不能删）。
+ *
+ * 归档也在同一个事务里写：锁定后的轮次一旦落库就同时有归档记录，
+ * 不会出现「运行态已开奖、归档表缺这一轮」的中间态。
  */
 async function doSaveSession(session) {
   const p = getPool();
@@ -301,6 +481,11 @@ async function doSaveSession(session) {
       );
     }
 
+    // 归档：本轮已锁定则追加写；未锁定直接跳过。
+    // 注意这里只有 INSERT，没有任何 DELETE / UPDATE —— reset 走的也是这条路径，
+    // 它清的是 round / player，碰不到归档表。
+    await archiveRoundInTx(client, session);
+
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -316,16 +501,26 @@ async function doSaveSession(session) {
  */
 const writeChains = new Map();
 
+/**
+ * 入队并返回 { ok, error }。不向外抛异常（历史调用点都是 fire-and-forget），
+ * 但把结果交给调用方 —— 锁定这一轮必须等到「写入 + 归档」真正成功才算结算完成。
+ */
 function enqueueWrite(sessionId, fn) {
   const prev = writeChains.get(sessionId) || Promise.resolve();
-  const next = prev.then(fn, fn).catch((e) => {
-    console.error('[db] 保存场次失败(' + sessionId + '):', e.message);
-  });
+  const next = prev
+    .then(fn, fn)
+    .then(
+      () => ({ ok: true }),
+      (e) => {
+        console.error('[db] 保存场次失败(' + sessionId + '):', e.message);
+        return { ok: false, error: e.message };
+      }
+    );
   writeChains.set(sessionId, next);
   return next;
 }
 
-/** 持久化某个场次的全量状态（round / player / identity）。失败仅记录错误，不阻断请求。 */
+/** 持久化某个场次的全量状态（round / player / identity / 已锁定轮次的归档）。 */
 function saveSession(session) {
   return enqueueWrite(session.id, () => doSaveSession(session));
 }
@@ -361,6 +556,157 @@ async function setConfig(key, value) {
   );
 }
 
+/* ============================================================
+ * 归档读取：当日聚合 + 对账导出
+ * ------------------------------------------------------------
+ * 所有查询都以 locked_at ∈ [from, to) 为口径（毫秒时间戳半开区间），
+ * 由上层按运营时区算好边界，数据库只做区间比较，不做时区换算。
+ * ============================================================ */
+
+/** 某一轮是否已归档（用于启动补齐与诊断，不参与写入路径）。 */
+async function archiveExists(sessionId, round) {
+  const r = await getPool().query(
+    'SELECT 1 FROM round_archive WHERE session_id = $1 AND round = $2 LIMIT 1',
+    [sessionId, round]
+  );
+  return (r.rowCount || 0) > 0;
+}
+
+/**
+ * 时间区间内的汇总：场次数、轮次数、去重参与人数，以及分场次明细。
+ * 「场次数」= 区间内有已归档轮次的场次数（不是当前进行中的场次数）。
+ */
+async function archiveSummary(from, to) {
+  const p = getPool();
+
+  const t = await p.query(
+    `SELECT count(*)::int                              AS rounds,
+            count(DISTINCT session_id)::int             AS sessions,
+            coalesce(sum(player_count), 0)::int         AS entries,
+            coalesce(sum(submitted_count), 0)::int      AS submitted
+       FROM round_archive
+      WHERE locked_at >= $1 AND locked_at < $2`,
+    [from, to]
+  );
+
+  const m = await p.query(
+    `SELECT count(DISTINCT e.member_id)::int AS members,
+            count(DISTINCT e.member_id) FILTER (WHERE e.submitted)::int AS predicted_members,
+            count(*) FILTER (WHERE e.odd_even_hit)::int AS odd_even_hits,
+            count(*) FILTER (WHERE e.number_hit)::int   AS number_hits
+       FROM round_archive a
+       JOIN round_archive_entry e ON e.archive_id = a.archive_id
+      WHERE a.locked_at >= $1 AND a.locked_at < $2`,
+    [from, to]
+  );
+
+  // 分场次：表头与人数分别聚合后再 join。
+  // 不能直接 LEFT JOIN 明细后 count(*)——一轮 N 人会被放大成 N 行，轮次与人数全错。
+  const s = await p.query(
+    `SELECT h.session_id, h.session_name, h.session_seq, h.rounds, h.entries, h.submitted,
+            h.first_locked_at, h.last_locked_at, coalesce(m.members, 0)::int AS members
+       FROM (
+         SELECT session_id,
+                (array_agg(session_name ORDER BY locked_at DESC, round DESC))[1] AS session_name,
+                max(session_seq)::int                    AS session_seq,
+                count(*)::int                            AS rounds,
+                coalesce(sum(player_count), 0)::int      AS entries,
+                coalesce(sum(submitted_count), 0)::int   AS submitted,
+                min(locked_at)                           AS first_locked_at,
+                max(locked_at)                           AS last_locked_at
+           FROM round_archive
+          WHERE locked_at >= $1 AND locked_at < $2
+          GROUP BY session_id
+       ) h
+       LEFT JOIN (
+         SELECT a.session_id, count(DISTINCT e.member_id)::int AS members
+           FROM round_archive a
+           JOIN round_archive_entry e ON e.archive_id = a.archive_id
+          WHERE a.locked_at >= $1 AND a.locked_at < $2
+          GROUP BY a.session_id
+       ) m ON m.session_id = h.session_id
+      ORDER BY h.first_locked_at ASC, h.session_id ASC`,
+    [from, to]
+  );
+
+  return {
+    rounds: t.rows[0].rounds,
+    sessions: t.rows[0].sessions,
+    entries: t.rows[0].entries,
+    submitted: t.rows[0].submitted,
+    members: m.rows[0].members,
+    predictedMembers: m.rows[0].predicted_members,
+    oddEvenHits: m.rows[0].odd_even_hits,
+    numberHits: m.rows[0].number_hits,
+    bySession: s.rows.map((r) => ({
+      sessionId: r.session_id,
+      sessionName: r.session_name,
+      sessionSeq: Number(r.session_seq),
+      rounds: r.rounds,
+      entries: r.entries,
+      submitted: r.submitted,
+      members: r.members,
+      firstLockedAt: Number(r.first_locked_at),
+      lastLockedAt: Number(r.last_locked_at)
+    }))
+  };
+}
+
+/** 轮次级明细：一轮一行（含 0 人轮次）。用于核对「当天到底开了几轮」。 */
+async function archiveRoundRows(from, to, sessionId) {
+  const p = getPool();
+  const params = [from, to];
+  let sql = `
+    SELECT session_id, session_name, session_seq, round, number, odd_even,
+           locked_at, archived_at, player_count, submitted_count
+      FROM round_archive
+     WHERE locked_at >= $1 AND locked_at < $2`;
+  if (sessionId) { params.push(sessionId); sql += ` AND session_id = $${params.length}`; }
+  sql += ' ORDER BY locked_at ASC, session_id ASC, round ASC';
+  const res = await p.query(sql, params);
+  return res.rows;
+}
+
+/** 会员级明细：一人一行（每会员每轮）。积分结算的原始凭据。 */
+async function archiveEntryRows(from, to, sessionId) {
+  const p = getPool();
+  const params = [from, to];
+  let sql = `
+    SELECT a.session_id, a.session_name, a.session_seq, a.round, a.number AS drawn_number,
+           a.odd_even AS drawn_odd_even, a.locked_at, a.archived_at,
+           e.member_id, e.odd_even, e.number, e.submitted, e.odd_even_hit, e.number_hit,
+           e.registered_at, e.submitted_at
+      FROM round_archive a
+      JOIN round_archive_entry e ON e.archive_id = a.archive_id
+     WHERE a.locked_at >= $1 AND a.locked_at < $2`;
+  if (sessionId) { params.push(sessionId); sql += ` AND a.session_id = $${params.length}`; }
+  sql += ' ORDER BY a.locked_at ASC, a.session_id ASC, a.round ASC, e.registered_at ASC, e.member_id ASC';
+  const res = await p.query(sql, params);
+  return res.rows;
+}
+
+/** 会员汇总：一人一行（跨场次、跨轮次合并），按会员号去重。 */
+async function archiveMemberRows(from, to, sessionId) {
+  const p = getPool();
+  const params = [from, to];
+  let sql = `
+    SELECT e.member_id,
+           count(DISTINCT a.session_id)::int                  AS sessions,
+           count(*)::int                                      AS rounds,
+           count(*) FILTER (WHERE e.submitted)::int           AS predicted,
+           count(*) FILTER (WHERE e.odd_even_hit)::int        AS odd_even_hits,
+           count(*) FILTER (WHERE e.number_hit)::int          AS number_hits,
+           min(a.locked_at)                                   AS first_locked_at,
+           max(a.locked_at)                                   AS last_locked_at
+      FROM round_archive a
+      JOIN round_archive_entry e ON e.archive_id = a.archive_id
+     WHERE a.locked_at >= $1 AND a.locked_at < $2`;
+  if (sessionId) { params.push(sessionId); sql += ` AND a.session_id = $${params.length}`; }
+  sql += ' GROUP BY e.member_id ORDER BY e.member_id ASC';
+  const res = await p.query(sql, params);
+  return res.rows;
+}
+
 module.exports = {
   DEFAULT_SESSION_ID,
   initDb,
@@ -369,5 +715,11 @@ module.exports = {
   saveSessionMeta,
   getConfig,
   setConfig,
-  getPool
+  getPool,
+  lineOfNumber,
+  archiveExists,
+  archiveSummary,
+  archiveRoundRows,
+  archiveEntryRows,
+  archiveMemberRows
 };

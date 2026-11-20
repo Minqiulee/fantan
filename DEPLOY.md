@@ -17,7 +17,11 @@ Postgresql：
 | `round` | 每个场次一行：轮次与开奖数字 | `locked_at` |
 | `player` | 每轮玩家登记与预测（主键 `(session_id, id)`） | `registered_at`、`submitted_at` |
 | `identity` | 场次内跨轮次玩家身份档案（主键 `(session_id, id)`） | `created_at`、`updated_at` |
+| `round_archive` | 结算归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
+| `round_archive_entry` | 归档明细：一人一行，含会员号、预测内容、命中结果（主键 `(archive_id, member_id)`） | `registered_at`、`submitted_at`、`archived_at` |
 | `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥） | `updated_at` |
+
+**归档表是 append-only 的**：`round_archive` / `round_archive_entry` 由触发器 `archive_block_mutation()` 守着，任何 `UPDATE` / `DELETE` / `TRUNCATE` 都会抛异常。要修正历史只能追加新记录（或走导出层处理），不要直连数据库改这两张表。`reset` 只清 `round` / `player`，不影响归档。
 
 玩家 ID 统一为「二维码内容 / 原始 ID」（未经 hash），`player.id` 与 `identity.id` 一致；同一 ID 可同时存在于多个场次，因此主键带 `session_id`。
 
@@ -64,6 +68,13 @@ fly logs
 - `数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS）`
 - 无 `[db] 数据库初始化失败` 报错
 
+首次启动会额外建 `round_archive` / `round_archive_entry` 与只增不改触发器（`CREATE TABLE IF NOT EXISTS`，不动已有表）。上线后自检归档链路：
+
+```bash
+# 用员工端登录拿到的 token 查当日聚合，rounds 应与当天实际锁定轮次一致
+curl "https://<your-app>/api/archive/summary?token=<staff-token>"
+```
+
 ## 本地开发（可选）
 
 本地不设 `PG_HOST/PG_USER/PG_PASS` 时，回退到 `DATABASE_URL`；两者都不设则连本地默认库：
@@ -93,6 +104,7 @@ docker run -d --name oddeven-pg \
 | `PORT` | 服务端口 | `3000` |
 | `STAFF_PASSWORD` | 员工端密码 | `123456` |
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
+| `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
 
 > 连接串拼成 `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`；`PG_HOST`、`PG_USER`、`PG_PASS` 三者缺一就整体回退到 `DATABASE_URL`。
 > 用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。

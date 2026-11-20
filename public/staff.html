@@ -144,6 +144,17 @@
   .p.is-vet .nm { color:#ffe9b0; }
   .p.is-vet .tag-n { background:rgba(255,212,94,.22); color:var(--gold); }
 
+  /* 每日结算（归档对账） */
+  .date-input {
+    font-size:13px; padding:6px 9px; border-radius:10px; font-family:inherit;
+    border:1px solid var(--card-border); background:rgba(0,0,0,.3); color:var(--text);
+    color-scheme: dark; outline:none;
+  }
+  .date-input:focus { border-color:var(--accent); }
+  .arch-actions { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+  .arch-actions .sb-btn { flex:1; min-width:92px; padding:11px 10px; }
+  .arch-hint { font-size:12px; color:var(--muted); margin-top:10px; text-align:center; }
+
   #toast { position:fixed; left:50%; bottom:calc(28px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(20px);
     background:rgba(15,20,35,.95); border:1px solid var(--card-border); color:var(--text);
     padding:13px 24px; border-radius:14px; font-size:15px; opacity:0; pointer-events:none;
@@ -339,6 +350,26 @@
     <button class="btn warn" id="resetBtn" data-i18n="resetRound">开始新一轮</button>
   </div>
   </div><!-- /sessionBody -->
+
+  <!-- 当日结算（归档口径）：只读聚合 + 对账 CSV 导出。
+       不依赖当前场次，也不受 reset 影响 —— 数据源是 append-only 的归档表。 -->
+  <div class="card" id="archiveCard">
+    <h2 class="row-head">
+      <span data-i18n="archiveTitle">当日结算</span>
+      <span class="row-head-meta"><input type="date" id="archiveDate" class="date-input"></span>
+    </h2>
+    <div class="stats">
+      <div class="st"><div class="n" id="arSessions">0</div><div class="t" data-i18n="archiveSessions">场次</div></div>
+      <div class="st"><div class="n" id="arRounds">0</div><div class="t" data-i18n="archiveRounds">已归档轮次</div></div>
+      <div class="st"><div class="n" id="arMembers">0</div><div class="t" data-i18n="archiveMembers">参与人数</div></div>
+    </div>
+    <div class="arch-actions">
+      <button class="sb-btn" type="button" data-level="detail" data-i18n="exportDetail">明细 CSV</button>
+      <button class="sb-btn" type="button" data-level="member" data-i18n="exportMember">会员汇总 CSV</button>
+      <button class="sb-btn" type="button" data-level="round" data-i18n="exportRound">轮次 CSV</button>
+    </div>
+    <div class="arch-hint" data-i18n="archiveTip">按锁定时间统计 · 归档只增不改</div>
+  </div>
 
   <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
   <button class="logout-link" id="logoutBtn" data-i18n="logout">退出登录</button>
@@ -602,6 +633,7 @@
     resetNumberSelection();
     renderSessionBar();
     renderSessionList();
+    refreshArchive();
     if (sid) { startStream(); poll(); }
     else { closeStream(); render(); }
   }
@@ -723,6 +755,52 @@
         '</div>';
     }).join('');
   }
+
+  /* ---------- 当日结算（归档口径，与当前场次无关） ---------- */
+  var archiveDate = '';   // '' = 由服务端按运营时区决定「今天」
+
+  /** 拉取当日聚合：场次数 / 已归档轮次数 / 按会员号去重的参与人数。 */
+  function refreshArchive() {
+    if (!token) return;
+    var q = '/api/archive/summary?token=' + encodeURIComponent(token) +
+      (archiveDate ? '&date=' + encodeURIComponent(archiveDate) : '');
+    fetch(q, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) return;
+        $('arSessions').textContent = d.sessions || 0;
+        $('arRounds').textContent = d.rounds || 0;
+        $('arMembers').textContent = d.members || 0;
+        var inp = $('archiveDate');
+        // 未指定日期时把服务端口径的「今天」回填到日期框，避免显示空白造成误解
+        if (!archiveDate && d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date)) inp.value = d.date;
+      })
+      .catch(function () {});
+  }
+
+  /** 下载对账 CSV。列头由服务端固定，level 决定口径：detail / member / round。 */
+  function exportArchive(level) {
+    if (!token) return;
+    var q = '/api/archive/export.csv?level=' + encodeURIComponent(level) +
+      '&token=' + encodeURIComponent(token) +
+      (archiveDate ? '&date=' + encodeURIComponent(archiveDate) : '');
+    var a = document.createElement('a');
+    a.href = q;
+    a.download = '';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast(t('toastExportStarted'), 'ok');
+  }
+
+  $('archiveDate').addEventListener('change', function () {
+    archiveDate = this.value || '';
+    refreshArchive();
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#archiveCard .arch-actions button'), function (b) {
+    b.addEventListener('click', function () { exportArchive(b.getAttribute('data-level')); });
+  });
 
   /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
   var es = null;           // EventSource 实例
@@ -846,7 +924,12 @@
     if (!sure) return;
     confirming = true; $('confirmBtn').disabled = true;
     postJson('/api/confirm', { number: selNum, token: token, sid: sid }).then(function (d) {
-      if (d.ok) { toast(t('toastLocked', { number: d.number }), 'ok'); poll(); }
+      if (d.ok) {
+        if (d.archived === false) toast(t('toastArchiveFailed'), 'err');
+        else toast(t('toastLocked', { number: d.number }), 'ok');
+        poll();
+        refreshArchive();
+      }
       else if (d.code === 'unauthorized') { forceLogout(); }
       else { $('inputErr').textContent = window.I18N.errCode(d.code, d) || t('errConfirmFailed'); $('confirmBtn').disabled = false; poll(); }
     }).catch(function () {

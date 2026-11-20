@@ -91,6 +91,20 @@
       err_invalid_number: '只能录入 1-8 的整数',
       err_already_locked: '本轮数字已锁定为 {number}，不能重复录入；如需继续请开始新一轮',
 
+      /* 结算归档与对账 */
+      archiveTitle: '当日结算',
+      archiveTip: '按锁定时间统计 · 归档只增不改',
+      archiveSessions: '场次',
+      archiveRounds: '已归档轮次',
+      archiveMembers: '参与人数(去重)',
+      exportDetail: '明细 CSV',
+      exportMember: '会员汇总 CSV',
+      exportRound: '轮次 CSV',
+      toastExportStarted: '正在生成 CSV…',
+      toastArchiveFailed: '已锁定，但归档写入失败，请稍后重试或联系技术人员',
+      err_archive_write_failed: '本轮尚未成功归档，暂不能开始新一轮，请稍后重试',
+      err_bad_date_range: '日期格式不正确（应为 YYYY-MM-DD）',
+
       /* 场次管理 */
       sessionLabel: '当前场次',
       sessionSwitch: '切换',
@@ -286,6 +300,20 @@
       err_invalid_number: '只能錄入 1-8 的整數',
       err_already_locked: '本輪數字已鎖定為 {number}，不能重複錄入；如需繼續請開始新一輪',
 
+      /* 結算歸檔與對賬 */
+      archiveTitle: '當日結算',
+      archiveTip: '按鎖定時間統計 · 歸檔只增不改',
+      archiveSessions: '場次',
+      archiveRounds: '已歸檔輪次',
+      archiveMembers: '參與人數(去重)',
+      exportDetail: '明細 CSV',
+      exportMember: '會員匯總 CSV',
+      exportRound: '輪次 CSV',
+      toastExportStarted: '正在生成 CSV…',
+      toastArchiveFailed: '已鎖定，但歸檔寫入失敗，請稍後重試或聯絡技術人員',
+      err_archive_write_failed: '本輪尚未成功歸檔，暫不能開始新一輪，請稍後重試',
+      err_bad_date_range: '日期格式不正確（應為 YYYY-MM-DD）',
+
       /* 場次管理 */
       sessionLabel: '當前場次',
       sessionSwitch: '切換',
@@ -479,6 +507,20 @@
       err_unauthorized: 'Unauthorized, please log in to the staff console first',
       err_invalid_number: 'Please enter an integer from 1 to 8',
       err_already_locked: 'This round\'s number is already locked to {number}; start a new round to continue',
+
+      /* Settlement archive & reconciliation */
+      archiveTitle: 'Today\'s settlement',
+      archiveTip: 'Counted by lock time · archive is append-only',
+      archiveSessions: 'Sessions',
+      archiveRounds: 'Archived rounds',
+      archiveMembers: 'Players (unique)',
+      exportDetail: 'Detail CSV',
+      exportMember: 'Member CSV',
+      exportRound: 'Round CSV',
+      toastExportStarted: 'Generating CSV…',
+      toastArchiveFailed: 'Locked, but the archive write failed. Retry later or contact support',
+      err_archive_write_failed: 'This round is not archived yet; cannot start a new round. Please retry',
+      err_bad_date_range: 'Invalid date (expected YYYY-MM-DD)',
 
       /* Session management */
       sessionLabel: 'Current session',

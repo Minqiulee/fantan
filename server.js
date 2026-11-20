@@ -50,6 +50,17 @@ const PLAYER_BIND_TTL = 12 * 60 * 60 * 1000; // 玩家场次绑定有效期：12
 const UNLOCK_MAX_FAILS = 5;              // 连续口令错误次数上限
 const UNLOCK_LOCK_MS = 30 * 1000;        // 超限后锁定时长
 
+/* 归档对账的「当日」口径：按固定时区偏移切分自然日（默认 +08:00，港/深/澳无夏令时）。
+ * 汇总与导出都只认 locked_at（锁定时间）这一个时间轴，与建档/提交时间无关。 */
+const ARCHIVE_TZ_OFFSET_MIN = (() => {
+  const raw = process.env.ARCHIVE_TZ_OFFSET_MIN;
+  if (raw == null || String(raw).trim() === '') return 480;
+  const n = Number(raw);
+  // 合法范围：-12h ~ +14h，越界按默认处理，避免口径被误配置整体挪一天
+  return Number.isFinite(n) && Math.abs(n) <= 14 * 60 ? n : 480;
+})();
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /* ---------------- 玩家端场次口令与绑定 ---------------- */
 
 /** 玩家端口令：只保留 scrypt 哈希与随机盐（内存态，不落库、不进日志、不下发）。
@@ -243,11 +254,12 @@ function buildStatePayload(session, pid) {
 }
 
 /** 标记场次状态已变更：递增该场次版本号、广播给该场次的客户端、异步落库。
- *  这是所有写操作的唯一收口，避免漏广播或漏持久化。 */
+ *  这是所有写操作的唯一收口，避免漏广播或漏持久化。
+ *  返回落库 promise（{ ok, error }），锁定这类必须确认写入结果的路径可以 await。 */
 function commitSession(session) {
   session.version += 1;
   broadcastSessionState(session);
-  db.saveSession(session);
+  return db.saveSession(session);
 }
 
 function initStaffPassword() {
@@ -461,6 +473,100 @@ function normalizeSessionName(raw, fallback) {
   return name;
 }
 
+/* ---------------- 归档对账：时间口径 / CSV 生成 ---------------- */
+
+/**
+ * 把一个运营时区里的自然日（YYYY-MM-DD）换算成毫秒半开区间 [start, end)。
+ * 采用固定偏移（默认 +08:00）而非 IANA 时区库：港/深/澳无夏令时，边界永远稳定。
+ * 返回 null 表示日期串非法（含 2026-02-31 这种不存在的日期）。
+ */
+function dayBounds(dateStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const utc = Date.UTC(y, mo - 1, d);
+  const probe = new Date(utc);
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+  const start = utc - ARCHIVE_TZ_OFFSET_MIN * 60000;
+  return { start, end: start + DAY_MS, date: m[1] + '-' + m[2] + '-' + m[3] };
+}
+
+/** 运营时区下的「今天」。 */
+function todayStr() {
+  return new Date(Date.now() + ARCHIVE_TZ_OFFSET_MIN * 60000).toISOString().slice(0, 10);
+}
+
+/**
+ * 解析查询参数里的时间区间：
+ *   ?date=YYYY-MM-DD           单日（默认今天）
+ *   ?from=YYYY-MM-DD&to=YYYY-MM-DD  闭区间，按自然日展开
+ * 返回 { from, to, label } 或 null（非法参数）。
+ */
+function archiveRange(url) {
+  const date = url.searchParams.get('date');
+  const fromP = url.searchParams.get('from');
+  const toP = url.searchParams.get('to');
+  if (date) {
+    const b = dayBounds(date);
+    return b ? { from: b.start, to: b.end, label: b.date } : null;
+  }
+  if (fromP || toP) {
+    const a = dayBounds(fromP || toP);
+    const b = dayBounds(toP || fromP);
+    if (!a || !b || a.start > b.start) return null;
+    return { from: a.start, to: b.end, label: a.date === b.date ? a.date : a.date + ' ~ ' + b.date };
+  }
+  const t = dayBounds(todayStr());
+  return t ? { from: t.start, to: t.end, label: t.date } : null;
+}
+
+/** 毫秒时间戳 → 运营时区下的 `YYYY-MM-DD HH:mm:ss`（不带偏移后缀，列头里已声明口径）。 */
+function fmtArchiveTime(ms) {
+  if (ms == null) return '';
+  const d = new Date(Number(ms) + ARCHIVE_TZ_OFFSET_MIN * 60000);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/** CSV 单元格转义：含逗号/引号/换行才加引号，内部引号双写。 */
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+/** 行数组 → CSV 文本。带 UTF-8 BOM + CRLF，确保 Excel 双击不乱码、不并列。 */
+function buildCsv(header, rows) {
+  const lines = [header.map(csvCell).join(',')];
+  for (const r of rows) lines.push(r.map(csvCell).join(','));
+  return '\ufeff' + lines.join('\r\n') + '\r\n';
+}
+
+/** 命中率：分母为有效预测轮次；无预测时留空而不是 0%。 */
+function hitRate(hits, predicted) {
+  if (!predicted) return '';
+  return ((hits / predicted) * 100).toFixed(1) + '%';
+}
+
+/* 列头常量：**顺序即契约**，下游脚本按位置/列名解析，改动等于破坏对账。
+ * 需要新字段时只追加到末尾，不要插在中间、不要改名。 */
+const CSV_DETAIL_HEADER = [
+  '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
+  '锁定时间', '归档时间', '会员号', '预测单双', '预测数字', '是否提交',
+  '单双命中', '数字命中', '登记时间', '提交时间'
+];
+const CSV_MEMBER_HEADER = [
+  '会员号', '参与场次数', '参与轮次数', '有效预测轮次数',
+  '单双命中轮次', '数字命中轮次', '单双命中率', '数字命中率',
+  '首次参与时间', '末次参与时间'
+];
+const CSV_ROUND_HEADER = [
+  '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
+  '锁定时间', '归档时间', '扫码人数', '提交人数'
+];
+
 /* ---------------- API ---------------- */
 
 async function handleApi(req, res, url) {
@@ -635,6 +741,12 @@ async function handleApi(req, res, url) {
     session.closedAt = Date.now();
     session.version += 1;
     db.saveSessionMeta(session);
+    // 关闭前把已锁定的本轮顺带刷一次归档（幂等；已归档则不进任何写操作）
+    if (session.number != null) {
+      db.saveSession(session).then((w) => {
+        if (!w.ok) console.error('[archive] 关闭场次时归档失败 sid=' + session.id + ': ' + w.error);
+      });
+    }
 
     // 先通知该场次所有客户端，再断开连接：玩家端据此退回场次选择
     emitToSession(session, 'session_closed', {
@@ -762,8 +874,19 @@ async function handleApi(req, res, url) {
         idt.lastSeenRound = session.round;
       }
     });
-    commitSession(session);
-    return json(res, 200, { ok: true, number, sid: session.id });
+
+    // 落库与归档在同一个事务里（见 db.doSaveSession）：等结果再回话，
+    // 这样「已锁定」这句话背后一定有归档凭据，而不是只写了内存。
+    const write = await commitSession(session);
+    if (!write.ok) {
+      console.error('[archive] 归档写入失败 sid=' + session.id + ' round=' + session.round + ': ' + write.error);
+      // 锁定已经在内存与 SSE 广播中生效，不能谎报失败让员工重按（重按只会得到 already_locked）；
+      // 如实告知「已锁定但未归档」，员工端据此提示，可稍后由 /api/archive-sync 补齐。
+      return json(res, 200, {
+        ok: true, number, sid: session.id, archived: false, warning: 'archive_write_failed'
+      });
+    }
+    return json(res, 200, { ok: true, number, sid: session.id, archived: true });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/reset') {
@@ -776,6 +899,16 @@ async function handleApi(req, res, url) {
     if (!session) return json(res, 404, { ok: false, code: 'session_not_found' });
     if (session.status !== 'open') return json(res, 409, { ok: false, code: 'session_closed' });
 
+    // 清空前先把已锁定的这一轮归档落定：归档失败就不许开新一轮，
+    // 否则这一轮的明细会被「开始新一轮」永久抹掉（归档表是唯一留痕）。
+    if (session.number != null) {
+      const flushed = await db.saveSession(session);
+      if (!flushed.ok) {
+        console.error('[archive] 新一轮前归档失败 sid=' + session.id + ' round=' + session.round + ': ' + flushed.error);
+        return json(res, 409, { ok: false, code: 'archive_write_failed' });
+      }
+    }
+
     // 新一轮：清空本场次本轮玩家；identities（本场次跨轮次身份档案）保留
     session.round += 1;
     session.number = null;
@@ -783,6 +916,121 @@ async function handleApi(req, res, url) {
     session.players = {};
     commitSession(session);
     return json(res, 200, { ok: true, round: session.round, sid: session.id });
+  }
+
+  /* 当日聚合（归档口径）：场次数、轮次数、按会员号去重的参与人数，附分场次明细。
+   * 口径固定为 locked_at（锁定时间）落在区间内，与当前进行中的场次无关；
+   * 归档表 append-only，所以 reset 之后再查同一天，数字只增不减。 */
+  if (req.method === 'GET' && url.pathname === '/api/archive/summary') {
+    const staff = getStaffSession(url.searchParams.get('token') || '');
+    if (!staff) return json(res, 401, { ok: false, code: 'unauthorized' });
+    const range = archiveRange(url);
+    if (!range) return json(res, 400, { ok: false, code: 'bad_date_range' });
+
+    const data = await db.archiveSummary(range.from, range.to);
+    return json(res, 200, {
+      ok: true,
+      date: range.label,
+      from: range.from,
+      to: range.to,
+      tzOffsetMin: ARCHIVE_TZ_OFFSET_MIN,
+      ...data
+    });
+  }
+
+  /* 对账导出（CSV，列头顺序固定，见 CSV_*_HEADER）。
+   *   ?level=detail（默认）一人一轮一行 —— 积分结算原始凭据
+   *   ?level=member  一人一行（跨场次合并）—— 直接按人结分
+   *   ?level=round   一轮一行（含 0 人轮次）—— 核对当天开了几轮
+   * 可选 ?sid= 只导某一场，?date= / ?from=&to= 指定区间（默认今天）。 */
+  if (req.method === 'GET' && url.pathname === '/api/archive/export.csv') {
+    const staff = getStaffSession(url.searchParams.get('token') || '');
+    if (!staff) return json(res, 401, { ok: false, code: 'unauthorized' });
+    const range = archiveRange(url);
+    if (!range) return json(res, 400, { ok: false, code: 'bad_date_range' });
+
+    const level = String(url.searchParams.get('level') || 'detail').toLowerCase();
+    if (!['detail', 'member', 'round'].includes(level)) {
+      return json(res, 400, { ok: false, code: 'bad_level' });
+    }
+    const sidFilter = String(url.searchParams.get('sid') || '');
+
+    let header;
+    let rows;
+    if (level === 'member') {
+      header = CSV_MEMBER_HEADER;
+      const data = await db.archiveMemberRows(range.from, range.to, sidFilter);
+      rows = data.map((r) => [
+        r.member_id,
+        r.sessions,
+        r.rounds,
+        r.predicted,
+        r.odd_even_hits,
+        r.number_hits,
+        hitRate(r.odd_even_hits, r.predicted),
+        hitRate(r.number_hits, r.predicted),
+        fmtArchiveTime(r.first_locked_at),
+        fmtArchiveTime(r.last_locked_at)
+      ]);
+    } else if (level === 'round') {
+      header = CSV_ROUND_HEADER;
+      const data = await db.archiveRoundRows(range.from, range.to, sidFilter);
+      rows = data.map((r) => [
+        r.session_id, r.session_name, Number(r.session_seq), Number(r.round),
+        Number(r.number), r.odd_even,
+        fmtArchiveTime(r.locked_at), fmtArchiveTime(r.archived_at),
+        Number(r.player_count), Number(r.submitted_count)
+      ]);
+    } else {
+      header = CSV_DETAIL_HEADER;
+      const data = await db.archiveEntryRows(range.from, range.to, sidFilter);
+      rows = data.map((r) => [
+        r.session_id, r.session_name, Number(r.session_seq), Number(r.round),
+        Number(r.drawn_number), r.drawn_odd_even,
+        fmtArchiveTime(r.locked_at), fmtArchiveTime(r.archived_at),
+        r.member_id,
+        r.odd_even == null ? '' : r.odd_even,
+        r.number == null ? '' : Number(r.number),
+        r.submitted ? '是' : '否',
+        r.submitted ? (r.odd_even_hit ? '命中' : '未中') : '未提交',
+        r.submitted ? (r.number_hit ? '命中' : '未中') : '未提交',
+        fmtArchiveTime(r.registered_at),
+        fmtArchiveTime(r.submitted_at)
+      ]);
+    }
+
+    const csv = buildCsv(header, rows);
+    // 文件名只保留安全字符；日期里的 '-' 保留，区间里的 '~' 变 '_'
+    const tag = range.label.replace(/[^0-9A-Za-z-]+/g, '_').replace(/^_|_$/g, '');
+    const filename = 'archive-' + level + '-' + (tag || 'range') + '.csv';
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="' + filename + '"',
+      'Cache-Control': 'no-store'
+    });
+    return res.end(csv);
+  }
+
+  /* 归档补齐（员工端）：把内存里所有「已锁定但没落进归档表」的轮次重新写一遍。
+   * 正常情况下永远用不到（锁定与归档同一事务），它是 deploy 后回填历史锁定轮次、
+   * 以及数据库瞬时故障后的兜底。幂等，可反复调用。 */
+  if (req.method === 'POST' && url.pathname === '/api/archive-sync') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+    if (!getStaffSession(body.token)) return json(res, 401, { ok: false, code: 'unauthorized' });
+
+    const targets = allSessionsSorted().filter((s) => s.number != null && s.lockedAt != null);
+    const failed = [];
+    for (const s of targets) {
+      const w = await db.saveSession(s);
+      if (!w.ok) failed.push({ sid: s.id, round: s.round, error: w.error });
+    }
+    return json(res, 200, {
+      ok: failed.length === 0,
+      checked: targets.length,
+      failed,
+      rounds: targets.map((s) => ({ sid: s.id, name: s.name, round: s.round, number: s.number }))
+    });
   }
 
   return json(res, 404, { ok: false, error: '接口不存在' });
@@ -895,6 +1143,22 @@ async function bootstrapSessions() {
   console.log('[session] 已加载场次 ' + gameSessions.size + ' 个（进行中 ' + openSessions().length + ' 个）');
 }
 
+/**
+ * 启动补齐：库里若存在「已锁定但没进归档表」的轮次（典型场景是首次部署本功能前
+ * 就已经锁定的那一轮），启动时补写一次。幂等：已归档的轮次不会重写。
+ */
+async function backfillArchives() {
+  let filled = 0;
+  for (const s of allSessionsSorted()) {
+    if (s.number == null || s.lockedAt == null) continue;
+    if (await db.archiveExists(s.id, s.round)) continue;
+    const w = await db.saveSession(s);
+    if (w.ok) filled += 1;
+    else console.error('[archive] 启动补齐失败 sid=' + s.id + ' round=' + s.round + ': ' + w.error);
+  }
+  if (filled) console.log('[archive] 启动补齐：已锁定轮次补写归档 ' + filled + ' 场');
+}
+
 async function start() {
   initStaffPassword();
   initPlayerPassword();
@@ -903,6 +1167,7 @@ async function start() {
     await db.initDb();        // 幂等建表 + 老库迁移
     await loadBindSecret();   // 绑定令牌签名密钥（存 app_config，重启复用）
     await bootstrapSessions(); // 从数据库恢复场次状态
+    await backfillArchives(); // 已锁定但未归档的轮次补写（幂等）
   } catch (e) {
     console.error('[db] 数据库初始化失败，应用无法启动:', e.message);
     console.error('  请确认 PG_HOST / PG_USER / PG_PASS 已配置（Fly.io: fly secrets set PG_HOST=... PG_USER=... PG_PASS=...），可选 PG_PORT / PG_DB，或设置 DATABASE_URL');
