@@ -19,15 +19,15 @@
 |---|---|
 | 玩家登记 | 扫自己手上的会员二维码（默认前置摄像头），或手动输入二维码内容；同一内容重复扫幂等返回同一身份 |
 | 规则介绍 | 玩家登记成功后自动弹出玩法说明，10 秒倒计时（页面最底部细进度条 + 剩余秒数），点击任意处立即关闭；仅玩家端，同一身份每次登录只触发一次 |
-| 预测 | 点选即上报（500ms 合并、值变才发），大屏实时显示「待确认」；按「确认提交」才落库、不可修改；草稿只存进程内存，不落库、不推进版本号 |
-| 开奖 | 工作人员在员工端点选 1–8 并确认，确认即锁定，不可更改 |
+| 预测 | 点选即上报（500ms 合并、值变才发），大屏实时显示「待确认」；按「确认提交」才落库、不可修改；草稿只存进程内存，不落库、不推进版本号。数字范围 **0–9（含 0 和 9）**，`0` 按「双」判定 |
+| 开奖 | 工作人员在员工端点选 0–9 并确认，确认即锁定，不可更改 |
 | 轮次 | 锁定后由工作人员手动开启新一轮，轮次号 +1 |
 | 场次 | 全集群并行 1–4 场；员工登录默认归属一场，可运行时新建 / 切换 / 关闭，状态按场次隔离，SSE 按场次分组推送 |
 | 玩家场次口令 | 多场并行时，玩家选择 / 切换场次必须输入口令；验证后绑定 12 小时，刷新、重开页面、后续操作都固定在该场次，未再次验证不可切换 |
 | 员工场次口令 | 员工「切换场次 / 新建场次」需输入独立口令（默认 `7777`，`STAFF_SESSION_PASSWORD` 覆盖）；管理员免校验。与登录密码、玩家口令三者互不复用 |
 | 身份档案 | 跨轮次累计每人完成的竞猜轮次数，用于区分「新玩家 / 老玩家」 |
 | 实时同步 | 落库变更经 SSE 全量快照广播到全部在线页面，含开奖瞬间；草稿变更按 500ms 合并成 `draft` 补丁；断线重连后全量对齐，玩家端按本地序号补发最后一次选择 |
-| 管理界面 | `/admin` 六个入口：当日对账、大屏、新建场次、关闭场次、员工账号、操作日志；仅 `admin` 角色可进 |
+| 管理界面 | `/admin` 七个入口：当日对账、大屏、新建场次、关闭场次、员工账号、操作日志、奖品设置；仅 `admin` 角色可进 |
 | 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），三态区分「已确认 / 已选待确认 / 未选择」（待确认用虚线边框），另标新加入 / 已离开；与员工端共用 SSE 广播与场次版本号，草稿走独立 `draft` 补丁事件，过期帧直接丢弃 |
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
 | 员工账号 | 一人一账号一独立密码，由管理员在管理界面创建 / 改密 / 停用；密码只存 scrypt 派生值，接口不下发 |
@@ -182,9 +182,9 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 1. **选择场次（多场并行时）**：打开玩家端 → 若同时进行 ≥2 场，先选择自己所在场次并输入**场次口令**。验证通过后本机绑定该场次（12 小时），刷新 / 重开页面 / 扫码 / 预测都固定在此场次；想换场次必须重新输入口令。只有 1 场进行中时免口令自动进入（无处可选）。
 2. **玩家登记**：扫自己的会员码（或手动输入会员号）→ 服务端以二维码内容本身作为玩家唯一 ID 建档。本轮开奖后新码无法入场。
-3. **点选与确认**：点「单 / 双」与 1–8 数字时即刻上报（500ms 合并，值变才发），大屏马上显示「已选待确认」；点「确认提交」才落库，之后不可修改、不可重复提交。只选不确认 = 未参赛，锁定后作废。
+3. **点选与确认**：点「单 / 双」与 0–9 数字（含 0 和 9，`0` 算「双」）时即刻上报（500ms 合并，值变才发），大屏马上显示「已选待确认」；点「确认提交」才落库，之后不可修改、不可重复提交。只选不确认 = 未参赛，锁定后作废。
 4. **等待开奖**：页面显示已提交的预测，状态条提示等待中；开奖数字在锁定前不会下发给任何客户端。
-5. **工作人员锁定**：员工端登录 → 点选 1–8 → 若仍有玩家未提交会先弹提示 → 二次确认 → 锁定并广播结果。
+5. **工作人员锁定**：员工端登录 → 点选 0–9 → 若仍有玩家未提交会先弹提示 → 二次确认 → 锁定并广播结果。
 6. **查看结果**：员工端展示逐人命中表（单双命中、数字命中）；玩家端展示开奖数字与自己两项预测的命中情况。
 7. **开启新一轮**：员工端「开始新一轮」→ 轮次 +1、本轮玩家清空、跨轮身份档案保留；玩家需重新扫码登记。
 
@@ -196,7 +196,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 未登记 | 无本地身份，或新一轮已开始 | 显示扫码卡片 |
 | 已登记 | 已识别身份，未提交预测 | 显示预测卡片 |
 | 等待开奖 | 已提交，本轮未锁定 | 显示等待动画与自己的预测 |
-| 已开奖 | 本轮已锁定 | 显示数字与两项命中判定 |
+| 已开奖 | 本轮已锁定 | 显示开奖数字、单双/数字两项命中判定，以及按命中组合对应的奖品文案 |
 
 身份有效性以服务端返回的 `me` 为准：新一轮开始后 `me` 变空，本地保存的身份自动清除，需重新扫码。
 
@@ -222,7 +222,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 ### 6.5 管理界面（`/admin`）
 
-六个入口，一格一件事，进入后不再叠其他卡片：
+七个入口，一格一件事，进入后不再叠其他卡片：
 
 | 入口 | 行为 | 前置条件 |
 |---|---|---|
@@ -232,6 +232,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 关闭场次 | 二次确认（红色危险弹窗）→ 关闭当前归属场次，玩家端立即断开 | 当前场次必须是进行中 |
 | 员工账号 | 建号 / 改显示名 / 调角色 / 停用 / 重置密码；一人一账号一密码 | 无 |
 | 操作日志 | 按天（默认今天）列出所有操作：时间、账号、动作、对象、场次、IP；可导出 CSV | 无 |
+| 奖品设置 | 四档结果（数字和单双都中 / 只中数字 / 只中单双 / 未猜中）各配一份「奖品名称 + 说明」；保存即落库并推送所有在线玩家端 | 无 |
 
 **只允许 `admin` 角色进入。** 员工账号登录 `/admin` 会被挡回登录页并提示需要管理员账号；管理侧接口（对账、账号、日志）在服务端同样只认 `admin`，前端隐藏不是唯一防线。
 
@@ -259,6 +260,8 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | `export_archive` / `export_audit` | 导出对账 CSV / 导出日志 CSV | 口径 level、日期区间、行数 |
 | `account_create` / `account_update` / `account_password` | 建号 / 改角色状态 / 重置密码 | 目标账号、变更前后 |
 | `archive_sync` | 归档补齐 | 检查轮次数、失败数 |
+| `prize_config` | 保存奖品配置 | 四档文案快照（`detail.tiers`） |
+| `bonus_config` | 保存全员额外奖励配置 | 特殊数字 + 文案快照（`detail.{number,title,desc}`） |
 
 - 表是 **append-only**：`UPDATE` / `DELETE` / `TRUNCATE` 在数据库层被触发器拒绝（与归档表同一套机制）
 - 每条记录都带操作账号与角色；未登录的失败尝试记「尝试的账号名」，不记任何密码
@@ -313,6 +316,36 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 - 一致性：客户端按 `version` 丢弃过期帧（重连补发、并发请求乱序都不会把旧选项盖回去），按 `pid` 增量 diff，DOM 上不会出现重复卡片；卡片数量少时自动放大、多了自动收窄
 - 离开标记随 `player.left_at` 落库，服务重启后仍然有效；`reset` 清空本轮玩家时一并消失
 
+### 6.8 开奖结果与奖品（四档）
+
+开奖后玩家端只展示本人的结果：**开奖数字 → 单双/数字两项是否命中 → 对应档位的奖品文案**。
+
+单双与数字是**两次独立猜测**，命中互不蕴含（猜「单」+ 数字 8，开奖 8 就是数字中、单双错），四种组合各成一档：
+
+| 命中情况 | 档位 key | 玩家端档位标签 |
+|---|---|---|
+| 数字和单双都中 | `both` | 数字和单双都中 |
+| 只中数字（数字对、单双错） | `number` | 只中数字 |
+| 只中单双（单双对、数字错） | `oddeven` | 只中单双 |
+| 两项都没中 | `miss` | 未猜中 |
+
+- **一个玩家只显示一档**，按上面四种组合一一对应，不会出现两个奖品卡片
+- 判定在前端用原始值计算（单双按开奖数字奇偶性、数字按相等），与界面语言无关，避免「单/單」字形差异造成误判
+- 文案由管理界面「奖品设置」维护（`GET/POST /api/prize-config`），**全局一份**，不按场次/轮次区分：门店改奖品不需要重开一场
+- 保存后立即写 `app_config`，本实例直接广播 `state`，其他实例通过 PUB/SUB 的 `prize` 通知回库重读后各自广播——在线玩家端无需刷新即可看到新文案
+- 某一档 `title` 与 `desc` 都留空时，玩家端回落到内置文案（三语各一份）；`desc` 单独留空则只显示名称
+- 未提交预测的玩家不会进入结果页（状态停在「已登记」），因此不存在「没猜也有奖品」的情况
+
+### 6.9 额外奖品（命中特殊数字 → 全员加奖）
+
+在四档个人奖品之外，另有一套**全员额外奖励**：当开奖数字命中管理员预设的「特殊数字」时，**所有参与者**（含未猜中者）除原有中奖处理外，额外获得一份指定奖品。
+
+- 配置由管理界面「奖品设置」里的「全员额外奖励」区块维护（`GET/POST /api/bonus-prize`），存 `app_config.bonus_prize`：`{ number: 0-9|null, title, desc }`。`number` 与开奖数字同一范围 **0–9**，`0` 是合法特殊数字；「不启用」只能用 `null` / 空值表达（管理界面下拉选「不启用」即传 `null`），因为 `0` 不再当哨兵
+- **触发只发生一次**：触发态**不落库**，由「本轮开奖数字是否命中特殊数字」现场重算；开奖后数字不再变、一轮只锁定一次（`confirm` 的 `already_locked` 拒绝重复锁定），故同一轮结果恒定、天然只触发一次；新一轮 `reset` 把数字置 `null` 自然不再触发
+- 玩家端 `/api/state` 的 `bonus` 字段带 `{ number, title, desc, triggered }`：`triggered` 表示本轮是否命中特殊数字，命中时结果页额外显示「全员额外奖励」横幅（与个人档位并存，互不影响）
+- 员工端结果区同样显示触发提示；**与原有四档判定、发奖流程、结果展示完全独立**，不改变任何命中判定
+- 边界：无参与者时照常判定（奖励对象为空但状态正确）；配置缺失/`number` 非法一律视为未启用，不触发
+
 ---
 
 ## 7. HTTP 接口
@@ -333,7 +366,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/scan` | — | `{sid, ut, content}` | 登记身份，返回 `{ok, pid, sid, status:"known"}` |
 | PUT | `/api/pick` | — | `{sid, ut, pid, oddEven, number, seq}` | **临时选择（草稿）**：只写内存、不落库、不推进 `version`；`seq` 单调，更小的序号返回 `200 {accepted:false, ignored:"stale_seq"}` 而不是报错 |
 | DELETE | `/api/pick` | — | `{sid, ut, pid, seq}` | 撤销草稿，同样按 `seq` 单调判定（删除也吃序号，避免旧请求复活选择） |
-| POST | `/api/submit` | — | 头 `Idempotency-Key`，体 `{sid, ut, pid, oddEven, number}` | **确认提交**：`oddEven` 为 `"单"` / `"双"`，`number` 为 1–8；同 key 重放返回 `200 {replay:true}`，异 key 已提交返回 `409 already_submitted` + 终态。**只有它才落库、才算参赛** |
+| POST | `/api/submit` | — | 头 `Idempotency-Key`，体 `{sid, ut, pid, oddEven, number}` | **确认提交**：`oddEven` 为 `"单"` / `"双"`，`number` 为 0–9；同 key 重放返回 `200 {replay:true}`，异 key 已提交返回 `409 already_submitted` + 终态。**只有它才落库、才算参赛** |
 | POST | `/api/predict` | — | `{sid, ut, pid, oddEven, number}` | 老接口，保留兼容（重复提交 → `400 predict_duplicate`）；新前端一律用 `/api/submit` |
 | POST | `/api/leave` | — | `{sid, ut, pid}` | 玩家离开现场：只给大屏打 `left` 标记，不删登记与预测；幂等，重复上报不递增版本号 |
 | POST | `/api/confirm` | token | `{token, sid, number, ackPending?}` | 锁定该场次本轮数字（唯一写入点，写后不可改）。本轮存在「已选但未确认」的草稿时必须带 `ackPending:true`，否则 `409 pending_confirm_required` + `counts` + `pending[]`；锁定后草稿全部作废 |
@@ -347,6 +380,10 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/account-password` | **admin** | `{token, username, password}` | 重置密码；该账号所有会话立即失效 |
 | GET | `/api/audit` | **admin** | `?token=&date=` 或 `from=&to=`，可选 `&actor=&action=&limit=` | 操作日志，新的在前，`limit` 默认 200、上限 1000 |
 | GET | `/api/audit/export.csv` | **admin** | 同上（不分页） | 操作日志 CSV（`时间,账号,角色,操作,场次ID,对象,明细,IP`）；导出动作记 `export_audit` 日志 |
+| GET | `/api/prize-config` | **admin** | `?token=` | 读取四档奖品文案：`prizes.{both,number,oddeven,miss}.{title,desc}`，附字段上限 `limits` |
+| POST | `/api/prize-config` | **admin** | `{token, prizes:{both,number,oddeven,miss}}` | 保存奖品文案：每档 `{title, desc}`，去空白、超长按 32 / 120 截断、未知档位与多余字段丢弃；写 `prize_config` 审计并立即广播给所有在线页面 |
+| GET | `/api/bonus-prize` | **admin** | `?token=` | 读取全员额外奖励配置：`bonus.{number,title,desc}`（`number` 为 `null` 表示未启用），附 `limits` 与 `range:{min,max}` |
+| POST | `/api/bonus-prize` | **admin** | `{token, bonus:{number,title,desc}}` | 保存全员额外奖励配置：`number` 只认 0-9（`0` 合法；非法/缺失/空值视为未启用），`title`/`desc` 去空白并按 32/120 截断；写 `bonus_config` 审计并立即广播给所有在线页面 |
 | GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
 **玩家侧准入（`/api/state`、`/api/scan`、`/api/predict`、`/api/stream` 共用一套判定）**：
@@ -368,6 +405,13 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   "round": 3,
   "locked": false,
   "number": null,
+  "prizes": {
+    "both":    { "title": "", "desc": "" },
+    "number":  { "title": "", "desc": "" },
+    "oddeven": { "title": "", "desc": "" },
+    "miss":    { "title": "", "desc": "" }
+  },
+  "bonus": { "number": 8, "title": "幸运加奖", "desc": "全员一瓶饮料", "triggered": false },
   "counts": { "total": 3, "submitted": 1, "draft": 1, "none": 1, "left": 0 },
   "players": [
     { "id": "M00123", "submitted": true,  "status": "submitted", "draft": false, "isVeteran": true },
@@ -419,7 +463,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `predict_closed` | 400 | 已开奖，预测关闭 |
 | `predict_duplicate` | 400 | 已提交过，不可重复或修改 |
 | `predict_invalid_oe` | 400 | 单双取值非「单 / 双」 |
-| `predict_invalid` | 400 | 数字不是 1–8 的整数 |
+| `predict_invalid` | 400 | 数字不是 0–9 的整数 |
 | `unauthorized` | 401 | 员工 token 缺失、过期，或账号已被停用 |
 | `wrong_password` | 401 | 账号或密码错误（不区分「账号不存在」与「密码错」，避免枚举账号） |
 | `account_disabled` | 401 | 账号已停用 |
@@ -435,9 +479,9 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `cannot_disable_self` | 409 | 不能停用当前登录的账号 |
 | `last_admin` | 409 | 不能停用或降级最后一个可用管理员 |
 | `nothing_to_update` | 400 | `account-update` 没有携带任何可改字段 |
-| `invalid_number` | 400 | 锁定数字不是 1–8 的整数 |
+| `invalid_number` | 400 | 锁定数字不是 0–9 的整数 |
 | `pending_confirm_required` | 409 | 本轮存在「已选但未确认」的草稿，员工开奖未带 `ackPending`（返回 `counts` 与 `pending[]` 名单） |
-| `pick_invalid` / `pick_invalid_oe` / `seq_invalid` / `pick_not_scanned` | 400 | 草稿参数不合法：数字不是 1–8、单双不是「单/双」、序号非正整数、该 pid 未在本场次登记 |
+| `pick_invalid` / `pick_invalid_oe` / `seq_invalid` / `pick_not_scanned` | 400 | 草稿参数不合法：数字不是 0–9、单双不是「单/双」、序号非正整数、该 pid 未在本场次登记 |
 | `already_submitted` | 409 | 该玩家已确认提交，再次提交或改草稿被拒（返回 `submit` 终态，前端据此展示成功态） |
 | `round_locked` | 409 | 本轮已锁定，草稿与提交都关闭（返回 `number`） |
 | `idempotency_key_required` | 422 | `POST /api/submit` 缺 `Idempotency-Key` 或格式不合规（8–64 位 `A-Za-z0-9_-`） |
@@ -528,7 +572,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | 批量 `UPSERT`，不删除，跨轮保留 |
 | `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by`（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
 | `round_archive_entry` | 归档明细：一人一行，会员号 + 预测内容 + 命中结果（主键 `(archive_id, member_id)`） | 只 `INSERT`，重复行跳过 |
-| `app_config` | 键值配置，目前只存 `player_bind_secret`（绑定令牌签名密钥） | 首次启动生成后 upsert |
+| `app_config` | 键值配置：`player_bind_secret`（绑定令牌签名密钥）、`prize_config`（四档奖品文案 JSON）、`bonus_prize`（全员额外奖励 JSON） | 首次启动生成 / 管理界面保存 |
 | `staff_session` | 员工登录会话：token、当前归属场次、过期时间、**登录账号 `username`**（角色回查账号表，不存快照）（**跨实例共享**） | 登录插入；过期 / 账号停用 / 改密时按需清理 |
 | `staff_account` | 员工账号：账号名、显示名、角色（`staff`/`admin`）、状态、**scrypt 密码派生值**、建号人、最近登录时间 | 管理界面建号 / 改角色状态 / 改密 |
 | `audit_log` | 操作日志：时间、账号、角色、动作、场次、对象、明细 JSON、IP（**append-only**） | 只 `INSERT`，`UPDATE` / `DELETE` / `TRUNCATE` 被触发器拒绝 |

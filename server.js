@@ -48,6 +48,21 @@ const PLAYER_BIND_TTL = 12 * 60 * 60 * 1000; // 玩家场次绑定有效期：12
 const UNLOCK_MAX_FAILS = 5;              // 连续口令错误次数上限
 const UNLOCK_LOCK_MS = 30 * 1000;        // 超限后锁定时长
 
+/* 可猜数字范围：0–9，含两端。0 既是合法开奖数字，也在「双」的判定里（0 % 2 === 0）。
+ * 所有入口（predict / pick / submit / confirm / bonus-prize）都走 parseNumber0to9()，
+ * 不用 falsy 判断——否则 0 会被当成「没填」。 */
+const NUMBER_MIN = 0;
+const NUMBER_MAX = 9;
+
+/** 解析 0–9 的整数猜数；null / undefined / '' / 布尔 / 非整数 / 越界一律返回 null。
+ *  注意返回 null 表示「非法或缺失」，0 是合法值，调用方必须用 `=== null` 判断。 */
+function parseNumber0to9(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= NUMBER_MIN && n <= NUMBER_MAX ? n : null;
+}
+
 /* 大屏（/bigscreen）默认公开：现场投屏直接打开即可，不弹登录/口令。
  * 代价是「拿到 URL 的人都能看到开奖前每个人的选项」，所以这里留一个开关：
  * 设 BIGSCREEN_PUBLIC=0 即恢复「仅有效员工 token 可见」。
@@ -442,6 +457,13 @@ function buildStatePayload(session, pid, view) {
     round: session.round,
     locked: session.number != null,
     number: session.number != null ? session.number : undefined,
+    prizes: prizeSnapshot(),
+    // 额外奖励：触发结果不落库，由「本轮开奖数字是否命中特殊数字」现场重算
+    // （锁定后开奖数字不再变，同一轮重算结果恒定；重置后 number=null 自然不触发）
+    bonus: {
+      ...bonusSnapshot(),
+      triggered: session.number != null && bonusHit(session.number)
+    },
     counts: countChoices(session),
     players: bigscreen ? bigscreenPlayers(session) : publicPlayers(session),
     me: me ? {
@@ -695,6 +717,170 @@ function verifyBind(token) {
   const b = Buffer.from(expect, 'utf8');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   return { sid, exp };
+}
+
+/* ---------------- 奖品配置（按结果分四档） ----------------
+ * 单双与数字是两次独立猜测，四种组合各成一档：
+ *   both    数字和单双都中
+ *   number  只中数字（数字对、单双错）
+ *   oddeven 只中单双（单双对、数字错）
+ *   miss    两项都没中
+ * 配置是**全局**的（门店口径，不按场次/轮次区分），存 app_config：
+ *   - 玩家端从 /api/state 的 prizes 字段拿，配置一改立刻随 SSE 推下去
+ *   - 每档只有 title / desc 两个字段，空串表示「后台没配」，玩家端回落到内置文案
+ *   - 长度在上限处截断而不是拒绝：奖品文案不是安全边界，没必要让管理员保存失败
+ */
+const PRIZE_TIERS = ['both', 'number', 'oddeven', 'miss'];
+const PRIZE_TITLE_MAX = 32;
+const PRIZE_DESC_MAX = 120;
+/** 缓存兜底：跨实例通知丢了也不会一直显示旧奖品，最多旧 15 秒。 */
+const PRIZE_TTL_MS = 15000;
+
+let prizeConfig = emptyPrizeConfig();
+let prizeLoadedAt = 0;
+let prizeRefreshing = null;
+
+function emptyPrizeConfig() {
+  const cfg = {};
+  for (const tier of PRIZE_TIERS) cfg[tier] = { title: '', desc: '' };
+  return cfg;
+}
+
+/** 归一化：只认四档 × 两个字符串字段，其余字段一律丢弃（防止把任意 JSON 塞进库）。 */
+function normalizePrizeConfig(input) {
+  const out = emptyPrizeConfig();
+  if (!input || typeof input !== 'object') return out;
+  for (const tier of PRIZE_TIERS) {
+    const src = input[tier];
+    if (!src || typeof src !== 'object') continue;
+    out[tier].title = String(src.title == null ? '' : src.title).trim().slice(0, PRIZE_TITLE_MAX);
+    out[tier].desc = String(src.desc == null ? '' : src.desc).trim().slice(0, PRIZE_DESC_MAX);
+  }
+  return out;
+}
+
+/** 从库里重新读一份奖品配置。并发调用共用同一个请求，避免热点路径把库读穿。 */
+function refreshPrizeConfig() {
+  if (prizeRefreshing) return prizeRefreshing;
+  prizeRefreshing = (async () => {
+    try {
+      const raw = await db.getConfig('prize_config');
+      let parsed = null;
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+      }
+      prizeConfig = normalizePrizeConfig(parsed);
+    } catch (e) {
+      // 读失败保留上一份：奖品只是展示信息，不值得让整个状态负载失败
+      console.error('[prize] 读取奖品配置失败:', e.message);
+    } finally {
+      prizeLoadedAt = Date.now();
+      prizeRefreshing = null;
+    }
+  })();
+  return prizeRefreshing;
+}
+
+/** 同步取当前配置（过期就在后台补一次，本次先返回手里的）。 */
+function prizeSnapshot() {
+  if (Date.now() - prizeLoadedAt > PRIZE_TTL_MS) {
+    refreshPrizeConfig().catch(() => { /* 已在内部记录 */ });
+  }
+  return prizeConfig;
+}
+
+/** 保存配置：先落库，成功后才换内存里的那份，保证「保存成功」= 玩家看到的就是它。 */
+async function savePrizeConfig(input) {
+  const next = normalizePrizeConfig(input);
+  await db.setConfig('prize_config', JSON.stringify(next));
+  prizeConfig = next;
+  prizeLoadedAt = Date.now();
+  return next;
+}
+
+/** 把新奖品推给本实例所有场次的在线页面（SSE 全量快照里带 prizes）。 */
+async function broadcastPrizes() {
+  const list = await store.list();
+  for (const sum of list) {
+    const s = await store.load(sum.id);
+    if (s) broadcastSessionState(s);
+  }
+}
+
+/* ---------------- 额外奖品（命中特殊数字 → 全员加奖） ----------------
+ * 与四档奖品完全独立的一套配置：开奖数字等于「特殊数字」时，除原有中奖判定外，
+ * 所有参与者（含未猜中者）额外获得一份指定奖品。
+ * 存 app_config.bonus_prize：{ number: 0-9|null, title, desc }。
+ *   - number 为 null 表示未启用（不触发）。**0 是合法特殊数字，不能再用 0 表示「不启用」**
+ *   - 触发**不落库**：/api/state 里按「本轮开奖数字是否命中特殊数字」现场重算，
+ *     锁定后开奖数字不再变 → 同一轮重算结果恒定；一轮只锁定一次，天然只触发一次；
+ *     新一轮 reset 把 number 置 null，自然不再触发
+ *   - 特殊数字事后改动只影响「之后新开的轮」，不影响已锁定轮（已锁定的开奖数字不变，
+ *     但若管理员在锁定后改了特殊数字，已锁定轮的 triggered 会跟着变 —— 这是纯内存展示态，
+ *     无历史留痕诉求，属预期行为）
+ */
+let bonusConfig = emptyBonusConfig();
+let bonusLoadedAt = 0;
+let bonusRefreshing = null;
+
+function emptyBonusConfig() {
+  return { number: null, title: '', desc: '' };
+}
+
+/** 归一化：number 走与开奖数字同一套 0–9 校验（非法/缺失视为未启用），
+ *  title/desc 走同样的长度上限。 */
+function normalizeBonusConfig(input) {
+  const out = emptyBonusConfig();
+  if (!input || typeof input !== 'object') return out;
+  const n = parseNumber0to9(input.number);
+  if (n !== null) out.number = n;
+  out.title = String(input.title == null ? '' : input.title).trim().slice(0, PRIZE_TITLE_MAX);
+  out.desc = String(input.desc == null ? '' : input.desc).trim().slice(0, PRIZE_DESC_MAX);
+  return out;
+}
+
+/** 从库里重新读一份额外奖品配置。并发调用共用同一个请求。 */
+function refreshBonusConfig() {
+  if (bonusRefreshing) return bonusRefreshing;
+  bonusRefreshing = (async () => {
+    try {
+      const raw = await db.getConfig('bonus_prize');
+      let parsed = null;
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+      }
+      bonusConfig = normalizeBonusConfig(parsed);
+    } catch (e) {
+      console.error('[bonus] 读取额外奖品配置失败:', e.message);
+    } finally {
+      bonusLoadedAt = Date.now();
+      bonusRefreshing = null;
+    }
+  })();
+  return bonusRefreshing;
+}
+
+/** 同步取当前配置（过期后台补一次）。 */
+function bonusSnapshot() {
+  if (Date.now() - bonusLoadedAt > PRIZE_TTL_MS) {
+    refreshBonusConfig().catch(() => { /* 已在内部记录 */ });
+  }
+  return bonusConfig;
+}
+
+/** 保存配置：先落库，成功后才换内存。 */
+async function saveBonusConfig(input) {
+  const next = normalizeBonusConfig(input);
+  await db.setConfig('bonus_prize', JSON.stringify(next));
+  bonusConfig = next;
+  bonusLoadedAt = Date.now();
+  return next;
+}
+
+/** 开奖数字命中特殊数字吗（配置未启用返回 false）。 */
+function bonusHit(number) {
+  const cfg = bonusSnapshot();
+  return cfg.number != null && Number(number) === cfg.number;
 }
 
 /** 来源 IP：优先取反向代理头，退化到 socket 地址。 */
@@ -1386,9 +1572,9 @@ async function handleApi(req, res, url) {
 
     const pidPredict = String(body.pid || '');
     const oddEven = body.oddEven;
-    const number = Number(body.number);
+    const number = parseNumber0to9(body.number);
     if (oddEven !== '单' && oddEven !== '双') return json(res, 400, { ok: false, code: 'predict_invalid_oe' });
-    if (!Number.isInteger(number) || number < 1 || number > 8) return json(res, 400, { ok: false, code: 'predict_invalid' });
+    if (number === null) return json(res, 400, { ok: false, code: 'predict_invalid' });
 
     // 校验必须在 mutator 里做：只有读到「最新版本」才能判断是否真的重复提交。
     // 两台实例同时为一个玩家提交预测时，CAS 只允许一条提交成功，另一条重试后看到
@@ -1430,10 +1616,10 @@ async function handleApi(req, res, url) {
     if (!session.players[pidPick]) return json(res, 400, { ok: false, code: 'pick_not_scanned' });
 
     const oe = body.oddEven;
-    const num = Number(body.number);
+    const num = parseNumber0to9(body.number);
     const seq = Number(body.seq);
     if (oe !== '单' && oe !== '双') return json(res, 400, { ok: false, code: 'pick_invalid_oe' });
-    if (!Number.isInteger(num) || num < 1 || num > 8) return json(res, 400, { ok: false, code: 'pick_invalid' });
+    if (num === null) return json(res, 400, { ok: false, code: 'pick_invalid' });
     if (!Number.isInteger(seq) || seq <= 0) return json(res, 400, { ok: false, code: 'seq_invalid' });
 
     if (session.number != null) {
@@ -1528,9 +1714,9 @@ async function handleApi(req, res, url) {
 
     const pidSub = String(body.pid || '');
     const oe = body.oddEven;
-    const num = Number(body.number);
+    const num = parseNumber0to9(body.number);
     if (oe !== '单' && oe !== '双') return json(res, 400, { ok: false, code: 'pick_invalid_oe' });
-    if (!Number.isInteger(num) || num < 1 || num > 8) return json(res, 400, { ok: false, code: 'pick_invalid' });
+    if (num === null) return json(res, 400, { ok: false, code: 'pick_invalid' });
 
     // 重放：同 key 已经成功过，直接回原结果（客户端可能没收到上一次响应）
     const receiptKey = session.id + '|' + session.round + '|' + pidSub;
@@ -1598,8 +1784,8 @@ async function handleApi(req, res, url) {
     const staff = await getStaffSession(body.token);
     if (!staff) return json(res, 401, { ok: false, code: 'unauthorized' });
 
-    const number = Number(body.number);
-    if (!Number.isInteger(number) || number < 1 || number > 8) {
+    const number = parseNumber0to9(body.number);
+    if (number === null) {
       return json(res, 400, { ok: false, code: 'invalid_number' });
     }
 
@@ -1666,11 +1852,13 @@ async function handleApi(req, res, url) {
       console.error('[archive] 归档写入失败 sid=' + sidConfirm + ': ' + (out.archiveError || 'unknown'));
       return json(res, 200, {
         ok: true, number, sid: sidConfirm, archived: false, warning: 'archive_write_failed',
+        bonusTriggered: bonusHit(number),
         counts: out.session ? countChoices(out.session) : undefined
       });
     }
     return json(res, 200, {
       ok: true, number, sid: sidConfirm, archived: true,
+      bonusTriggered: bonusHit(number),
       counts: out.session ? countChoices(out.session) : undefined
     });
   }
@@ -1822,6 +2010,85 @@ async function handleApi(req, res, url) {
    * 一个账号一份独立密码：管理员在这里建号 / 改显示名 / 调角色 / 停用 / 重置密码。
    * 密码只以 scrypt 派生值落库，任何接口都不会返回它。
    * 两条硬规则：不能停用自己、不能把最后一个可用管理员降级或停用（否则谁都进不去）。 */
+
+  if (req.method === 'GET' && url.pathname === '/api/prize-config') {
+    const admin = await requireAdmin(url.searchParams.get('token') || '');
+    if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
+    await refreshPrizeConfig();
+    return json(res, 200, {
+      ok: true,
+      prizes: prizeConfig,
+      limits: { title: PRIZE_TITLE_MAX, desc: PRIZE_DESC_MAX }
+    });
+  }
+
+  /* 奖品配置保存：只认 admin；写库成功后才换内存，再推给所有在线页面。
+   * 跨实例靠 PUB/SUB 的 prize 通知：其他实例收到后回库重读并各自广播。 */
+  if (req.method === 'POST' && url.pathname === '/api/prize-config') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+    const admin = await requireAdmin(body.token);
+    if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
+
+    let saved;
+    try {
+      saved = await savePrizeConfig(body.prizes);
+    } catch (e) {
+      console.error('[prize] 保存失败:', e.message);
+      return json(res, 500, { ok: false, code: 'prize_save_failed' });
+    }
+    await audit(req, admin, 'prize_config', {
+      detail: {
+        tiers: PRIZE_TIERS.map((tier) => ({
+          tier,
+          title: saved[tier].title,
+          desc: saved[tier].desc
+        }))
+      }
+    });
+    broadcastPrizes().catch((e) => console.error('[prize] 广播失败:', e.message));
+    if (pubsub) pubsub.publish({ type: 'prize' }).catch(() => { /* 尽力而为 */ });
+    return json(res, 200, { ok: true, prizes: saved });
+  }
+
+  /* 额外奖品（命中特殊数字 → 全员加奖）配置读取：仅 admin。 */
+  if (req.method === 'GET' && url.pathname === '/api/bonus-prize') {
+    const admin = await requireAdmin(url.searchParams.get('token') || '');
+    if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
+    await refreshBonusConfig();
+    return json(res, 200, {
+      ok: true,
+      bonus: bonusConfig,
+      limits: { title: PRIZE_TITLE_MAX, desc: PRIZE_DESC_MAX },
+      range: { min: NUMBER_MIN, max: NUMBER_MAX }
+    });
+  }
+
+  /* 额外奖品配置保存：仅 admin；写库成功后才换内存并广播。 */
+  if (req.method === 'POST' && url.pathname === '/api/bonus-prize') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+    const admin = await requireAdmin(body.token);
+    if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
+
+    let saved;
+    try {
+      saved = await saveBonusConfig(body.bonus);
+    } catch (e) {
+      console.error('[bonus] 保存失败:', e.message);
+      return json(res, 500, { ok: false, code: 'bonus_save_failed' });
+    }
+    await audit(req, admin, 'bonus_config', {
+      detail: {
+        number: saved.number,
+        title: saved.title,
+        desc: saved.desc
+      }
+    });
+    broadcastPrizes().catch((e) => console.error('[bonus] 广播失败:', e.message));
+    if (pubsub) pubsub.publish({ type: 'bonus' }).catch(() => { /* 尽力而为 */ });
+    return json(res, 200, { ok: true, bonus: saved });
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/accounts') {
     const admin = await requireAdmin(url.searchParams.get('token') || '');
@@ -2033,7 +2300,9 @@ const SSE_HEARTBEAT_MS = 15000; // 心跳间隔：15 秒发一次，防止代理
  *  - 期间本场次的状态变更由 store 的 change 事件广播（本实例提交 + 其他实例的 PUB/SUB 通知）
  *  - ?view=bigscreen 走大屏视图（含每个人的当前选项）：默认公开，BIGSCREEN_PUBLIC=0 时才要员工 token
  *  - 客户端断开（含网络中断）后 EventSource 自动重连；重连请求会带
- *    Last-Event-ID 头，服务端据此判断客户端是否已错过事件，错过则补发全量状态
+ *    Last-Event-ID 头（上次 state 的版本号）。服务端**不**解析它来判增量：
+ *    广播即全量快照，首帧永远落在当前版本，断线期间漏掉的变更已经在首帧里
+ *    （契约见 test/sse-reconnect.test.mjs）
  *  - 每 15 秒发一次心跳（事件名 ping）维持连接
  *  - 场次关闭时服务端先发 session_closed 事件再断开连接（其他实例上关闭也一样）
  */
@@ -2198,6 +2467,8 @@ async function start() {
   try {
     await db.initDb();        // 幂等建表（只创建缺失的表，不改既有数据）
     await loadBindSecret();   // 绑定令牌签名密钥（存 app_config，重启复用）
+    await refreshPrizeConfig(); // 奖品展示配置（存 app_config，全局一份）
+    await refreshBonusConfig(); // 额外奖品（命中特殊数字全员加奖）配置（存 app_config，全局一份）
     await bootstrapAccounts(); // 保证库里至少有一个管理员
     // 发布通道要先于 store 建好：store 每次提交都会通过它广播给其他实例
     pubsub = createPubSub({ ...listenConfig, instanceId: INSTANCE_ID });
@@ -2207,6 +2478,20 @@ async function start() {
     // 远端变更：重新读库 → 版本变了才广播给本实例的 SSE 连接
     // 草稿例外：它不在库里，通知里直接带内容，合进本地内存后按 500ms 窗口广播
     pubsub.on('event', (evt) => {
+      if (evt && evt.type === 'prize') {
+        // 别的实例改了奖品配置：回库重读后按本实例的连接各自广播一次
+        refreshPrizeConfig()
+          .then(() => broadcastPrizes())
+          .catch((e) => console.error('[prize] 应用远端配置失败:', e.message));
+        return;
+      }
+      if (evt && evt.type === 'bonus') {
+        // 别的实例改了额外奖品配置：回库重读后广播（玩家端据此刷新「特殊数字」提示）
+        refreshBonusConfig()
+          .then(() => broadcastPrizes())
+          .catch((e) => console.error('[bonus] 应用远端配置失败:', e.message));
+        return;
+      }
       if (evt && evt.type === 'draft') {
         try {
           ingestRemoteDrafts(evt);

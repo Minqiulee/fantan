@@ -36,7 +36,7 @@
 
 ```js
 // server.js
-draftStore     Map<sid, Map<pid, { oe:'单'|'双', num:1..8, seq:int, at:ms }>>
+draftStore     Map<sid, Map<pid, { oe:'单'|'双', num:0..9, seq:int, at:ms }>>
 draftPending   Map<sid, Set<pid>>          // 待广播脏集合
 draftTimers    Map<sid, Timeout>           // 500ms 合并窗口
 submitReceipts Map<`sid|round|pid`, { idemKey, oddEven, number, at }>  // 提交幂等回执
@@ -130,7 +130,7 @@ stateDiagram-v2
 | 项 | 内容 |
 |---|---|
 | 认证 | 场次绑定令牌 `ut` |
-| 请求 | `{ sid, ut, pid, oddEven:"单"|"双", number:1..8, seq:int>0 }` |
+| 请求 | `{ sid, ut, pid, oddEven:"单"|"双", number:0..9, seq:int>0 }` |
 | 语义 | 覆盖式 upsert，只写内存 |
 
 ```jsonc
@@ -313,7 +313,7 @@ onState(s):
 | `ut` | HMAC 有效、未过期、绑定场次一致 | `session_need_unlock` / `session_locked` |
 | `pid` | 必须在本场次 `players` 里 | `pick_not_scanned` |
 | `oddEven` | `"单"` / `"双"` | `pick_invalid_oe` |
-| `number` | 整数 1..8 | `pick_invalid` |
+| `number` | 整数 0..9（含 0 和 9；0 是合法值，缺省不能当 0） | `pick_invalid` |
 | `seq` | 正整数，`> 当前 seq` 才应用 | `seq_invalid` / `ignored:stale_seq` |
 | `Idempotency-Key` | 8–64 位 `[A-Za-z0-9_-]` | `idempotency_key_required` |
 | 轮次 | 未锁定 | `round_locked` |

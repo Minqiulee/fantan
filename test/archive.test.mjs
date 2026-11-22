@@ -112,13 +112,13 @@ describe('竞猜归档与对账', () => {
     assert.equal(badOe.status, 400);
     assert.equal(badOe.body.code, 'predict_invalid_oe');
 
-    const badNum = await predict(api, sidA, utA, 'M,003', '单', 9);
+    const badNum = await predict(api, sidA, utA, 'M,003', '单', 10);
     assert.equal(badNum.status, 400);
     assert.equal(badNum.body.code, 'predict_invalid');
   });
 
   it('锁定：数字校验、重复锁定、锁定后禁止入场与改预测', async () => {
-    const bad = await confirm(api, token, sidA, 9);
+    const bad = await confirm(api, token, sidA, 10);
     assert.equal(bad.status, 400);
     assert.equal(bad.body.code, 'invalid_number');
 

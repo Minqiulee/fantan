@@ -199,8 +199,8 @@
     text-shadow:0 1px 0 rgba(255,255,255,.3);
   }
   .pair .opt.sel small { color:#7a4a00; }
-  .numgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-  .numgrid button { padding:18px 0; font-size:26px; }
+  .numgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  .numgrid button { padding:18px 0; font-size:24px; }
 
   .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:18px; }
 
@@ -229,9 +229,41 @@
     background:linear-gradient(180deg, rgba(120,18,26,.6), rgba(70,8,14,.6));
     border:1px solid var(--card-border); }
   .verdict .v .t { font-size:13px; color:var(--muted); margin-bottom:6px; }
-  .verdict .v .d { font-size:20px; font-weight:800; }
+  .verdict .v .d { font-size:20px; font-weight:800; line-height:1.3; }
+  /* 预测值一行、命中结论一行：窄屏下「猜「双」→ ✓ 命中」会折成两行还断在词中间 */
+  .verdict .v .d .pval { display:block; font-size:24px; line-height:1.2; }
+  .verdict .v .d .pres { display:block; font-size:14px; font-weight:700; letter-spacing:.5px; margin-top:5px; }
   .v.hit { border-color:rgba(61,220,132,.7); box-shadow:0 0 12px rgba(61,220,132,.25); } .v.hit .d { color:var(--ok); }
   .v.miss { border-color:rgba(255,120,120,.6); } .v.miss .d { color:var(--bad); }
+
+  /* 结果 · 奖品（四档：都中 / 只中数字 / 只中单双 / 未猜中，由后台配置文案） */
+  .prize { margin-top:14px; padding:16px 14px; border-radius:16px; text-align:center;
+    background:linear-gradient(180deg, rgba(255,212,94,.14), rgba(120,18,26,.55));
+    border:1px solid rgba(255,212,94,.45);
+    box-shadow:inset 0 1px 0 rgba(255,225,150,.12); }
+  .prize-head { display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:9px; }
+  .prize-tier { font-size:12px; font-weight:800; letter-spacing:.5px; padding:3px 10px; border-radius:99px;
+    background:linear-gradient(135deg,#ffd76b,#f0a71c); color:#3a1500; }
+  .prize-lab { font-size:12px; color:var(--muted); letter-spacing:1px; }
+  .prize-title { font-size:20px; font-weight:900; color:var(--gold); line-height:1.35; word-break:break-word; }
+  .prize-desc { font-size:13px; color:var(--text); opacity:.86; margin-top:7px; line-height:1.6;
+    white-space:pre-line; word-break:break-word; }
+  .prize.miss { background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(70,8,14,.5));
+    border-color:var(--card-border-strong); }
+  .prize.miss .prize-tier { background:rgba(255,255,255,.14); color:var(--text); }
+  .prize.miss .prize-title { color:var(--text); }
+
+  /* 全员额外奖励横幅：独立于个人档位，视觉上更醒目（金色描边 + 星标） */
+  .bonus { margin-top:12px; padding:14px 14px; border-radius:16px; text-align:center;
+    background:linear-gradient(135deg, rgba(255,170,40,.16), rgba(255,80,40,.12));
+    border:1px dashed rgba(255,190,80,.55);
+    box-shadow:inset 0 1px 0 rgba(255,210,130,.10); }
+  .bonus-head { display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:8px; }
+  .bonus-tier { font-size:12px; font-weight:800; letter-spacing:.5px; padding:3px 10px; border-radius:99px;
+    background:linear-gradient(135deg,#ffb84d,#ff7a30); color:#3a1200; }
+  .bonus-title { font-size:18px; font-weight:900; color:var(--gold); line-height:1.35; word-break:break-word; }
+  .bonus-desc { font-size:13px; color:var(--text); opacity:.86; margin-top:6px; line-height:1.6;
+    white-space:pre-line; word-break:break-word; }
 
   /* Toast */
   #toast { position:fixed; left:50%; bottom:calc(28px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(20px);
@@ -412,13 +444,13 @@
   <div class="card hidden" id="cardPred">
     <h2><span class="step">2</span><span data-i18n="p_predTitle">提交预测</span></h2>
     <div class="pair">
-      <button class="opt" data-oe="单"><span class="oe-main">单</span><small>1 / 3 / 5 / 7</small></button>
-      <button class="opt" data-oe="双"><span class="oe-main">双</span><small>2 / 4 / 6 / 8</small></button>
+      <button class="opt" data-oe="单"><span class="oe-main">单</span><small>1 / 3 / 5 / 7 / 9</small></button>
+      <button class="opt" data-oe="双"><span class="oe-main">双</span><small>0 / 2 / 4 / 6 / 8</small></button>
     </div>
     <div style="height:14px"></div>
     <div class="numgrid" id="numGrid">
-      <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
-      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button>
+      <button data-n="0">0</button><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
+      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button><button data-n="9">9</button>
     </div>
     <div class="err" id="predErr"></div>
     <button class="btn gold" id="predBtn" data-i18n="p_predBtn">提交预测</button>
@@ -444,6 +476,23 @@
     <div class="verdict">
       <div class="v" id="vOE"><div class="t" data-i18n="p_oePred">单双预测</div><div class="d" id="vOEd">—</div></div>
       <div class="v" id="vNum"><div class="t" data-i18n="p_numPred">数字预测</div><div class="d" id="vNumd">—</div></div>
+    </div>
+    <!-- 奖品：四档只显示玩家命中的那一档，文案由管理界面配置 -->
+    <div class="prize hidden" id="prizeBox">
+      <div class="prize-head">
+        <span class="prize-tier" id="prizeTier"></span>
+        <span class="prize-lab" data-i18n="p_prizeLab">奖品</span>
+      </div>
+      <div class="prize-title" id="prizeTitle"></div>
+      <div class="prize-desc" id="prizeDesc"></div>
+    </div>
+    <!-- 额外奖励：开奖命中特殊数字时，全员（含未猜中）额外获得一份，独立于上面的个人档位 -->
+    <div class="bonus hidden" id="bonusBox">
+      <div class="bonus-head">
+        <span class="bonus-tier" data-i18n="p_bonusTier">全员额外奖励</span>
+      </div>
+      <div class="bonus-title" id="bonusTitle"></div>
+      <div class="bonus-desc" id="bonusDesc"></div>
     </div>
     <div class="hint" style="text-align:center" data-i18n="p_resultHint">等待工作人员开始新一轮后再扫码即可继续。</div>
   </div>
@@ -792,6 +841,10 @@
     $('cardWait').classList.toggle('hidden', picking || ph !== 'wait');
     $('cardResult').classList.toggle('hidden', picking || ph !== 'done');
 
+    // 提交成功后按钮会保持 disabled 防重复提交；下一轮重新登记时必须恢复可点，
+    // 否则同一页面连玩多轮的玩家会卡在「选项都选了但按钮点不动」。
+    if (ph === 'ready') $('predBtn').disabled = false;
+
     // 切换态下给出「取消」出口，避免卡在选择界面
     var cancel = $('sessCancel');
     if (cancel) cancel.classList.toggle('hidden', !(picking && sid));
@@ -818,9 +871,71 @@
     var oeHit = (me.oddEven === '单') === (n % 2 === 1);
     var numHit = me.number === n;
     $('vOE').className = 'v ' + (oeHit ? 'hit' : 'miss');
-    $('vOEd').textContent = t('p_guessOE', { x: me.oddEven, r: oeHit ? t('p_hitYes') : t('p_hitNo') });
+    $('vOEd').innerHTML = verdictHtml(me.oddEven, oeHit);
     $('vNum').className = 'v ' + (numHit ? 'hit' : 'miss');
-    $('vNumd').textContent = t('p_guessOE', { x: me.number, r: numHit ? t('p_hitYes') : t('p_hitNo') });
+    $('vNumd').innerHTML = verdictHtml(me.number, numHit);
+
+    // 奖品档位按「两种猜测的命中组合」判定，四种情况一一对应（互斥、无优先级歧义）：
+    //   都中 → both ｜ 只中数字 → number ｜ 只中单双 → oddeven ｜ 都没中 → miss
+    // 单双与数字是两次独立猜测，猜「单」+ 数字 8 可以数字中而单双错，所以必须分开判。
+    renderPrize(s, numHit ? (oeHit ? 'both' : 'number') : (oeHit ? 'oddeven' : 'miss'));
+    renderBonus(s);
+  }
+
+  /**
+   * 渲染全员额外奖励。触发条件来自服务端快照（s.bonus.triggered 表示本轮开奖命中特殊数字），
+   * 与个人档位无关：无论是否猜中，只要本轮触发了就显示。文案取 s.bonus 的 title/desc，
+   * 留空时回落内置文案。
+   */
+  function renderBonus(s) {
+    var box = $('bonusBox');
+    if (!box) return;
+    var b = s.bonus || {};
+    var triggered = !!b.triggered;
+    box.classList.toggle('hidden', !triggered);
+    if (!triggered) return;
+    var title = String(b.title || '').trim() || t('p_bonusDefTitle');
+    var desc = String(b.desc || '').trim();
+    $('bonusTitle').textContent = title;
+    $('bonusDesc').textContent = desc;
+    $('bonusDesc').classList.toggle('hidden', !desc);
+  }
+
+  /* 单项预测的两行结构：上面是猜的值，下面是命中结论（✓ 命中 / ✗ 未中） */
+  function verdictHtml(value, hit) {
+    return '<span class="pval">' + esc(String(value == null ? '—' : value)) + '</span>' +
+           '<span class="pres">' + esc(hit ? t('p_hitYes') : t('p_hitNo')) + '</span>';
+  }
+
+  /* 奖品档位 → 档位标签 / 后台未配置时的兜底文案（文案由 i18n 提供，三语各一份） */
+  var PRIZE_LABEL = {
+    both: 'p_prizeTierBoth',
+    number: 'p_prizeTierNumber',
+    oddeven: 'p_prizeTierOddeven',
+    miss: 'p_prizeTierMiss'
+  };
+  var PRIZE_DEFAULT = {
+    both: 'p_prizeDefBoth',
+    number: 'p_prizeDefNumber',
+    oddeven: 'p_prizeDefOddeven',
+    miss: 'p_prizeDefMiss'
+  };
+
+  /**
+   * 渲染结果奖品。prizes 来自服务端快照（管理界面保存后随 SSE 即时下发），
+   * 某一档 title/desc 留空时回落到内置文案 —— 后台没配也不会出现空白卡片。
+   */
+  function renderPrize(s, tier) {
+    var box = $('prizeBox');
+    if (!box) return;
+    var cfg = (s.prizes && s.prizes[tier]) || {};
+    var title = String(cfg.title || '').trim() || t(PRIZE_DEFAULT[tier]);
+    var desc = String(cfg.desc || '').trim();
+    $('prizeTier').textContent = t(PRIZE_LABEL[tier]);
+    $('prizeTitle').textContent = title;
+    $('prizeDesc').textContent = desc;
+    $('prizeDesc').classList.toggle('hidden', !desc);
+    box.className = 'prize' + (tier === 'miss' ? ' miss' : '');
   }
 
   /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */

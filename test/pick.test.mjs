@@ -260,3 +260,59 @@ test('实例重启：草稿丢失，客户端用更大 seq 重发即恢复（最
   assert.equal(m3.status, 'draft');
   assert.equal(m3.num, 7);
 });
+
+test('数字范围 0–9：两端都收，越界与缺失一律拒绝（0 不算「没填」）', async () => {
+  // 上一轮留着 M3 的草稿，先开新一轮清空，避免干扰
+  const r = await api.post('/api/reset', { token, sid });
+  assert.equal(r.status, 200);
+  for (const pid of ['M4', 'M5']) {
+    const s = await scan(api, sid, ut, pid);
+    assert.equal(s.body.ok, true, '登记 ' + pid);
+  }
+
+  // 0 是合法数字：草稿与大屏都要如实显示 0，而不是当成空
+  const zero = await pick('M4', '双', 0, 1);
+  assert.equal(zero.status, 200, JSON.stringify(zero.body));
+  assert.equal(zero.body.accepted, true);
+  let bs = await board();
+  assert.equal(bs.body.players.find((p) => p.id === 'M4').num, 0);
+
+  // 9 也是合法上界
+  const nine = await pick('M5', '单', 9, 1);
+  assert.equal(nine.body.accepted, true);
+  bs = await board();
+  assert.equal(bs.body.players.find((p) => p.id === 'M5').num, 9);
+
+  // 越界 / 非整数 / 缺失（含 null，不能被 Number(null)=0 蒙过去）
+  for (const bad of [10, -1, 3.5, '3x', null, '', undefined, true]) {
+    const x = await pick('M4', '双', bad, 2);
+    assert.equal(x.status, 400, '应拒绝 ' + JSON.stringify(bad));
+    assert.equal(x.body.code, 'pick_invalid');
+  }
+
+  // 提交也走同一套校验：0 能落库
+  const sub0 = await submit('M4', '双', 0, 'idem-key-zero0001');
+  assert.equal(sub0.status, 200, JSON.stringify(sub0.body));
+  const row = await playerRow('M4');
+  assert.equal(Number(row.number), 0);
+  const sub9 = await submit('M5', '单', 9, 'idem-key-nine0001');
+  assert.equal(sub9.status, 200);
+  // 参数校验在幂等/重复判定之前：非法数字先被拒；换合法数字才落到 already_submitted
+  assert.equal((await submit('M5', '单', 10, 'idem-key-nine0002')).status, 400);
+  const dup = await submit('M5', '单', 1, 'idem-key-nine0003');
+  assert.equal(dup.status, 409);
+  assert.equal(dup.body.code, 'already_submitted');
+  assert.equal(dup.body.submit.number, 9, '409 要带原终态，不能被新值覆盖');
+
+  // 锁定 0：开奖数字 0 必须被接受，且按「双」派生
+  const lock = await api.post('/api/confirm', { token, sid, number: 0 });
+  assert.equal(lock.status, 200, JSON.stringify(lock.body));
+  assert.equal(lock.body.number, 0);
+  const st = await state();
+  assert.equal(st.body.number, 0);
+  assert.equal(st.body.locked, true);
+
+  const badLock = await api.post('/api/confirm', { token, sid, number: 10 });
+  assert.equal(badLock.status, 400);
+  assert.equal(badLock.body.code, 'invalid_number');
+});

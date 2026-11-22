@@ -199,7 +199,7 @@ async function initArchiveTables(p) {
       session_name    TEXT    NOT NULL,   -- 场次名称快照（事后改名不影响历史）
       session_seq     INTEGER NOT NULL,   -- 场次显示序号快照
       round           INTEGER NOT NULL,   -- 场次内轮次号
-      number          INTEGER NOT NULL,   -- 开奖数字 1–8
+      number          INTEGER NOT NULL,   -- 开奖数字 0–9
       odd_even        TEXT    NOT NULL,   -- 开奖单双（由 number 派生，便于直接对账）
       locked_at       BIGINT  NOT NULL,   -- 锁定时间戳（毫秒）—— 当日汇总按此列切分
       archived_at     BIGINT  NOT NULL,   -- 归档写入时间戳（毫秒）

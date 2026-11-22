@@ -45,7 +45,7 @@ function playerState() {
   return api.get('/api/state?sid=' + encodeURIComponent(sid) + '&ut=' + encodeURIComponent(ut));
 }
 
-test('默认没有配置：三档都是空串，玩家端也能拿到结构', async () => {
+test('默认没有配置：四档都是空串，玩家端也能拿到结构', async () => {
   const r = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.prizes, {

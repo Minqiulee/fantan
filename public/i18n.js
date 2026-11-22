@@ -57,7 +57,7 @@
       inputTitle: '录入本轮数字',
       selPreview: '已选数字',
       confirmLock: '确认并锁定本轮数字',
-      errPickNumber: '请先点选一个 1-8 的数字',
+      errPickNumber: '请先点选一个 0-9 的数字',
 
       /* 自定义确认弹窗 */
       modalCancelText: '取消',
@@ -75,6 +75,7 @@
       errConfirmFailed: '确认失败',
 
       lockedBanner: '✓ 本轮数字已确认并锁定',
+      staffBonusTriggered: '本轮命中特殊数字，全员额外奖励已触发',
       resetRound: '开始新一轮',
       toastNewRound: '已进入第 {round} 轮，等待录入',
       errOpFailed: '操作失败',
@@ -151,7 +152,7 @@
       err_last_admin: '至少要保留一个可用管理员',
       err_nothing_to_update: '没有需要修改的内容',
       err_unauthorized: '未授权，请先登录员工端',
-      err_invalid_number: '只能录入 1-8 的整数',
+      err_invalid_number: '只能录入 0-9 的整数',
       err_already_locked: '本轮数字已锁定为 {number}，不能重复录入；如需继续请开始新一轮',
 
       /* 竞猜归档与对账（不含积分） */
@@ -207,6 +208,34 @@
       adminNeedSession: '请先新建场次，或切换到一个进行中的场次',
       adminAccountDesc: '建员工账号、设独立密码、停用与改密',
       adminAuditDesc: '谁登录、谁锁定、谁导出，按天查看与导出',
+      adminPrizeDesc: '按结果配置玩家端奖品文案，保存后即时生效',
+
+      /* ---- 奖品设置（结果各一份文案） ---- */
+      prizeTitle: '奖品设置',
+      prizeHint: '数字与单双是两次独立猜测，按四种组合各配一份文案：都中 / 只中数字 / 只中单双 / 都没中。某一档留空时玩家端显示系统默认文案。',
+      prizeTierBoth: '数字和单双都中',
+      prizeTierBothSub: '两项全对',
+      prizeTierNumber: '只中数字',
+      prizeTierNumberSub: '数字对、单双不对',
+      prizeTierOddeven: '只中单双',
+      prizeTierOddevenSub: '单双对、数字不对',
+      prizeTierMiss: '未猜中',
+      prizeTierMissSub: '两项都没中',
+      prizeNameLab: '奖品名称',
+      prizeNamePh: '例如：羊绒围巾一条',
+      prizeDescLab: '奖品说明（可选）',
+      prizeDescPh: '例如：凭本页面到前台领取，当日有效',
+      prizeSave: '保存配置',
+      prizeSaved: '奖品配置已保存',
+      prizeLoadFail: '读取奖品配置失败，请重试',
+      prizeSaveFail: '保存失败，请重试',
+
+      /* 全员额外奖励配置 */
+      bonusTitle: '全员额外奖励',
+      bonusSub: '开奖数字命中下方特殊数字时，全员（含未猜中者）额外获得一份奖品；只触发一次',
+      bonusNumberLab: '特殊数字（开奖命中即全员加奖）',
+      bonusNumberOff: '不启用',
+      bonusSaveFail: '额外奖品保存失败，请重试',
 
       /* ---- 员工账号 ---- */
       accountTitle: '员工账号',
@@ -254,6 +283,8 @@
       action_account_update: '修改账号',
       action_account_password: '重置密码',
       action_archive_sync: '归档补齐',
+      action_prize_config: '奖品设置',
+      action_bonus_config: '额外奖品设置',
       action_switch_denied: '切换口令错误',
       toastAccountCreated: '已创建账号 {name}',
       toastAccountUpdated: '已更新账号',
@@ -304,12 +335,27 @@
       p_hitYes: '✓ 命中',
       p_hitNo: '✗ 未中',
 
+      /* 结果奖品（四档，文案由管理界面配置；未配置时用下面的兜底文案） */
+      p_prizeLab: '本轮奖品',
+      p_prizeTierBoth: '数字和单双都中',
+      p_prizeTierNumber: '只中数字',
+      p_prizeTierOddeven: '只中单双',
+      p_prizeTierMiss: '未猜中',
+      p_prizeDefBoth: '数字和单双全中！请向工作人员出示本页面领取奖品',
+      p_prizeDefNumber: '猜中本轮数字！请向工作人员出示本页面领取奖品',
+      p_prizeDefOddeven: '猜中单双！请向工作人员出示本页面领取奖品',
+      p_prizeDefMiss: '这次没猜中，下一轮再来试试吧',
+
+      /* 全员额外奖励（命中特殊数字时触发，独立于个人档位） */
+      p_bonusTier: '全员额外奖励',
+      p_bonusDefTitle: '本轮命中幸运数字，全员额外获得一份奖品！',
+
       p_welcome: '欢迎回来，{n}！',
       p_manualEmpty: '请输入二维码内容或编号',
       p_scanNetErr: '网络异常，请重试',
       p_scanFail: '识别失败',
       p_selOddEven: '请先选择「单」或「双」',
-      p_selNum: '请再选一个 1-8 的数字',
+      p_selNum: '请再选一个 0-9 的数字',
       p_predSubmitting: '预测已提交，等待开奖！',
       p_predSubmitFail: '提交失败',
       p_predClosed: '本轮已锁定，无法提交',
@@ -320,7 +366,7 @@
       p_rulesTitle: '玩法说明',
       p_rule1: '扫描会员码完成登记，即进入本场',
       p_rule2: '先猜本轮开奖数字是「单」还是「双」',
-      p_rule3: '再猜一个 1-8 的数字，两项各只有一次机会，提交后不可修改',
+      p_rule3: '再猜一个 0-9 的数字（含 0 和 9），两项各只有一次机会，提交后不可修改',
       p_rule4: '工作人员锁定数字后立即公布结果，命中按门店规则计分',
       p_rulesTap: '点击任意位置立即开始',
       p_rulesCountdown: '{n} 秒后自动关闭',
@@ -354,7 +400,7 @@
       p_err_predict_closed: '本轮已开奖，预测已截止',
       p_err_predict_duplicate: '你已提交过预测，不能重复提交或修改',
       p_err_predict_invalid_oe: '请选择「单」或「双」',
-      p_err_predict_invalid: '数字预测必须是 1-8 的整数',
+      p_err_predict_invalid: '数字预测必须是 0-9 的整数',
       p_err_session_not_found: '场次不存在，请重新选择',
       p_err_session_closed: '该场次已结束，请选择其他场次',
       p_err_session_locked: '本机已绑定其他场次，如需切换请重新验证口令',
@@ -405,7 +451,7 @@
       inputTitle: '錄入本輪數字',
       selPreview: '已選數字',
       confirmLock: '確認並鎖定本輪數字',
-      errPickNumber: '請先點選一個 1-8 的數字',
+      errPickNumber: '請先點選一個 0-9 的數字',
 
       /* 自定義確認彈窗 */
       modalCancelText: '取消',
@@ -423,6 +469,7 @@
       errConfirmFailed: '確認失敗',
 
       lockedBanner: '✓ 本輪數字已確認並鎖定',
+      staffBonusTriggered: '本輪命中特殊數字，全員額外獎勵已觸發',
       resetRound: '開始新一輪',
       toastNewRound: '已進入第 {round} 輪，等待錄入',
       errOpFailed: '操作失敗',
@@ -499,7 +546,7 @@
       err_last_admin: '至少要保留一個可用管理員',
       err_nothing_to_update: '沒有需要修改的內容',
       err_unauthorized: '未授權，請先登入員工端',
-      err_invalid_number: '只能錄入 1-8 的整數',
+      err_invalid_number: '只能錄入 0-9 的整數',
       err_already_locked: '本輪數字已鎖定為 {number}，不能重複錄入；如需繼續請開始新一輪',
 
       /* 對賬歸檔（不含積分） */
@@ -555,6 +602,34 @@
       adminNeedSession: '請先新建場次，或切換到一個進行中的場次',
       adminAccountDesc: '建員工帳號、設獨立密碼、停用與改密',
       adminAuditDesc: '誰登入、誰鎖定、誰導出，按天查看與導出',
+      adminPrizeDesc: '按三類結果配置玩家端獎品文案，儲存後即時生效',
+
+      /* ---- 獎品設置（三類結果各一份文案） ---- */
+      prizeTitle: '獎品設置',
+      prizeHint: '數字與單雙是兩次獨立猜測，按四種組合各配一份文案：都中 / 只中數字 / 只中單雙 / 都沒中。某一檔留空時玩家端顯示系統預設文案。',
+      prizeTierBoth: '數字和單雙都中',
+      prizeTierBothSub: '兩項全對',
+      prizeTierNumber: '只中數字',
+      prizeTierNumberSub: '數字對、單雙不對',
+      prizeTierOddeven: '只中單雙',
+      prizeTierOddevenSub: '單雙對、數字不對',
+      prizeTierMiss: '未猜中',
+      prizeTierMissSub: '兩項都沒中',
+      prizeNameLab: '獎品名稱',
+      prizeNamePh: '例如：羊絨圍巾一條',
+      prizeDescLab: '獎品說明（可選）',
+      prizeDescPh: '例如：憑本頁面到前台領取，當日有效',
+      prizeSave: '儲存配置',
+      prizeSaved: '獎品配置已儲存',
+      prizeLoadFail: '讀取獎品配置失敗，請重試',
+      prizeSaveFail: '儲存失敗，請重試',
+
+      /* 全員額外獎勵配置 */
+      bonusTitle: '全員額外獎勵',
+      bonusSub: '開獎數字命中下方特殊數字時，全員（含未猜中者）額外獲得一份獎品；只觸發一次',
+      bonusNumberLab: '特殊數字（開獎命中即全員加獎）',
+      bonusNumberOff: '不啟用',
+      bonusSaveFail: '額外獎品儲存失敗，請重試',
 
       /* ---- 員工帳號 ---- */
       accountTitle: '員工帳號',
@@ -602,6 +677,8 @@
       action_account_update: '修改帳號',
       action_account_password: '重置密碼',
       action_archive_sync: '歸檔補齊',
+      action_prize_config: '獎品設置',
+      action_bonus_config: '額外獎品設置',
       action_switch_denied: '切換口令錯誤',
       toastAccountCreated: '已創建帳號 {name}',
       toastAccountUpdated: '已更新帳號',
@@ -652,12 +729,27 @@
       p_hitYes: '✓ 命中',
       p_hitNo: '✗ 未中',
 
+      /* 結果獎品（四檔，文案由管理介面配置；未配置時用下面的兜底文案） */
+      p_prizeLab: '本輪獎品',
+      p_prizeTierBoth: '數字和單雙都中',
+      p_prizeTierNumber: '只中數字',
+      p_prizeTierOddeven: '只中單雙',
+      p_prizeTierMiss: '未猜中',
+      p_prizeDefBoth: '數字和單雙全中！請向工作人員出示本頁面領取獎品',
+      p_prizeDefNumber: '猜中本輪數字！請向工作人員出示本頁面領取獎品',
+      p_prizeDefOddeven: '猜中單雙！請向工作人員出示本頁面領取獎品',
+      p_prizeDefMiss: '這次沒猜中，下一輪再來試試吧',
+
+      /* 全員額外獎勵（命中特殊數字時觸發，獨立於個人檔位） */
+      p_bonusTier: '全員額外獎勵',
+      p_bonusDefTitle: '本輪命中幸運數字，全員額外獲得一份獎品！',
+
       p_welcome: '歡迎回來，{n}！',
       p_manualEmpty: '請輸入二維碼內容或編號',
       p_scanNetErr: '網絡異常，請重試',
       p_scanFail: '識別失敗',
       p_selOddEven: '請先選擇「單」或「雙」',
-      p_selNum: '請再選一個 1-8 的數字',
+      p_selNum: '請再選一個 0-9 的數字',
       p_predSubmitting: '預測已提交，等待開獎！',
       p_predSubmitFail: '提交失敗',
       p_predClosed: '本輪已鎖定，無法提交',
@@ -668,7 +760,7 @@
       p_rulesTitle: '玩法說明',
       p_rule1: '掃描會員碼完成登記，即進入本場',
       p_rule2: '先猜本輪開獎數字是「單」還是「雙」',
-      p_rule3: '再猜一個 1-8 的數字，兩項各只有一次機會，提交後不可修改',
+      p_rule3: '再猜一個 0-9 的數字（含 0 和 9），兩項各只有一次機會，提交後不可修改',
       p_rule4: '工作人員鎖定數字後立即公佈結果，命中按門店規則計分',
       p_rulesTap: '點擊任意位置立即開始',
       p_rulesCountdown: '{n} 秒後自動關閉',
@@ -701,7 +793,7 @@
       p_err_predict_closed: '本輪已開獎，預測已截止',
       p_err_predict_duplicate: '你已提交過預測，不能重複提交或修改',
       p_err_predict_invalid_oe: '請選擇「單」或「雙」',
-      p_err_predict_invalid: '數字預測必須是 1-8 的整數',
+      p_err_predict_invalid: '數字預測必須是 0-9 的整數',
       p_err_session_not_found: '場次不存在，請重新選擇',
       p_err_session_closed: '該場次已結束，請選擇其他場次',
       p_err_session_locked: '本機已綁定其他場次，如需切換請重新驗證口令',
@@ -752,7 +844,7 @@
       inputTitle: 'Enter This Round\'s Number',
       selPreview: 'Selected number',
       confirmLock: 'Confirm & Lock Number',
-      errPickNumber: 'Please tap a number from 1 to 8 first',
+      errPickNumber: 'Please tap a number from 0 to 9 first',
 
       /* Custom confirm modal */
       modalCancelText: 'Cancel',
@@ -770,6 +862,7 @@
       errConfirmFailed: 'Confirmation failed',
 
       lockedBanner: '✓ Number confirmed & locked',
+      staffBonusTriggered: 'Special number hit — all-participant bonus triggered',
       resetRound: 'Start New Round',
       toastNewRound: 'Entered round {round}, awaiting entry',
       errOpFailed: 'Operation failed',
@@ -846,7 +939,7 @@
       err_last_admin: 'At least one active administrator must remain',
       err_nothing_to_update: 'Nothing to update',
       err_unauthorized: 'Unauthorized, please log in to the staff console first',
-      err_invalid_number: 'Please enter an integer from 1 to 8',
+      err_invalid_number: 'Please enter an integer from 0 to 9',
       err_already_locked: 'This round\'s number is already locked to {number}; start a new round to continue',
 
       /* Archive & reconciliation (no points) */
@@ -902,6 +995,34 @@
       adminNeedSession: 'Create a session, or switch to one that is live',
       adminAccountDesc: 'Create staff accounts with their own passwords; disable or reset',
       adminAuditDesc: 'Who signed in, locked, or exported — view and export by day',
+      adminPrizeDesc: 'Configure prize copy for the three outcome tiers; live right after saving',
+
+      /* ---- Prize settings (one copy per outcome tier) ---- */
+      prizeTitle: 'Prizes',
+      prizeHint: 'Number and odd/even are separate guesses — one copy per combination: both / number only / odd/even only / no hit. Leave a tier empty to use the built-in default copy.',
+      prizeTierBoth: 'Number + Odd/Even',
+      prizeTierBothSub: 'Both guesses correct',
+      prizeTierNumber: 'Number only',
+      prizeTierNumberSub: 'Number correct, odd/even wrong',
+      prizeTierOddeven: 'Odd/Even only',
+      prizeTierOddevenSub: 'Odd/even correct, number wrong',
+      prizeTierMiss: 'No hit',
+      prizeTierMissSub: 'Neither correct',
+      prizeNameLab: 'Prize name',
+      prizeNamePh: 'e.g. Wool scarf',
+      prizeDescLab: 'Prize note (optional)',
+      prizeDescPh: 'e.g. Show this page at the counter, valid today',
+      prizeSave: 'Save',
+      prizeSaved: 'Prize settings saved',
+      prizeLoadFail: 'Failed to load prize settings',
+      prizeSaveFail: 'Save failed, try again',
+
+      /* All-participant bonus config */
+      bonusTitle: 'Bonus for everyone',
+      bonusSub: 'When the draw hits the special number below, every participant (even those who missed) gets an extra prize; triggers only once',
+      bonusNumberLab: 'Special number (triggers bonus on hit)',
+      bonusNumberOff: 'Disabled',
+      bonusSaveFail: 'Failed to save bonus prize',
 
       /* ---- Staff accounts ---- */
       accountTitle: 'Staff accounts',
@@ -949,6 +1070,8 @@
       action_account_update: 'Update account',
       action_account_password: 'Reset password',
       action_archive_sync: 'Archive sync',
+      action_prize_config: 'Prize settings',
+      action_bonus_config: 'Bonus prize settings',
       action_switch_denied: 'Wrong switch passcode',
       toastAccountCreated: 'Account {name} created',
       toastAccountUpdated: 'Account updated',
@@ -999,12 +1122,27 @@
       p_hitYes: '✓ Hit',
       p_hitNo: '✗ Miss',
 
+      /* Result prize (four tiers, copy configured in admin; fallback used when unset) */
+      p_prizeLab: 'Prize',
+      p_prizeTierBoth: 'Number + Odd/Even hit',
+      p_prizeTierNumber: 'Number only',
+      p_prizeTierOddeven: 'Odd/Even only',
+      p_prizeTierMiss: 'No hit',
+      p_prizeDefBoth: 'Both correct! Show this page to staff to claim your prize',
+      p_prizeDefNumber: 'Number hit! Show this page to staff to claim your prize',
+      p_prizeDefOddeven: 'Odd/Even hit! Show this page to staff to claim your prize',
+      p_prizeDefMiss: 'No luck this round — try again next round',
+
+      /* All-participant bonus (triggered on the special number, independent of personal tier) */
+      p_bonusTier: 'Bonus for everyone',
+      p_bonusDefTitle: 'Lucky number hit — everyone gets a bonus prize!',
+
       p_welcome: 'Welcome back, {n}!',
       p_manualEmpty: 'Enter QR content or ID',
       p_scanNetErr: 'Network error, try again',
       p_scanFail: 'Recognition failed',
       p_selOddEven: 'Choose "Odd" or "Even" first',
-      p_selNum: 'Choose a number from 1-8',
+      p_selNum: 'Choose a number from 0-9',
       p_predSubmitting: 'Prediction submitted, waiting for draw!',
       p_predSubmitFail: 'Submit failed',
       p_predClosed: 'This round is locked',
@@ -1015,7 +1153,7 @@
       p_rulesTitle: 'How to Play',
       p_rule1: 'Scan your member code to register for this session',
       p_rule2: 'Guess whether the winning number is Odd or Even',
-      p_rule3: 'Then pick a number from 1-8 — one guess each, no changes after submitting',
+      p_rule3: 'Then pick a number from 0-9 (0 and 9 included) — one guess each, no changes after submitting',
       p_rule4: 'Results show as soon as staff lock the number; hits earn points per store rules',
       p_rulesTap: 'Tap anywhere to start now',
       p_rulesCountdown: 'Closes in {n}s',
@@ -1048,7 +1186,7 @@
       p_err_predict_closed: 'This round has been drawn; predictions are closed',
       p_err_predict_duplicate: 'You have already submitted a prediction and cannot resubmit or change it',
       p_err_predict_invalid_oe: 'Please choose "Odd" or "Even"',
-      p_err_predict_invalid: 'Number prediction must be an integer from 1 to 8',
+      p_err_predict_invalid: 'Number prediction must be an integer from 0 to 9',
       p_err_session_not_found: 'Session not found, please choose again',
       p_err_session_closed: 'This session has ended, please choose another one',
       p_err_session_locked: 'This device is bound to another session — re-enter the passcode to switch',

@@ -23,6 +23,7 @@ const FILES = [
   'test/multi-instance.test.mjs',
   'test/pick.test.mjs',
   'test/prize.test.mjs',
+  'test/bonus.test.mjs',
   'test/sse-reconnect.test.mjs',
   'test/identity.test.mjs'
 ];
