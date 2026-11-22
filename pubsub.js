@@ -30,7 +30,7 @@ const CHANNEL = 'oddeven_session_events';
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
-function createPubSub({ connectionString, instanceId, logger = console }) {
+function createPubSub({ connectionString, ssl, instanceId, logger = console }) {
   const emitter = new EventEmitter();
   emitter.setMaxListeners(20);
 
@@ -57,7 +57,9 @@ function createPubSub({ connectionString, instanceId, logger = console }) {
     if (stopping || connecting) return;
     connecting = true;
     try {
-      const c = new Client({ connectionString });
+      // ssl 由调用方显式给出（db.js 统一判定）：托管 pooler 用自签证书链，
+      // 交给 pg 自己解析 sslmode 会被当成 verify-full 而握手失败
+      const c = new Client(ssl === undefined ? { connectionString } : { connectionString, ssl });
       c.on('error', (e) => {
         logger.error('[pubsub] 连接错误:', e.message);
         connected = false;

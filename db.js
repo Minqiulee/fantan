@@ -30,20 +30,18 @@
  *     因此任一实例签发的 token 在任意实例都有效
  *   - 跨实例通知不经过数据库表，走 LISTEN/NOTIFY（见 pubsub.js），本层只负责写与读
  *
- * 连接串来源（优先级从高到低）：
- *   1. DATABASE_URL / PG_URL —— 完整连接串；**完整串优先**，避免残留的 PG_* 旧值
- *      悄悄盖掉新换的库（托管库如 Supabase 只给一条连接串）
- *   2. PG_HOST / PG_USER / PG_PASS —— 拆开的三个值，拼成
- *      postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB
- *      （PG_PORT 默认 5432，PG_DB 默认 postgres）
- *   3. 本地默认值
+ * 连接串来源：**只有 DATABASE_URL**。
+ *   - 设了 DATABASE_URL 就用它（托管库如 Supabase 只给一条连接串）；
+ *   - 没设则用本地默认值 LOCAL_DEFAULT_URL（本地开发用，部署环境必须显式配置）。
+ *   - 不再支持 PG_HOST / PG_USER / PG_PASS / PG_PORT / PG_DB / PG_URL 等拆开写法：
+ *     多来源拼装会让「换了库却连到旧库」这类事故极难排查，只剩一条串最省事。
  *
  * 托管 PgBouncer（Supabase pooler）注意点：
  *   - pooler 强制 TLS，连接串没写 sslmode 时这里自动补 `sslmode=require`；
  *   - 事务模式 pooler（端口 6543）不支持 LISTEN/NOTIFY，长连接订阅必须走
  *     会话模式（同一主机 5432），见 resolveListenConnectionString()；
  *   - 事务模式下连接是被多客户端复用的，池子不宜开大：默认 max=5，
- *     用 PG_POOL_MAX 覆盖。
+ *     用 DB_POOL_MAX 覆盖。
  */
 const { Pool } = require('pg');
 
@@ -55,26 +53,15 @@ const POOLER_SESSION_PORT = '5432';
 
 let pool = null;
 
-/** 由拆开的 PG_* 拼接连接串；主机/用户/密码缺一不可，否则返回 null 交由上层回退。 */
-function buildConnectionString() {
-  const { PG_HOST, PG_USER, PG_PASS, PG_PORT, PG_DB } = process.env;
-  if (PG_HOST && PG_USER && PG_PASS) {
-    const port = PG_PORT || 5432;
-    const database = PG_DB || 'postgres';
-    // 密码里可能有 @ / : / 等保留字符，必须转义
-    return `postgresql://${encodeURIComponent(PG_USER)}:${encodeURIComponent(PG_PASS)}@${PG_HOST}:${port}/${database}`;
-  }
-  return null;
+/** 唯一的连接串来源：DATABASE_URL，未配置则回落到本地默认值。 */
+function rawConnectionString() {
+  const url = (process.env.DATABASE_URL || '').trim();
+  return url || LOCAL_DEFAULT_URL;
 }
 
-/** 当前生效的连接串（读写用，已保证托管库带 sslmode）。 */
+/** 当前生效的连接串（读写用，sslmode 已被摘掉，TLS 由 sslOption() 显式决定）。 */
 function resolveConnectionString() {
-  return ensureSslMode(
-    process.env.DATABASE_URL ||
-    process.env.PG_URL ||
-    buildConnectionString() ||
-    LOCAL_DEFAULT_URL
-  );
+  return stripSslMode(rawConnectionString()).url;
 }
 
 /** 是否托管 pooler 主机（Supabase pooler 形如 aws-1-xxx.pooler.supabase.com）。 */
@@ -84,24 +71,75 @@ function isSupabasePooler(url) {
 }
 
 /**
- * 托管库必须 TLS。连接串里已经写了 sslmode 就尊重用户的写法，
- * 否则补 `sslmode=require`（pg 会按 require 处理为「加密但不校验证书」）。
+ * 把 sslmode / uselibpqcompat 从连接串里摘出来单独处理。
+ *
+ * 为什么不直接丢给 pg：`sslmode` 的语义在 pg 8.23 里已经变了 ——
+ * `require` / `prefer` / `verify-ca` 全被当成 `verify-full`（严格校验证书链），
+ * 而 Supabase pooler 用的是自签证书链，于是报 self-signed certificate in
+ * certificate chain。字符串解析不走 pg 的版本差异，行为才稳定。
  */
-function ensureSslMode(url) {
-  if (!isSupabasePooler(url)) return url;
-  if (/[?&]sslmode=/i.test(url)) return url;
-  return url + (url.includes('?') ? '&' : '?') + 'sslmode=require';
+function stripSslMode(url) {
+  const qIdx = url.indexOf('?');
+  if (qIdx === -1) return { url, mode: null };
+  const head = url.slice(0, qIdx);
+  const kept = [];
+  let mode = null;
+  for (const pair of url.slice(qIdx + 1).split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    const key = (eq === -1 ? pair : pair.slice(0, eq)).toLowerCase();
+    if (key === 'sslmode') {
+      mode = decodeURIComponent(eq === -1 ? '' : pair.slice(eq + 1)).toLowerCase() || null;
+    } else if (key !== 'uselibpqcompat') {
+      kept.push(pair);
+    }
+  }
+  return { url: kept.length ? head + '?' + kept.join('&') : head, mode };
 }
 
 /**
- * LISTEN/NOTIFY 专用的连接串（见 pubsub.js）。
+ * 由 sslmode（或主机判定）算出 pg 的 ssl 选项。
+ *   disable            → false（明文）
+ *   verify-full/ca     → 严格校验证书（需要 sslrootcert）
+ *   require/prefer/…   → 加密但不校验证书
+ *   未写                → 托管库（Supabase）默认「加密不校验」，其余明文（本地/内网）
+ */
+function sslOption(url, mode) {
+  switch (mode) {
+    case 'disable': return false;
+    case 'verify-full':
+    case 'verify-ca': return { rejectUnauthorized: true };
+    case 'allow':
+    case 'prefer':
+    case 'require':
+    case 'no-verify': return { rejectUnauthorized: false };
+    default: return isSupabasePooler(url) ? { rejectUnauthorized: false } : false;
+  }
+}
+
+/** 当前生效的连接参数：读写与 LISTEN 长连接共用同一套 TLS 判定。 */
+function resolveClientConfig() {
+  const { url, mode } = stripSslMode(rawConnectionString());
+  return { connectionString: url, ssl: sslOption(url, mode) };
+}
+
+/**
+ * LISTEN/NOTIFY 专用的连接参数（见 pubsub.js）。
  * 事务模式 pooler（6543）会把连接随机分给不同客户端，LISTEN 订阅注定失效，
  * 因此同一主机改走会话模式 5432；非 pooler 主机原样返回。
  */
+function resolveListenConfig() {
+  const cfg = resolveClientConfig();
+  if (!isSupabasePooler(cfg.connectionString)) return cfg;
+  return {
+    ...cfg,
+    connectionString: cfg.connectionString.replace(':' + POOLER_TX_PORT + '/', ':' + POOLER_SESSION_PORT + '/')
+  };
+}
+
+/** LISTEN 用的连接串（保留给需要纯字符串的调用方）。 */
 function resolveListenConnectionString() {
-  const url = resolveConnectionString();
-  if (!isSupabasePooler(url)) return url;
-  return url.replace(':' + POOLER_TX_PORT + '/', ':' + POOLER_SESSION_PORT + '/');
+  return resolveListenConfig().connectionString;
 }
 
 /** 日志用：抹掉连接串里的密码。 */
@@ -109,19 +147,21 @@ function maskUrl(url) {
   return String(url).replace(/^([a-z]+:\/\/[^:/@]+:)[^@]*@/i, '$1***@');
 }
 
-/** 懒加载连接池。池参数可用 PG_POOL_MAX 覆盖，方便本地/测试。 */
+/** 懒加载连接池。池参数可用 DB_POOL_MAX 覆盖，方便本地/测试。 */
 function getPool() {
   if (pool) return pool;
-  const connectionString = resolveConnectionString();
-  const max = Number(process.env.PG_POOL_MAX || 5);
+  const { connectionString, ssl } = resolveClientConfig();
+  const max = Number(process.env.DB_POOL_MAX || 5);
   pool = new Pool({
     connectionString,
+    ssl,
     max: Number.isFinite(max) && max > 0 ? max : 5,
     idleTimeoutMillis: 10000,       // pooler 会主动踢掉空闲连接，别攥太久
     connectionTimeoutMillis: 10000, // 跨区访问（如 ap-south-1）握手偏慢
     keepAlive: true
   });
-  console.log('[db] 连接 ' + maskUrl(connectionString) + '（池上限 ' + pool.options.max + '）');
+  console.log('[db] 连接 ' + maskUrl(connectionString)
+    + '（池上限 ' + pool.options.max + '，TLS ' + (ssl ? (ssl.rejectUnauthorized ? '校验' : '不校验证书') : '关闭') + '）');
   pool.on('error', (err) => {
     // 空闲连接出错不应导致进程崩溃，仅记录
     console.error('[db] 连接池空闲连接错误:', err.message);
@@ -1281,6 +1321,8 @@ module.exports = {
 
   // 连接串解析（pubsub 需要一条独立的 LISTEN 长连接）
   resolveConnectionString,
+  resolveClientConfig,
+  resolveListenConfig,
   resolveListenConnectionString,
   maskUrl,
 

@@ -104,7 +104,7 @@ npm start
 单双竞猜已启动: http://localhost:3000/  (玩家端，进入后扫自己的二维码)
 工作人员端入口: http://localhost:3000/staff （账号 + 密码登录）
 管理界面入口: http://localhost:3000/admin
-数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS，端口与库名可用 PG_PORT/PG_DB 覆盖）
+数据持久化: Postgres（连接串来自 DATABASE_URL，池上限可用 DB_POOL_MAX 覆盖）
 ```
 
 首次启动会用 `ADMIN_USERNAME`（默认 `admin`）/ `ADMIN_PASSWORD` 建一个管理员账号；**只在库里没有任何管理员时生效**。没设 `ADMIN_PASSWORD` 时用内置默认 `123456`，启动日志会警告——**任何对外可访问的环境都必须覆盖它，并在登录后立刻改掉**。后续员工账号一律在管理界面「员工账号」里创建。
@@ -121,35 +121,35 @@ npm start
 | `ADMIN_USERNAME` | 首次启动创建的管理员账号名（仅当库里没有任何管理员时生效） | `admin` |
 | `ADMIN_PASSWORD` | 首次启动创建的管理员密码 | `123456` |
 | `STAFF_SESSION_PASSWORD` | 员工「切换场次 / 新建场次」口令（管理员免校验） | `7777` |
-| `PG_HOST` | Postgres 主机 | 无 |
-| `PG_USER` | Postgres 用户名 | 无 |
-| `PG_PASS` | Postgres 密码 | 无 |
-| `PG_PORT` | Postgres 端口（配合 `PG_*` 使用） | `5432` |
-| `PG_DB` | 数据库名（配合 `PG_*` 使用） | `postgres` |
-| `DATABASE_URL` | 完整连接串；`PG_*` 三件套不全时才生效 | 无 |
-| `PG_URL` | 同 `DATABASE_URL`，优先级更低 | 无 |
+| `DATABASE_URL` | Postgres 连接串（**唯一的连接配置来源**） | 本地兜底 `postgres://postgres:postgres@localhost:5432/oddeven` |
+| `DB_POOL_MAX` | 连接池上限 | `5` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟，东八区填 `480`） | `480` |
 
-连接串解析优先级（`db.js`）：
+连接串解析（`db.js`）：
 
-1. `PG_HOST` + `PG_USER` + `PG_PASS` 三者齐备 → 拼接 `postgresql://USER:PASS@HOST:PORT/DB`（用户名与密码自动 URL 编码，密码含 `@` `:` `/` 无需手工转义）
-2. `DATABASE_URL`
-3. `PG_URL`
-4. 本地兜底 `postgres://postgres:postgres@localhost:5432/oddeven`
+1. `DATABASE_URL`
+2. 未设置时用本地兜底 `postgres://postgres:postgres@localhost:5432/oddeven`
 
-三个都不配置且本地无默认库时，启动会打印 `[db] 数据库初始化失败，应用无法启动` 并退出（`exit 1`），不会带着空状态继续跑。
+**不再支持** `PG_HOST` / `PG_USER` / `PG_PASS` / `PG_PORT` / `PG_DB` / `PG_URL` 等拆开写法（旧值留着也不再读取）；用户名密码里的 `@` `:` `/` 等字符请在连接串里做 URL 编码（`encodeURIComponent`）。
+
+本地没有默认库且未设 `DATABASE_URL` 时，启动会打印 `[db] 数据库初始化失败，应用无法启动` 并退出（`exit 1`），不会带着空状态继续跑。
 
 ### 5.2 数据库 TLS
 
-代码里没有显式写 `ssl` 配置。托管库如果强制 TLS，在**连接串**里带 `sslmode` 即可（`pg` 的连接串解析层会把它转成 `ssl` 配置）：
+TLS 由 `db.js` 的 `sslOption()` 统一判定，连接串里写 `sslmode` 即可：
 
 ```bash
 export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=require'
 ```
 
-- `sslmode=require` / `verify-full`：按 `verify-full` 语义处理，需要服务端证书可被校验
-- `sslmode=no-verify`：加密但不校验证书（自签证书场景）
-- 注意：走 `PG_HOST/PG_USER/PG_PASS` 分支时无法附加 TLS 参数，需要 TLS 请改用 `DATABASE_URL`，或按“待办”一节补代码
+| 连接串写法 | 实际行为 |
+|---|---|
+| 不带 `sslmode`，主机 `*.supabase.com` | 加密、不校验证书（默认） |
+| `sslmode=require` / `prefer` / `no-verify` | 加密、不校验证书 |
+| `sslmode=verify-full` / `verify-ca` | 加密 + 严格校验证书链 |
+| `sslmode=disable` 或本地非托管主机 | 明文 |
+
+`sslmode` 会被从连接串里摘出来单独处理（`pg` 8.23 起把 `require` 当 `verify-full`，对 Supabase pooler 的自签证书链会直接报错）。因为没有拆开写法的分支，TLS 配置只有连接串这一个入口。
 
 ---
 
@@ -587,11 +587,7 @@ fly secrets set \
   ADMIN_PASSWORD='your-admin-password' \
   STAFF_SESSION_PASSWORD='your-switch-passcode' \
   PLAYER_SESSION_PASSWORD='your-session-passcode' \
-  PG_HOST=your-db-host \
-  PG_USER=your-db-user \
-  PG_PASS='your-db-password' \
-  PG_PORT=5432 \
-  PG_DB=postgres
+  DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres'
 
 fly deploy
 ```
@@ -613,7 +609,7 @@ fly deploy
 - 每个场次的 `round` / `player` / `identity` 独立、SSE 只推给本场客户端；关闭一场不影响其他场次
 - 已关闭场次从玩家端与员工端切换列表同时消失、无法再进入；数据保留在归档表，可在管理界面「当日对账」导出回看
 
-可选：**按场次分别部署**（不同门店、彼此不相关的场景）。每场一套实例 + 独立数据库（不同 `DATABASE_URL`，或同一 Postgres 上换 `PG_DB`），入口地址分开。
+可选：**按场次分别部署**（不同门店、彼此不相关的场景）。每场一套实例 + 独立数据库（各配自己的 `DATABASE_URL`，同一 Postgres 上用不同库名/模式即可），入口地址分开。
 
 ⚠️ 同一套 `DATABASE_URL` 起多个实例是受支持的（见 9.5），但要注意 SSE 连接与 `LISTEN` 通道的部署约束。
 
@@ -685,7 +681,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - **没有人数上限校验。** 单场 6–12 位是运营约定，服务端不拦；人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
 - **支持多实例（水平扩容）。** 会话、员工登录态、限频全部在 Postgres，跨实例变更走 `LISTEN/NOTIFY`，写入用 `session_state.version` 乐观锁 + 全局 advisory lock 串行化（详见 9.5）。仍有的边界：`LISTEN` 不能走事务级连接池；SSE 连接是每实例各自的（不需要粘性会话）；进程内读缓存 TTL 5 秒，通知全丢时最坏有 5 秒延迟；同时进行的场次上限 4 是**全集群**口径。
 - **员工会话重启不再丢失（行为变化）。** 会话落在 `staff_session`，有效期 12 小时；这是多实例的硬要求（A 签发的 token 必须能被 B 认）。要立刻下线某人：在管理界面**停用该账号或重置密码**，会立即删掉它所有会话行（不会等 12 小时）。登录会话的鉴权以账号表当前状态为准，所以降级角色同样立即生效。
-- 托管库强制 TLS 时只能通过 `DATABASE_URL` 加 `sslmode`；`PG_*` 分支无法附加 TLS 参数。
+- 托管库强制 TLS 时，在 `DATABASE_URL` 里加 `sslmode`（TLS 只有一个入口，没有拆开写法的分支）。
 
 **数据**
 
@@ -716,10 +712,9 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 1. **测试补齐与 CI 接入**：`test/` 已覆盖归档与对账主流程、故障路径、聚合口径、append-only，以及多实例共享存储 / 跨实例 SSE / 并发写（见 10.1），仍缺：SSE 重连时的 `Last-Event-ID` 对齐、身份跨轮累计的独立用例；`.github/workflows/` 目前只有部署，尚未在部署前跑 `npm test`。
 2. **玩家 ID 入库前加密**：引入密钥对（公钥加密 / 私钥解密，密钥经环境变量注入），对 `player.id`、`identity.id`、归档表的 `member_id` 及展示用的会员号做加密处理，并配套密钥轮换方案；同时评估现有数据的迁移与清理。注意这与对账口径有冲突，需先定“对账按什么标识”再落加密（归档表是 append-only，加密后历史行不会回写，只能在导出层解密）。
-3. **数据库 TLS 配置化**：在 `Pool` 配置里支持显式 ssl 选项，使 `PG_*` 分支也能启用 TLS，不依赖连接串参数。
-4. **多实例支持**：遗留项：`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
-5. **直播大屏**：更改美化格式。
-6. **中奖动画**：开奖后在玩家端显示中奖内容。
+3. **多实例支持**：遗留项：`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
+4. **直播大屏**：更改美化格式。
+5. **中奖动画**：开奖后在玩家端显示中奖内容。
 
 ---
 

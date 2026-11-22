@@ -25,8 +25,7 @@
  *   - identities 在场次内跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
  *
  * 持久化：状态存 Postgres（见 db.js），应用重启后数据仍在。
- * 连接串优先取 DATABASE_URL（完整串，托管库如 Supabase 用这个），
- * 其次才用 PG_HOST / PG_USER / PG_PASS 三件套（端口和库名可用 PG_PORT / PG_DB 覆盖）。
+ * 连接串只认 DATABASE_URL（托管库如 Supabase 就给这一条），未设则用本地默认库。
  *
  * 运行：node server.js （默认 3000 端口，可用 PORT 环境变量覆盖）
  */
@@ -2161,16 +2160,16 @@ async function start() {
   initPlayerPassword();
   initStaffSessionPassword();
 
-  // 连接串统一由 db.js 解析：PUB/SUB 需要自己建一条长连接，且
+  // 连接参数统一由 db.js 解析：PUB/SUB 需要自己建一条长连接，且
   // 托管 pooler（Supabase 6543 事务模式）不支持 LISTEN，必须改走会话模式端口
-  const connectionString = db.resolveListenConnectionString();
+  const listenConfig = db.resolveListenConfig();
 
   try {
     await db.initDb();        // 幂等建表（只创建缺失的表，不改既有数据）
     await loadBindSecret();   // 绑定令牌签名密钥（存 app_config，重启复用）
     await bootstrapAccounts(); // 保证库里至少有一个管理员
     // 发布通道要先于 store 建好：store 每次提交都会通过它广播给其他实例
-    pubsub = createPubSub({ connectionString, instanceId: INSTANCE_ID });
+    pubsub = createPubSub({ ...listenConfig, instanceId: INSTANCE_ID });
     store = createStore({ db, pubsub });
     wireStoreEvents();
 
@@ -2197,8 +2196,7 @@ async function start() {
     await backfillArchives(); // 已锁定但未归档的轮次补写（幂等）
   } catch (e) {
     console.error('[db] 数据库初始化失败，应用无法启动:', e.message);
-    console.error('  请确认 DATABASE_URL 已配置（Fly.io: fly secrets set DATABASE_URL=postgresql://user:pass@host:port/db）；'
-      + '也支持 PG_HOST / PG_USER / PG_PASS 三件套，可选 PG_PORT / PG_DB');
+    console.error('  请确认 DATABASE_URL 已配置（Fly.io: fly secrets set DATABASE_URL=postgresql://user:pass@host:port/db）');
     process.exit(1);
   }
 
@@ -2225,7 +2223,7 @@ async function start() {
     console.log('多场次: 全集群最多并行 ' + MAX_SESSIONS + ' 场，员工端可运行时新建/切换/关闭');
     console.log('场景口令: 员工「切换场次」需输入场次口令（管理员免校验）；玩家选择场次需玩家口令');
     console.log('账号: 一人一账号一密码，初始管理员由 ADMIN_USERNAME / ADMIN_PASSWORD 引导创建，之后在管理界面维护');
-    console.log('数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS，端口与库名可用 PG_PORT/PG_DB 覆盖）');
+    console.log('数据持久化: Postgres（连接串来自 DATABASE_URL，池上限可用 DB_POOL_MAX 覆盖）');
     console.log('多实例: 状态、员工会话、限频全在 Postgres；跨实例变更走 LISTEN/NOTIFY（实例 ' + INSTANCE_ID + '）');
     if (!process.env.ADMIN_PASSWORD) {
       console.log('⚠ 初始管理员默认密码为 ' + DEFAULT_ADMIN_PASSWORD + '，请登录后立即在管理界面修改（或用 ADMIN_PASSWORD 环境变量指定）');

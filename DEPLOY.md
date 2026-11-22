@@ -7,9 +7,8 @@ Postgresql：
 - 数据层：`db.js`（连接池 + 幂等建表 + 快照读写 + 会话/限频）
 - 会话存储：`store.js`（读缓存 + 乐观锁提交 + 变更事件）、`pubsub.js`（跨实例 LISTEN/NOTIFY）
 - 服务入口：`server.js` 启动时 `initDb()` 建表，`bootstrapSessions()` 自举首场次，`backfillArchives()` 补写未归档轮次；状态本体始终在库里，进程内只有可丢弃的读缓存
-- 连接串：优先 `DATABASE_URL`（完整串，托管库如 Supabase pooler 用这个），
-  其次由 `PG_USER` / `PG_PASS` / `PG_HOST` 拼接（`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）；
-  解析与池参数集中在 `db.js` 的 `resolveConnectionString()` / `getPool()`
+- 连接串：**只认 `DATABASE_URL`**（一条完整串，托管库如 Supabase pooler 就给这个）；
+  不设时回落到本地默认库。解析与池参数集中在 `db.js` 的 `resolveConnectionString()` / `getPool()`
 
 ## 数据实体与表结构
 
@@ -73,31 +72,44 @@ pooler，一条完整连接串就够：
 
 ```bash
 fly secrets set \
-  DATABASE_URL='postgresql://postgres.siuilxncmpklkpcnpimg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require' \
+  DATABASE_URL='postgresql://postgres.siuilxncmpklkpcnpimg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres' \
   --app ft-faithful-darkness-5345
 ```
 
-设置 secret 会触发一次重启，启动日志会打印脱敏后的目标库（`[db] 连接 postgresql://...:***@host:port/db`），
+设置 secret 会触发一次重启，启动日志会打印脱敏后的目标库与 TLS 模式
+（`[db] 连接 postgresql://...:***@host:port/db（池上限 5，TLS 不校验证书）`），
 先核对这里再去点业务功能。
 
-**换库时必须清掉旧的三件套**，否则排障时容易被残留值误导：
+**换库时顺手清掉历史遗留的拆开写法**（代码已不再读取，但留在 secrets 里只会误导排障）：
 
 ```bash
 fly secrets unset PG_HOST PG_USER PG_PASS PG_PORT PG_DB --app ft-faithful-darkness-5345
 ```
 
-> 优先级：`DATABASE_URL` > `PG_URL` > `PG_HOST/PG_USER/PG_PASS`（完整串优先）。
-> 只要设了 `DATABASE_URL`，拆开的 `PG_*` 就不再生效。
+> 连接配置只有 `DATABASE_URL` 一个入口：拆开的 `PG_*`（含 `PG_URL`）已从代码中移除，
+> 设不设都不生效。
 
 #### Supabase pooler 的两个坑（代码里已处理）
 
 | 坑 | 处理 |
 | --- | --- |
-| pooler 强制 TLS，连接串不带 `sslmode` 会连不上 | 主机为 `*.supabase.com` 且没写 `sslmode` 时，`db.js` 自动补 `sslmode=require` |
-| **6543 是事务模式，不支持 LISTEN/NOTIFY**，跨实例通知会静默失效 | `pubsub` 长连接自动改走同一主机的会话模式 `5432`（`db.js` 的 `resolveListenConnectionString()`） |
+| pooler 用**自签证书链**，而 `pg` 8.23 起把 `sslmode=require` 当成 `verify-full`（严格校验证书链）→ 报 `self-signed certificate in certificate chain` | `db.js` 把 `sslmode` 从连接串里摘出来，自己算 `ssl: { rejectUnauthorized: false }` 传给 Pool / Client，不依赖 pg 的版本语义 |
+| **6543 是事务模式，不支持 LISTEN/NOTIFY**，跨实例通知会静默失效 | `pubsub` 长连接自动改走同一主机的会话模式 `5432`（`db.js` 的 `resolveListenConfig()`） |
+
+TLS 判定规则（`db.js` 的 `sslOption()`）：
+
+| 连接串写法 | 实际行为 |
+| --- | --- |
+| 不带 `sslmode`，主机 `*.supabase.com` | 加密、不校验证书（默认） |
+| `sslmode=require` / `prefer` / `no-verify` | 加密、不校验证书 |
+| `sslmode=verify-full` | 加密 + 严格校验（需 `sslrootcert`，pooler 用自签链时**会失败**） |
+| `sslmode=disable` 或本地非托管主机 | 明文 |
+
+> 别再往连接串里加分 `sslmode=require` 求"更安全" —— 在 pg 8.23+ 那等于
+> `verify-full`，对 Supabase pooler 反而连不上。
 
 池子默认 `max=5`（事务模式连接被复用，开大只会在 pooler 侧排队），
-可用 `PG_POOL_MAX` 覆盖。跨区访问 `ap-south-1` 延迟约 70–100ms，
+可用 `DB_POOL_MAX` 覆盖。跨区访问 `ap-south-1` 延迟约 70–100ms，
 应用区域建议放 `bom`（孟买）而不是现在的 `nrt`（东京）。
 
 ### 2. 部署应用
@@ -114,7 +126,7 @@ fly logs
 ```
 
 正常启动日志应包含：
-- `数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS）`
+- `数据持久化: Postgres（连接串来自 DATABASE_URL，池上限可用 DB_POOL_MAX 覆盖）`
 - 无 `[db] 数据库初始化失败` 报错
 
 首次启动会额外建 `round_archive` / `round_archive_entry` 与只增不改触发器（`CREATE TABLE IF NOT EXISTS`，不动已有表）。上线后自检归档链路：
@@ -126,7 +138,7 @@ curl "https://<your-app>/api/archive/summary?token=<staff-token>"
 
 ## 本地开发（可选）
 
-本地不设 `DATABASE_URL` 也不设 `PG_HOST/PG_USER/PG_PASS` 时，连本地默认库：
+本地不设 `DATABASE_URL` 时，连本地默认库 `postgres://postgres:postgres@localhost:5432/oddeven`：
 
 ```bash
 DATABASE_URL=postgres://user:pass@localhost:5432/oddeven node server.js
@@ -144,14 +156,8 @@ docker run -d --name oddeven-pg \
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `DATABASE_URL` | 完整连接串（**优先**，托管库用这个） | 无 |
-| `PG_URL` | 同 `DATABASE_URL` 的别名 | 无 |
-| `PG_HOST` | Postgres 主机（拆开写时的兜底） | 无 |
-| `PG_USER` | Postgres 用户名（拆开写时的兜底） | 无 |
-| `PG_PASS` | Postgres 密码（拆开写时的兜底） | 无 |
-| `PG_PORT` | Postgres 端口（拆开写时用） | `5432` |
-| `PG_DB` | 数据库名（拆开写时用） | `postgres` |
-| `PG_POOL_MAX` | 连接池上限 | `5` |
+| `DATABASE_URL` | Postgres 连接串（**唯一的连接配置来源**） | 本地兜底 `postgres://postgres:postgres@localhost:5432/oddeven` |
+| `DB_POOL_MAX` | 连接池上限 | `5` |
 | `PORT` | 服务端口 | `3000` |
 | `ADMIN_USERNAME` | 首次启动创建的管理员账号 | `admin` |
 | `ADMIN_PASSWORD` | 首次启动创建的管理员密码（**只在库里没有任何管理员时生效**） | `123456` |
@@ -159,10 +165,11 @@ docker run -d --name oddeven-pg \
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
 
-> 优先级：`DATABASE_URL` / `PG_URL` > `PG_HOST` + `PG_USER` + `PG_PASS`（三者缺一才回退）。
-> 拆开写时用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。
-> TLS：连接串写 `?sslmode=require` 即可（Supabase 主机名在 `db.js` 里会自动补上）；
-> 不需要校验证书时用 `sslmode=require` 而不是 `verify-full`。Fly 内网同组织互访可不开 TLS。
+> `PG_HOST` / `PG_USER` / `PG_PASS` / `PG_PORT` / `PG_DB` / `PG_URL` 已从代码中移除，不再读取。
+> 用户名密码里的 `@`、`/`、`:` 请在连接串里 URL 编码（`encodeURIComponent`）。
+> TLS 已由 `db.js` 统一判定，连接串**不必**带 `sslmode`：托管库（`*.supabase.com`）默认
+> 加密但不校验证书；要严格校验才写 `sslmode=verify-full`（pooler 自签链会失败）。
+> Fly 内网同组织互访默认明文。
 
 ## 说明
 
