@@ -48,6 +48,12 @@ const PLAYER_BIND_TTL = 12 * 60 * 60 * 1000; // 玩家场次绑定有效期：12
 const UNLOCK_MAX_FAILS = 5;              // 连续口令错误次数上限
 const UNLOCK_LOCK_MS = 30 * 1000;        // 超限后锁定时长
 
+/* 大屏（/bigscreen）默认公开：现场投屏直接打开即可，不弹登录/口令。
+ * 代价是「拿到 URL 的人都能看到开奖前每个人的选项」，所以这里留一个开关：
+ * 设 BIGSCREEN_PUBLIC=0 即恢复「仅有效员工 token 可见」。
+ * 注意与玩家口令无关：玩家端仍有自己的场次门禁。 */
+const BIGSCREEN_PUBLIC = String(process.env.BIGSCREEN_PUBLIC == null ? '' : process.env.BIGSCREEN_PUBLIC).trim() !== '0';
+
 /* 账号体系：登录是「账号 + 独立密码」，不再是共享密码。
  *   - 初始管理员由环境变量引导创建（ADMIN_USERNAME / ADMIN_PASSWORD），之后一律在管理界面维护
  *   - 员工账号由管理员在管理界面创建，一人一份密码
@@ -779,6 +785,32 @@ async function playerSessionContext(sidRaw, utoken, staffToken, { fresh = false 
 }
 
 
+/**
+ * 大屏准入：默认公开（BIGSCREEN_PUBLIC），不需要登录或口令。
+ *  - 带有效员工 token：走员工视角，可回看已关闭场次（与员工端一致）
+ *  - 不带 / 带无效 token：只看进行中的场次；指定 sid 可用就用它，否则回落到第一个进行中场次
+ *    （现场大屏要「打开即看」，不能因为链接里没有 sid 就弹出选场/口令）
+ * 返回 { session, staff? } 或 { err }。
+ */
+async function bigscreenContext(sidRaw, staffToken, { fresh = false } = {}) {
+  const wanted = String(sidRaw || '');
+  if (staffToken) {
+    const ctx = await playerSessionContext(wanted, '', staffToken, { fresh });
+    if (ctx.session) return ctx;
+  }
+  const list = await store.list();
+  const open = openOf(list);
+  const sid = wanted && open.some((s) => s.id === wanted) ? wanted : defaultSessionIdOf(list);
+  if (!sid) return { err: { status: 404, code: 'session_not_found', sessions: [] } };
+  const s = await store.load(sid, { fresh });
+  if (!s) return { err: { status: 404, code: 'session_not_found', sessions: publicSessionList(list) } };
+  if (s.status !== 'open') {
+    return { err: { status: 409, code: 'session_closed', sessions: publicSessionList(list) } };
+  }
+  return { session: s };
+}
+
+
 /** 准入判定失败时的统一响应；返回 true 表示已响应。 */
 function rejectPlayerSession(res, ctx) {
   if (!ctx || ctx.session) return false;
@@ -1249,18 +1281,18 @@ async function handleApi(req, res, url) {
 
   /* 状态查询：某场次的全量状态快照。SSE 客户端在重连/回到前台时调用，用于对齐断线期间错过的变更。
    * 必须通过场次准入判定：玩家带绑定令牌（以令牌场次为准），员工带 staff token。
-   * view=bigscreen 是大屏专用视图（开奖前也含每个人的选项），只对员工 token 开放。
+   * view=bigscreen 是大屏专用视图（开奖前也含每个人的选项）：默认公开（BIGSCREEN_PUBLIC），
+   * 仅当 BIGSCREEN_PUBLIC=0 时才要求员工 token。
    * fresh=true：首帧必须来自数据库，不能是本地读缓存里别的实例提交前的版本。 */
   if (req.method === 'GET' && url.pathname === '/api/state') {
-    const ctx = await playerSessionContext(
-      url.searchParams.get('sid') || '',
-      url.searchParams.get('ut') || '',
-      url.searchParams.get('token') || '',
-      { fresh: true }
-    );
-    if (rejectPlayerSession(res, ctx)) return;
+    const sidRaw = url.searchParams.get('sid') || '';
+    const staffToken = url.searchParams.get('token') || '';
     const view = url.searchParams.get('view') === 'bigscreen' ? 'bigscreen' : '';
-    if (view === 'bigscreen' && !ctx.staff) {
+    const ctx = view === 'bigscreen'
+      ? await bigscreenContext(sidRaw, staffToken, { fresh: true })
+      : await playerSessionContext(sidRaw, url.searchParams.get('ut') || '', staffToken, { fresh: true });
+    if (rejectPlayerSession(res, ctx)) return;
+    if (view === 'bigscreen' && !BIGSCREEN_PUBLIC && !ctx.staff) {
       return json(res, 403, { ok: false, code: 'bigscreen_unauthorized' });
     }
     return json(res, 200, buildStatePayload(ctx.session, pid, view));
@@ -1998,7 +2030,7 @@ const SSE_HEARTBEAT_MS = 15000; // 心跳间隔：15 秒发一次，防止代理
 /** 建立 SSE 长连接。必须带 ?sid=<场次ID>；可再带 ?pid=<玩家ID> 以在每次状态事件中附带该玩家视角。
  *  - 连接后立即下发一次本场次的全量状态（事件名 state），首帧强制读库（fresh）
  *  - 期间本场次的状态变更由 store 的 change 事件广播（本实例提交 + 其他实例的 PUB/SUB 通知）
- *  - ?view=bigscreen 走大屏视图（含每个人的当前选项），必须带有效员工 token
+ *  - ?view=bigscreen 走大屏视图（含每个人的当前选项）：默认公开，BIGSCREEN_PUBLIC=0 时才要员工 token
  *  - 客户端断开（含网络中断）后 EventSource 自动重连；重连请求会带
  *    Last-Event-ID 头，服务端据此判断客户端是否已错过事件，错过则补发全量状态
  *  - 每 15 秒发一次心跳（事件名 ping）维持连接
@@ -2008,19 +2040,17 @@ async function handleStream(req, res, url) {
   const sid = url.searchParams.get('sid') || '';
   const pid = url.searchParams.get('pid') || '';
   const view = url.searchParams.get('view') === 'bigscreen' ? 'bigscreen' : '';
-  const ctx = await playerSessionContext(
-    sid,
-    url.searchParams.get('ut') || '',
-    url.searchParams.get('token') || '',
-    { fresh: true }
-  );
+  const staffToken = url.searchParams.get('token') || '';
+  const ctx = view === 'bigscreen'
+    ? await bigscreenContext(sid, staffToken, { fresh: true })
+    : await playerSessionContext(sid, url.searchParams.get('ut') || '', staffToken, { fresh: true });
 
   if (ctx.err) {
     // SSE 无法读 JSON 错误体，用状态码 + JSON 体让客户端判断
     return json(res, ctx.err.status, { ok: false, code: ctx.err.code, sessions: ctx.err.sessions || null });
   }
-  // 大屏视图会暴露未开奖的选项，只认员工会话
-  if (view === 'bigscreen' && !ctx.staff) {
+  // 大屏视图会暴露未开奖的选项：默认公开，关掉公开模式后只认员工会话
+  if (view === 'bigscreen' && !BIGSCREEN_PUBLIC && !ctx.staff) {
     return json(res, 403, { ok: false, code: 'bigscreen_unauthorized' });
   }
   let session = ctx.session;
@@ -2219,7 +2249,7 @@ async function start() {
     console.log('单双竞猜已启动: http://localhost:' + PORT + '/  (玩家端，进入后选场次并扫自己的二维码)');
     console.log('工作人员端入口: http://localhost:' + PORT + '/staff （账号 + 密码登录）');
     console.log('管理界面入口: http://localhost:' + PORT + '/admin （对账导出 / 员工账号 / 操作日志 / 场次管理，需管理员账号）');
-    console.log('实时大屏入口: http://localhost:' + PORT + '/bigscreen （需员工登录，按场次实时展示每位玩家的当前选项）');
+    console.log('实时大屏入口: http://localhost:' + PORT + '/bigscreen （' + (BIGSCREEN_PUBLIC ? '公开访问，打开即看' : '需员工登录') + '，按场次实时展示每位玩家的当前选项）');
     console.log('多场次: 全集群最多并行 ' + MAX_SESSIONS + ' 场，员工端可运行时新建/切换/关闭');
     console.log('场景口令: 员工「切换场次」需输入场次口令（管理员免校验）；玩家选择场次需玩家口令');
     console.log('账号: 一人一账号一密码，初始管理员由 ADMIN_USERNAME / ADMIN_PASSWORD 引导创建，之后在管理界面维护');

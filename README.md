@@ -227,7 +227,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 入口 | 行为 | 前置条件 |
 |---|---|---|
 | 当日对账 | 就地在页内展开：日期选择（默认今天）+ 场次/已归档轮次/去重人数 + 两种 CSV 下载，带「返回」 | 无 |
-| 大屏 | 新窗口打开 `/bigscreen?token=&sid=`（令牌立即从地址栏抹掉，只存本地） | 需要一个进行中的当前场次 |
+| 大屏 | 新窗口打开 `/bigscreen?token=&sid=`（令牌从地址栏抹掉后只存本地；无令牌同样能打开） | 无（有进行中场次才有数据） |
 | 新建场次 | 弹窗输入名称（留空自动命名）→ 创建并自动切到新场次，toast 确认 | 进行中场次 < 4 |
 | 关闭场次 | 二次确认（红色危险弹窗）→ 关闭当前归属场次，玩家端立即断开 | 当前场次必须是进行中 |
 | 员工账号 | 建号 / 改显示名 / 调角色 / 停用 / 重置密码；一人一账号一密码 | 无 |
@@ -299,9 +299,9 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 **给现场看的第二块屏**：同一场次里每个人的当前选项（单/双 + 数字），玩家一点选就变，不必等确认提交。
 
-- 入口：管理界面（`/admin`）的「大屏」入口（带当前场次与员工令牌新开窗口），或直接访问 `/bigscreen`（需员工账号登录）；支持 `?sid=&token=` 预置，页面会把令牌从地址栏抹掉后只存本地，刷新不用重输
-- 数据来源：`GET /api/stream?sid=&token=&view=bigscreen`，与员工端、玩家端**同一条 SSE 通道**；落库变更走 `state`（带版本号），草稿走 `draft` 补丁（500ms 合并），没有额外轮询
-- 权限：`view=bigscreen` 会下发开奖前的选项，因此**只认有效员工 token**，否则 403 `bigscreen_unauthorized`；玩家端仍走 `publicPlayers()`，开奖前拿不到任何人的选项
+- 入口：直接访问 `/bigscreen` 即可，**公开可见、不需要登录或口令**（现场投屏打开即看）；也支持 `?sid=` 指定场次、`?token=` 复用员工会话（仍会从地址栏抹掉，只存本地），管理界面（`/admin`）的「大屏」入口就是带上当前场次与令牌新开窗口
+- 数据来源：`GET /api/stream?sid=&view=bigscreen`（带 `token` 时一并带上），与员工端、玩家端**同一条 SSE 通道**；落库变更走 `state`（带版本号），草稿走 `draft` 补丁（500ms 合并），没有额外轮询
+- 权限：`view=bigscreen` 会下发开奖前的选项，**默认公开**——拿到 URL 的人都能看到，这是「免登录投屏」的代价。设 `BIGSCREEN_PUBLIC=0` 即恢复「只认有效员工 token」，匿名请求返回 403 `bigscreen_unauthorized`。无论哪种模式，玩家端自己仍走 `publicPlayers()`，开奖前拿不到任何人的选项
 - 状态识别：
   - **加入** — 出现新的 `pid`（本轮首次扫码）
   - **未选择** — 已扫码但既没草稿也没提交，灰色占位卡片
@@ -329,7 +329,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/session-select` | token(+场景口令) | `{token, sid, sessionPassword}` | 切换该员工会话的归属场次，不影响其他员工。`staff` 角色需 `sessionPassword` |
 | POST | `/api/session-close` | token | `{token, sid}` | 关闭场次：通知并断开该场玩家端、从玩家端列表移除、数据保留 |
 | POST | `/api/session-unlock` | — | `{sid, password}` 或 `{sid, auto:true}` | 玩家端选择 / 切换场次：校验口令，成功返回绑定令牌 `ut`（12 小时）。`auto` 仅在唯一进行中场次时可用 |
-| GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`（含草稿）。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项与草稿），需员工 token |
+| GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`（含草稿）。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项与草稿），默认公开（`BIGSCREEN_PUBLIC=0` 时需员工 token） |
 | POST | `/api/scan` | — | `{sid, ut, content}` | 登记身份，返回 `{ok, pid, sid, status:"known"}` |
 | PUT | `/api/pick` | — | `{sid, ut, pid, oddEven, number, seq}` | **临时选择（草稿）**：只写内存、不落库、不推进 `version`；`seq` 单调，更小的序号返回 `200 {accepted:false, ignored:"stale_seq"}` 而不是报错 |
 | DELETE | `/api/pick` | — | `{sid, ut, pid, seq}` | 撤销草稿，同样按 `seq` 单调判定（删除也吃序号，避免旧请求复活选择） |
@@ -395,7 +395,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 开奖后 `players[]` 才会补上每人的 `oddEven` 与 `number`；开奖前任何人都拿不到他人的预测内容。`version` 与 `round`、`players` 一样都是**该场次**的，各场次互不影响。
 
-`view=bigscreen`（需员工 token）换成大屏视图：多了 `"view": "bigscreen"`，`players[]` 在开奖前就带选项 —— `oe`/`num` 是**当前显示值**（已确认取提交值，未确认取草稿值），另有 `status`（`submitted`/`draft`/`none`）与 `draftOddEven`/`draftNumber`/`draftSeq`、`left`/`leftAt`/`registeredAt`/`submittedAt`。`submitted` 只表示**已确认提交**，统计与归档只认它。
+`view=bigscreen`（默认公开，无需 token）换成大屏视图：多了 `"view": "bigscreen"`，`players[]` 在开奖前就带选项 —— `oe`/`num` 是**当前显示值**（已确认取提交值，未确认取草稿值），另有 `status`（`submitted`/`draft`/`none`）与 `draftOddEven`/`draftNumber`/`draftSeq`、`left`/`leftAt`/`registeredAt`/`submittedAt`。`submitted` 只表示**已确认提交**，统计与归档只认它。
 
 ### 7.1 SSE 事件
 
@@ -449,7 +449,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `session_name_too_long` | 400 | 场次名超过 24 字（返回 `maxLen`） |
 | `session_locked` | 403 | 本机已绑定其他场次，请求的 `sid` 与绑定不符（返回 `boundSid`） |
 | `session_need_unlock` | 403 | 未带有效绑定令牌，且当前有 ≥2 个进行中场次，需先过口令 |
-| `bigscreen_unauthorized` | 403 | 请求了 `view=bigscreen` 却未带有效员工 token（大屏会看到未开奖的选项，不对玩家开放） |
+| `bigscreen_unauthorized` | 403 | 仅在 `BIGSCREEN_PUBLIC=0` 时出现：请求了 `view=bigscreen` 却没带有效员工 token（大屏会看到未开奖的选项，公开模式下不再拦） |
 | `unlock_password_required` | 403 | `auto` 绑定仅在唯一进行中场次时允许，多场时被拒 |
 | `player_wrong_password` | 401 | 场次口令错误（超过 5 次后返回 429，见下） |
 | `player_too_many_attempts` | 429 | 该来源 IP 连续 5 次口令错误，锁 30 秒（返回 `retryAfter`） |

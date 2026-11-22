@@ -91,11 +91,6 @@
     font-size: clamp(15px, 1.9vh, 24px); font-weight:700; color:var(--muted);
     font-variant-numeric: tabular-nums; letter-spacing:1px;
   }
-  .exit {
-    font: inherit; font-size: clamp(11px,1.35vh,14px); color:var(--muted); cursor:pointer;
-    background:none; border:1px solid var(--card-border); border-radius:99px; padding:5px 12px;
-  }
-  .exit:hover { color:var(--text); border-color:var(--card-border-strong); }
 
   /* ---------- 概况条 ---------- */
   .hero { display:flex; align-items:stretch; gap: clamp(10px,1.2vw,20px); }
@@ -252,33 +247,6 @@
   .tk.leave .tg { color:#d8ccc4; background:rgba(255,255,255,.10); }
   .tk.round .tg { color:#0d2a17; background:var(--ok); }
 
-  /* ---------- 登录门 ---------- */
-  .gate {
-    position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center;
-    background:rgba(8,3,5,.86); backdrop-filter:blur(6px); padding:24px;
-  }
-  .gate.on { display:flex; }
-  .gate-box {
-    width:100%; max-width:400px; text-align:center;
-    border:1px solid var(--card-border); border-radius:20px; padding:28px 24px;
-    background:linear-gradient(180deg,#3a0a10,#220508);
-    box-shadow:0 24px 60px rgba(0,0,0,.6);
-  }
-  .gate-box h2 { font-size:20px; letter-spacing:2px; margin-bottom:8px; }
-  .gate-box p { font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:18px; }
-  .gate-box input {
-    width:100%; font: inherit; font-size:19px; letter-spacing:4px; text-align:center;
-    padding:13px 12px; border-radius:12px; border:1.5px solid var(--card-border);
-    background:rgba(0,0,0,.35); color:var(--text); outline:none;
-  }
-  .gate-box input:focus { border-color:var(--gold); }
-  .gate-box .err { min-height:20px; margin-top:10px; font-size:13px; color:var(--bad); font-weight:700; }
-  .gate-box button {
-    width:100%; margin-top:6px; padding:13px; font: inherit; font-size:17px; font-weight:900; letter-spacing:4px;
-    border:none; border-radius:12px; color:#3a1500; cursor:pointer;
-    background:linear-gradient(180deg,#fff0c2,var(--gold) 45%,var(--gold-deep));
-  }
-  .gate-box button[disabled] { opacity:.45; pointer-events:none; }
   .hidden { display:none !important; }
 </style>
 </head>
@@ -299,7 +267,6 @@
     <div class="hd-right">
       <span class="conn" id="connTip" data-i18n="connLost">⚠ 连接中断，正在重试…</span>
       <span class="clock" id="clock">--:--:--</span>
-      <button class="exit" id="exitBtn" type="button" data-i18n="bs_logout">退出大屏</button>
     </div>
   </header>
 
@@ -328,22 +295,12 @@
   </footer>
 </div>
 
-<div class="gate" id="gate">
-  <div class="gate-box">
-    <h2 data-i18n="bs_gateTitle">进入大屏</h2>
-    <p data-i18n="bs_gateHint">大屏会显示每位玩家的当前选项，仅限工作人员使用。</p>
-    <input type="text" id="gateUser" autocomplete="username" maxlength="32" data-i18n-ph="bs_user" placeholder="员工账号">
-    <input type="password" id="gatePwd" autocomplete="off" maxlength="64" data-i18n-ph="bs_pwd" placeholder="员工密码">
-    <div class="err" id="gateErr"></div>
-    <button id="gateBtn" type="button" data-i18n="bs_enter">进入</button>
-  </div>
-</div>
-
 <script>
 (function () {
   'use strict';
-  /* 大屏数据流：
-   *   员工登录（复用 /api/staff-login）→ 选定场次 → SSE /api/stream?view=bigscreen
+  /* 大屏数据流（公开访问，无登录门）：
+   *   开场即连 → /api/sessions 取进行中场次 → SSE /api/stream?view=bigscreen
+   * 带 ?token=（从员工端跳转）时顺手用上，可回看已关闭场次；不带也照常显示。
    * 服务端每次状态变更都用同一套 commitSession 广播全量快照（带场次版本号），
    * 这里按 version 丢弃过期帧、按 pid 做增量 diff，所以不会出现重复卡片或陈旧选项。 */
   var TOKEN_KEY = 'oe_bigscreen_token';
@@ -401,76 +358,27 @@
   setInterval(function () { $('clock').textContent = hhmmss(Date.now()); }, 1000);
   $('clock').textContent = hhmmss(Date.now());
 
-  /* ---------- 登录门 ---------- */
-  function showGate(msg) {
-    closeStream();
-    $('gate').classList.add('on');
-    $('gateErr').textContent = msg || '';
-    setTimeout(function () {
-      try { ($('gateUser') && !$('gateUser').value ? $('gateUser') : $('gatePwd')).focus(); } catch (e) { /* 忽略 */ }
-    }, 120);
-  }
-
-  function hideGate() { $('gate').classList.remove('on'); }
-
-  function doLogin() {
-    var user = $('gateUser') ? $('gateUser').value.trim() : '';
-    var pwd = $('gatePwd').value;
-    if (!user) { $('gateErr').textContent = t('errEmptyUser'); return; }
-    if (!pwd) { $('gateErr').textContent = t('errEmptyPwd'); return; }
-    $('gateBtn').disabled = true;
-    $('gateErr').textContent = '';
-    fetch('/api/staff-login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: user, password: pwd })
-    }).then(function (r) { return r.json(); }).then(function (d) {
-      $('gateBtn').disabled = false;
-      if (!d || !d.ok) {
-        $('gateErr').textContent = window.I18N.errCode(d && d.code, d, 'err_') || t('errLoginFailed');
-        return;
-      }
-      $('gatePwd').value = '';
-      setToken(d.token);
-      sessions = d.sessions || [];
-      renderSessions();
-      hideGate();
-      var next = pickSession(d.sid);
-      if (next) switchTo(next);
-      else showNoSession();
-    }).catch(function () {
-      $('gateBtn').disabled = false;
-      $('gateErr').textContent = t('errNetRetry');
-    });
-  }
-
-  $('gateBtn').addEventListener('click', doLogin);
-  $('gatePwd').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
-  if ($('gateUser')) $('gateUser').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('gatePwd').focus(); });
-
+  /* ---------- 准入：公开访问，无登录门 ----------
+   * 大屏默认公开（服务端 BIGSCREEN_PUBLIC 控制），打开即连，不弹账号/口令。
+   * 从员工端跳转过来会带 ?token=：有就用（能回看已关闭场次），没有也照样能看。 */
   function setToken(tk) { token = tk || ''; if (token) save(TOKEN_KEY, token); else drop(TOKEN_KEY); }
 
-  $('exitBtn').addEventListener('click', function () {
-    closeStream();
-    setToken('');
-    drop(SID_KEY);
-    sid = '';
-    resetBoard();
-    showGate('');
-  });
-
   /* ---------- 场次 ---------- */
+  /** 公开场次列表（/api/sessions 不带 token）只含进行中的场次且不带 status，按 open 处理 */
+  function isOpenSession(s) { return s.status ? s.status === 'open' : true; }
+
   function pickSession(preferred) {
     var i;
     if (preferred) {
-      for (i = 0; i < sessions.length; i++) if (sessions[i].id === preferred && sessions[i].status === 'open') return preferred;
+      for (i = 0; i < sessions.length; i++) if (sessions[i].id === preferred && isOpenSession(sessions[i])) return preferred;
     }
-    for (i = 0; i < sessions.length; i++) if (sessions[i].id === sid && sessions[i].status === 'open') return sid;
-    for (i = 0; i < sessions.length; i++) if (sessions[i].status === 'open') return sessions[i].id;
+    for (i = 0; i < sessions.length; i++) if (sessions[i].id === sid && isOpenSession(sessions[i])) return sid;
+    for (i = 0; i < sessions.length; i++) if (isOpenSession(sessions[i])) return sessions[i].id;
     return '';
   }
 
   function renderSessions() {
-    var open = sessions.filter(function (s) { return s.status === 'open'; });
+    var open = sessions.filter(isOpenSession);
     var sel = $('sessSel');
     sel.classList.toggle('hidden', open.length < 2);
     sel.innerHTML = '';
@@ -488,9 +396,9 @@
     if (next && next !== sid) switchTo(next);
   });
 
+  /** 拉场次列表：公开大屏也走这里（无 token 只返回进行中的场次） */
   function refreshSessions() {
-    if (!token) return Promise.resolve([]);
-    return fetch('/api/sessions?token=' + encodeURIComponent(token), { cache: 'no-store' })
+    return fetch('/api/sessions' + (token ? '?token=' + encodeURIComponent(token) : ''), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok && d.sessions) { sessions = d.sessions; renderSessions(); return sessions; }
@@ -856,14 +764,20 @@
     if (es) { es.close(); es = null; }
   }
 
+  /** 大屏请求参数：token 只在不为空时带上（公开模式不需要） */
+  function boardQuery(withSid) {
+    var qs = 'view=bigscreen';
+    if (withSid && sid) qs = 'sid=' + encodeURIComponent(sid) + '&' + qs;
+    if (token) qs += '&token=' + encodeURIComponent(token);
+    return qs;
+  }
+
   function startStream() {
     closeStream();
-    if (!token || !sid) return;
+    if (!sid) return;
     streamClosed = false;
     errCount = 0;
-    var url = '/api/stream?sid=' + encodeURIComponent(sid) +
-      '&token=' + encodeURIComponent(token) + '&view=bigscreen';
-    es = new EventSource(url);
+    es = new EventSource('/api/stream?' + boardQuery(true));
 
     es.onopen = function () {
       errCount = 0;
@@ -899,20 +813,22 @@
 
   /** 拉一次全量快照（首连、重连、回到前台都走这里，保证与服务端版本对齐） */
   function poll() {
-    if (!token || !sid) return;
-    fetch('/api/state?sid=' + encodeURIComponent(sid) +
-      '&token=' + encodeURIComponent(token) + '&view=bigscreen', { cache: 'no-store' })
+    if (!sid) return;
+    fetch('/api/state?' + boardQuery(true), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) { applyState(d); return; }
         var code = d && d.code;
-        if (code === 'bigscreen_unauthorized' || code === 'session_need_unlock' ||
-            code === 'session_locked' || code === 'session_not_found' ||
-            code === 'session_closed') {
-          // 令牌失效或场次没了：先确认一次会话，再决定是回登录门还是换场
-          if (code === 'session_closed' || code === 'session_not_found') { onSessionClosed(); return; }
+        if (code === 'session_closed' || code === 'session_not_found') { onSessionClosed(); return; }
+        if (code === 'bigscreen_unauthorized' || code === 'session_need_unlock' || code === 'session_locked') {
+          // 公开模式被关掉 / 场次口径不一致：不弹任何输入框，清掉令牌后重新找当前进行中的场次
           setToken('');
-          showGate(t('bs_expired'));
+          refreshSessions().then(function () {
+            var next = pickSession('');
+            if (next && next !== sid) { switchTo(next); return; }
+            if (next) { startStream(); return; }
+            $('connTip').classList.add('on');
+          });
           return;
         }
         $('connTip').classList.add('on');
@@ -936,7 +852,7 @@
     });
   }
 
-  /* ---------- 启动 ---------- */
+  /* ---------- 启动（公开：打开即连，不弹登录） ---------- */
   function bootstrap() {
     var q = {};
     try {
@@ -945,7 +861,7 @@
       q.sid = sp.get('sid') || '';
     } catch (e) { q.token = ''; q.sid = ''; }
 
-    // 从工作人员端跳转过来时会带 token：只存在本地，并立刻从地址栏抹掉（避免留在历史记录里）
+    // 从工作人员端跳转过来会带 token：只存本地并立刻从地址栏抹掉（避免留在历史记录里）
     if (q.token) {
       setToken(q.token);
       try { history.replaceState(null, '', location.pathname + (q.sid ? '?sid=' + encodeURIComponent(q.sid) : '')); } catch (e) { /* 忽略 */ }
@@ -955,26 +871,46 @@
 
     token = token || load(TOKEN_KEY);
 
-    if (!token) { showGate(''); return; }
+    // 有 token 就顺带确认一下（能回看已关闭场次）；没有/失效也照样按公开模式往下走
+    var staffSid = '';
+    var check = token
+      ? fetch('/api/staff-check?token=' + encodeURIComponent(token))
+          .then(function (r) { return r.json(); })
+          .then(function (d) { return d && d.ok ? d : null; })
+          .catch(function () { return null; })
+      : Promise.resolve(null);
 
-    fetch('/api/staff-check?token=' + encodeURIComponent(token))
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (!d || !d.ok) { setToken(''); showGate(t('bs_expired')); return; }
+    check.then(function (d) {
+      if (!d) {
+        setToken('');                  // 令牌失效：静默丢弃，不弹任何提示
+      } else {
         sessions = d.sessions || [];
+        staffSid = d.sid || '';
         renderSessions();
-        hideGate();
-        var next = pickSession(d.sid);
-        if (!next) { showNoSession(); return; }
-        if (next !== sid) { switchTo(next); return; }
-        startStream();
-        poll();
-      })
-      .catch(function () { showGate(t('errNetRetry')); });
+      }
+      return refreshSessions();
+    }).then(function () {
+      var next = pickSession(sid || staffSid);
+      if (!next) { showNoSession(); scheduleIdleRetry(); return; }
+      if (next !== sid) { switchTo(next); return; }
+      startStream();
+      poll();
+    });
+  }
+
+  /** 没有任何进行中场次时：每 5 秒查一次，等工作人员开场后自动接上 */
+  function scheduleIdleRetry() {
+    setTimeout(function () {
+      refreshSessions().then(function () {
+        var next = pickSession('');
+        if (next) { switchTo(next); return; }
+        scheduleIdleRetry();
+      });
+    }, 5000);
   }
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && token && sid) { startStream(); poll(); }
+    if (!document.hidden && sid) { startStream(); poll(); }
   });
 
   applyStaticI18n();

@@ -187,7 +187,7 @@ stateDiagram-v2
 
 ### 3.4 `GET /api/state` — 全量快照（扩展）
 
-`?sid=&ut=|token=&pid=&view=player|bigscreen`。新增 `serverTime`、`counts`、`players[].status`、`me.draft`。`me` 需要带 `pid`。`view=bigscreen` 仍只认员工 `token`（开奖前会暴露所有人选项）。
+`?sid=&ut=|token=&pid=&view=player|bigscreen`。新增 `serverTime`、`counts`、`players[].status`、`me.draft`。`me` 需要带 `pid`。`view=bigscreen` **默认公开**（开奖前会暴露所有人选项，`BIGSCREEN_PUBLIC=0` 时恢复只认员工 `token`）。
 
 ### 3.5 `GET /api/stream` — SSE（扩展）
 
@@ -302,7 +302,7 @@ onState(s):
 |---|---|---|---|
 | 玩家 | `ut`（场次绑定，12h） | 自己的 `me` + 公开 `players`（开奖前无他人选项） | 自己的 `pick` / `submit` |
 | 员工 staff | `token` | `state`（status/counts）、`view=bigscreen` | `confirm` / `reset` / 账号 |
-| 大屏 | 员工 `token` | `view=bigscreen`（含所有人选项） | 无 |
+| 大屏 | 无（可选员工 `token` 用于回看已关闭场次） | `view=bigscreen`（含所有人选项） | 无 |
 | 匿名 | — | 场次列表 | 无 |
 
 服务端逐条硬校验：

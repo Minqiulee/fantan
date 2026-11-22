@@ -164,6 +164,7 @@ docker run -d --name oddeven-pg \
 | `STAFF_SESSION_PASSWORD` | 员工切换 / 新建场次的场景口令（管理员免校验） | `7777` |
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
+| `BIGSCREEN_PUBLIC` | 大屏 `/bigscreen` 是否公开访问；`0` 恢复「仅有效员工 token 可见」，其余值/不设均为公开 | 公开 |
 
 > `PG_HOST` / `PG_USER` / `PG_PASS` / `PG_PORT` / `PG_DB` / `PG_URL` 已从代码中移除，不再读取。
 > 用户名密码里的 `@`、`/`、`:` 请在连接串里 URL 编码（`encodeURIComponent`）。
