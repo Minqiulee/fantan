@@ -231,8 +231,8 @@
     top.className = 'pc-top';
     var idEl = document.createElement('span');
     idEl.className = 'pc-id';
-    idEl.textContent = p.id;               // 二维码内容不可信，一律 textContent
-    idEl.title = p.id;
+    idEl.textContent = p.maskedId || p.id;   // 只展示脱敏标签，明文会员号不下发到浏览器
+    idEl.title = p.maskedId || p.id;
     top.appendChild(idEl);
     var vet = document.createElement('span');
     vet.className = 'pc-vet';

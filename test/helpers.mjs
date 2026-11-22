@@ -10,10 +10,49 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 会员号加密的测试密钥：每个测试进程自己生成一套（RSA 2048 够快，生产用 3072）。
+ * 服务端缺密钥会拒绝启动，所以这套 env 必须注进 startServer。
+ * 生成后在同一进程内固定，`memberRef()` 才能和子进程里服务端算出的 ref 对上。
+ */
+const MEMBER_KEY = (() => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const dek = crypto.randomBytes(32);
+  const wrapped = crypto.publicEncrypt(
+    { key: publicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
+    dek
+  );
+  return {
+    MEMBER_ID_KEY_VERSION: '1',
+    MEMBER_ID_KEY_1: wrapped.toString('base64'),
+    MEMBER_ID_KEY_1_PRIVATE: Buffer.from(
+      privateKey.export({ type: 'pkcs8', format: 'pem' }), 'utf8'
+    ).toString('base64'),
+    MEMBER_ID_PEPPER: crypto.randomBytes(32).toString('base64url')
+  };
+})();
+
+/** 服务端启动时必须带上的密钥 env。测试里要断言「库里/接口里没有明文」也靠它。 */
+export const MEMBER_ENV = MEMBER_KEY;
+
+/** 会员号 → 盲索引 ref（与 lib/member-id.js 同一算法，供断言用）。 */
+export function memberRef(plain) {
+  const h = crypto.createHmac('sha256', Buffer.from(MEMBER_KEY.MEMBER_ID_PEPPER, 'base64url'))
+    .update(plain, 'utf8').digest('hex');
+  return 'm_' + h.slice(0, 32);
+}
+
+/** 会员号 → 页面展示的脱敏 ID（后 4 位）。 */
+export function memberMaskedId(plain) {
+  const chars = Array.from(plain);
+  return chars.length <= 4 ? '****' : '****' + chars.slice(-4).join('');
+}
 
 export const ADMIN_USERNAME = 'admin';
 export const ADMIN_PASSWORD = 'test-admin-pw';
@@ -83,6 +122,7 @@ export async function startServer({ port, databaseUrl: dbUrl = databaseUrl(), en
       ADMIN_PASSWORD,
       PLAYER_SESSION_PASSWORD: PLAYER_PASSWORD,
       ARCHIVE_TZ_OFFSET_MIN: '480',
+      ...MEMBER_ENV,
       ...env
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -240,8 +280,9 @@ export function scan(api, sid, ut, content) {
   return api.post('/api/scan', { sid, ut, content });
 }
 
+/** pid 入参统一按「会员号原文」传，内部折算成接口里的盲索引 ref。 */
 export function predict(api, sid, ut, pid, oddEven, number) {
-  return api.post('/api/predict', { sid, ut, pid, oddEven, number });
+  return api.post('/api/predict', { sid, ut, pid: memberRef(pid), oddEven, number });
 }
 
 export function confirm(api, token, sid, number) {

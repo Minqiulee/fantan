@@ -18,7 +18,14 @@
  * 所有业务表首列都是 session_id：任何读写都必须带 session_id，
  * 场次之间不共享任何可变状态（连「老玩家」累计轮次也按场次独立计数）。
  *
- * 玩家 ID 统一为「二维码内容 / 用户直接提交的原始 ID」（未经 hash）。
+ * 会员号（二维码原文）不以明文入库：
+ *    - `player.id` / `identity.id` / `round_archive_entry.member_id` 存的是**盲索引**
+ *      ref = HMAC-SHA256(pepper, 会员号) 前 128 位（形如 m_3f2a…），确定性、不可逆，
+ *      因此仍然可以当主键、仍然保证「同一个人重复扫码幂等」
+ *    - 明文放在同表的 `member_enc` 列，信封加密（AES-256-GCM，DEK 由 RSA 密钥包裹），
+ *      密文自带版本号 `mid:v1:…`，解密时按版本取密钥（见 lib/member-id.js）
+ *    - **每一行都有密文**：不存在「无密文的明文行」，读库时缺密文直接报错（拒绝降级）
+ *    - 轮换期不同版本密文共存是正常状态，按密文前缀挑密钥，与「是否为历史数据」无关
  *
  * 表结构由 initDb() 建出，CREATE ... IF NOT EXISTS 保证可反复执行；
  * 结构以这里的定义为准——本层不做任何回填或迁移。
@@ -48,6 +55,7 @@
  */
 const { Pool } = require('pg');
 const crypto = require('crypto');
+const memberId = require('./lib/member-id');
 
 const LOCAL_DEFAULT_URL = 'postgres://postgres:postgres@localhost:5432/oddeven';
 
@@ -224,7 +232,8 @@ async function initArchiveTables(p) {
   await p.query(`
     CREATE TABLE IF NOT EXISTS round_archive_entry (
       archive_id    BIGINT  NOT NULL REFERENCES round_archive (archive_id), -- 所属轮次（不级联删除：归档行永不被删）
-      member_id     TEXT    NOT NULL,   -- 会员号（二维码内容 / 玩家原始 ID）
+      member_id     TEXT    NOT NULL,   -- 会员号盲索引 ref（m_…）；历史归档行为明文原文
+      member_enc    TEXT,               -- 会员号密文（mid:v1:…）；历史归档行为 NULL，不回填
       odd_even      TEXT,               -- 预测单双（null = 未提交）
       number        INTEGER,            -- 预测数字（null = 未提交）
       submitted     BOOLEAN NOT NULL DEFAULT FALSE, -- 是否提交过预测
@@ -236,6 +245,7 @@ async function initArchiveTables(p) {
       PRIMARY KEY (archive_id, member_id)
     );
   `);
+  await p.query('ALTER TABLE round_archive_entry ADD COLUMN IF NOT EXISTS member_enc TEXT;');
   await p.query('CREATE INDEX IF NOT EXISTS idx_round_archive_entry_member ON round_archive_entry (member_id);');
   await p.query('CREATE INDEX IF NOT EXISTS idx_round_archive_entry_session ON round_archive_entry (archive_id, submitted);');
 
@@ -313,10 +323,13 @@ async function initDb() {
   `);
 
   // 玩家表：一场内一个玩家一行
+  //   id        = 会员号的盲索引（ref），不是会员号本身
+  //   member_enc= 会员号密文（信封加密），每一行都有；缺了 rowToSession 会直接报错
   await p.query(`
     CREATE TABLE IF NOT EXISTS player (
       session_id    TEXT NOT NULL,          -- 所属场次
-      id            TEXT NOT NULL,          -- 二维码内容/原始 ID（未经 hash）
+      id            TEXT NOT NULL,          -- 会员号盲索引 ref（m_…）
+      member_enc    TEXT,                   -- 会员号密文（mid:v<n>:…，按前缀挑密钥）
       round         INTEGER NOT NULL,       -- 场次内所属轮次
       odd_even      TEXT,                   -- 预测单/双（null 表示未提交）
       number        INTEGER,                -- 预测数字
@@ -326,12 +339,15 @@ async function initDb() {
       PRIMARY KEY (session_id, id)          -- 同一 ID 可同时存在于多个场次
     );
   `);
+  // 已有库补列：密文列是后加的
+  await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS member_enc TEXT;');
 
   // 身份档案：一场内一份，跨该场次的轮次累计
   await p.query(`
     CREATE TABLE IF NOT EXISTS identity (
       session_id       TEXT NOT NULL,       -- 所属场次
-      id               TEXT NOT NULL,       -- 与 player.id 统一（原始 ID）
+      id               TEXT NOT NULL,       -- 与 player.id 统一（ref）
+      member_enc       TEXT,                -- 会员号密文（与 player.member_enc 同格式）
       last_seen_round  INTEGER NOT NULL,    -- 最近出现的轮次（场次内）
       completed_rounds INTEGER NOT NULL DEFAULT 0,
       created_at       BIGINT NOT NULL,     -- 首次建档时间戳（毫秒）
@@ -339,6 +355,7 @@ async function initDb() {
       PRIMARY KEY (session_id, id)          -- 同一 ID 可同时存在于多个场次
     );
   `);
+  await p.query('ALTER TABLE identity ADD COLUMN IF NOT EXISTS member_enc TEXT;');
 
   // 应用级键值配置：目前只存玩家端绑定令牌的 HMAC 签名密钥。
   // 不存任何口令：口令只在进程内存里保留 scrypt 哈希。
@@ -483,8 +500,13 @@ function rowToSession(r) {
     version: r.version != null ? Number(r.version) : 1
   };
   for (const p of r.players || []) {
-    s.players[p.id] = {
-      id: p.id,
+    // 会员号在这里完成「密文 → ref + 脱敏 ID」的转换：内存、接口、页面都只见到这三样，
+    // 明文只在解密的那一瞬间存在。缺密文的行 decodeRow 直接抛错，不做任何降级。
+    const mid = memberId.decodeRow(p.id, p.enc);
+    s.players[mid.id] = {
+      id: mid.id,
+      enc: mid.enc,
+      maskedId: mid.maskedId,
       oddEven: p.odd_even,
       number: p.number != null ? Number(p.number) : null,
       registeredAt: Number(p.registered_at),
@@ -493,9 +515,11 @@ function rowToSession(r) {
     };
   }
   for (const it of r.identities || []) {
-    s.identities[it.id] = {
+    const mid = memberId.decodeRow(it.id, it.enc);
+    s.identities[mid.id] = {
       lastSeenRound: Number(it.last_seen_round),
-      completedRounds: Number(it.completed_rounds)
+      completedRounds: Number(it.completed_rounds),
+      enc: mid.enc
     };
   }
   return s;
@@ -517,14 +541,14 @@ const SNAPSHOT_SQL = `
            ON rv.version = COALESCE(gs.rule_version, (SELECT max(version) FROM rule_version))
     LEFT JOIN LATERAL (
       SELECT json_agg(json_build_object(
-               'id', p.id, 'odd_even', p.odd_even, 'number', p.number,
+               'id', p.id, 'enc', p.member_enc, 'odd_even', p.odd_even, 'number', p.number,
                'registered_at', p.registered_at, 'submitted_at', p.submitted_at,
                'left_at', p.left_at) ORDER BY p.registered_at ASC) AS j
         FROM player p WHERE p.session_id = gs.session_id
     ) pl ON TRUE
     LEFT JOIN LATERAL (
       SELECT json_agg(json_build_object(
-               'id', i.id, 'last_seen_round', i.last_seen_round,
+               'id', i.id, 'enc', i.member_enc, 'last_seen_round', i.last_seen_round,
                'completed_rounds', i.completed_rounds)) AS j
         FROM identity i WHERE i.session_id = gs.session_id
     ) idt ON TRUE
@@ -650,11 +674,12 @@ async function archiveRoundInTx(client, session) {
       const base = params.length;
       tuples.push(
         `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},` +
-        `$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10})`
+        `$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11})`
       );
       params.push(
         archiveId,
         pl.id,
+        pl.enc || null,
         hasPred ? pl.oddEven : null,
         hasPred && pl.number != null ? Number(pl.number) : null,
         hasPred,
@@ -668,7 +693,7 @@ async function archiveRoundInTx(client, session) {
     }
     await client.query(
       `INSERT INTO round_archive_entry
-         (archive_id, member_id, odd_even, number, submitted,
+         (archive_id, member_id, member_enc, odd_even, number, submitted,
           odd_even_hit, number_hit, registered_at, submitted_at, archived_at)
        VALUES ${tuples.join(',')}
        ON CONFLICT (archive_id, member_id) DO NOTHING`,
@@ -684,6 +709,7 @@ const SESSION_CREATE_LOCK = 882014501;
 /** 把快照里的玩家数组摊成批量写入用的并列数组。 */
 function playerColumns(players) {
   const ids = [];
+  const encs = [];
   const rounds = [];
   const oes = [];
   const nums = [];
@@ -692,6 +718,11 @@ function playerColumns(players) {
   const lefts = [];
   for (const pl of players) {
     ids.push(pl.id);
+    // enc 由扫码建档 / decodeRow 填充，正常情况必有。缺了就是代码 bug：
+    // 宁可让这次提交失败，也不能落一行「有 ref 没密文」的数据 —— 那种行读回来会直接
+    // 报错（decodeRow 不接受缺密文），等于把整个场次卡死。
+    if (!pl.enc) throw new Error('player ' + pl.id + ' 缺少会员号密文，拒绝写入');
+    encs.push(pl.enc);
     rounds.push(pl.round);
     oes.push(pl.oddEven);
     nums.push(pl.number);
@@ -699,7 +730,7 @@ function playerColumns(players) {
     subs.push(pl.submittedAt != null ? pl.submittedAt : null);
     lefts.push(pl.leftAt != null ? pl.leftAt : null);
   }
-  return { ids, rounds, oes, nums, regs, subs, lefts };
+  return { ids, encs, rounds, oes, nums, regs, subs, lefts };
 }
 
 /**
@@ -777,34 +808,43 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
     if (players.length) {
       await client.query(
         `INSERT INTO player
-           (session_id, id, round, odd_even, number, registered_at, submitted_at, left_at)
-         SELECT $1, u.id, u.round, u.odd_even, u.number, u.registered_at, u.submitted_at, u.left_at
-           FROM unnest($2::text[], $3::int[], $4::text[], $5::int[],
-                       $6::bigint[], $7::bigint[], $8::bigint[])
-             AS u(id, round, odd_even, number, registered_at, submitted_at, left_at)
+           (session_id, id, member_enc, round, odd_even, number, registered_at, submitted_at, left_at)
+         SELECT $1, u.id, u.enc, u.round, u.odd_even, u.number, u.registered_at, u.submitted_at, u.left_at
+           FROM unnest($2::text[], $3::text[], $4::int[], $5::text[], $6::int[],
+                       $7::bigint[], $8::bigint[], $9::bigint[])
+             AS u(id, enc, round, odd_even, number, registered_at, submitted_at, left_at)
          ON CONFLICT (session_id, id) DO UPDATE SET
+           member_enc=EXCLUDED.member_enc,
            round=EXCLUDED.round, odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
            submitted_at=EXCLUDED.submitted_at, left_at=EXCLUDED.left_at`,
-        [session.id, cols.ids, cols.rounds, cols.oes, cols.nums, cols.regs, cols.subs, cols.lefts]
+        [session.id, cols.ids, cols.encs, cols.rounds, cols.oes, cols.nums, cols.regs, cols.subs, cols.lefts]
       );
     }
 
-    const identities = Object.entries(session.identities).map(([id, it]) => ({
-      id,
-      lastSeenRound: it.lastSeenRound,
-      completedRounds: it.completedRounds || 0
-    }));
+    const identities = Object.entries(session.identities).map(([id, it]) => {
+      // 与 player 同一条规矩：没有密文就不写。identity 是跨轮档案，写进一行没密文的
+      // 记录等于给以后每一次读库埋一个必炸的雷（decodeRow 直接抛错，整个场次打不开）。
+      if (!it.enc) throw new Error('identity ' + id + ' 缺少会员号密文，拒绝写入');
+      return {
+        id,
+        enc: it.enc,
+        lastSeenRound: it.lastSeenRound,
+        completedRounds: it.completedRounds || 0
+      };
+    });
     if (identities.length) {
       await client.query(
         `INSERT INTO identity
-           (session_id, id, last_seen_round, completed_rounds, created_at, updated_at)
-         SELECT $1, u.id, u.last_seen_round, u.completed_rounds, $2, $2
-           FROM unnest($3::text[], $4::int[], $5::int[]) AS u(id, last_seen_round, completed_rounds)
+           (session_id, id, member_enc, last_seen_round, completed_rounds, created_at, updated_at)
+         SELECT $1, u.id, u.enc, u.last_seen_round, u.completed_rounds, $2, $2
+           FROM unnest($3::text[], $4::text[], $5::int[], $6::int[]) AS u(id, enc, last_seen_round, completed_rounds)
          ON CONFLICT (session_id, id) DO UPDATE SET
+           member_enc=EXCLUDED.member_enc,
            last_seen_round=EXCLUDED.last_seen_round,
            completed_rounds=EXCLUDED.completed_rounds,
            updated_at=EXCLUDED.updated_at`,
-        [session.id, now, identities.map((x) => x.id),
+        [session.id, now,
+          identities.map((x) => x.id), identities.map((x) => x.enc),
           identities.map((x) => x.lastSeenRound), identities.map((x) => x.completedRounds)]
       );
     }
@@ -1409,6 +1449,8 @@ async function archiveSummary(from, to) {
     [from, to]
   );
 
+  /* 参与人数：member_id 恒为 ref（同一会员号在任何场次、任何密钥版本下都是同一个 ref），
+   * 所以 count(DISTINCT) 就是准的，不需要在应用层再折算一次。 */
   const m = await p.query(
     `SELECT count(DISTINCT e.member_id)::int AS members,
             count(DISTINCT e.member_id) FILTER (WHERE e.submitted)::int AS predicted_members
@@ -1418,7 +1460,7 @@ async function archiveSummary(from, to) {
     [from, to]
   );
 
-  // 分场次：表头与人数分别聚合后再 join。
+  // 分场次：表头聚合与人数分别算再合并。
   // 不能直接 LEFT JOIN 明细后 count(*)——一轮 N 人会被放大成 N 行，轮次与人数全错。
   const s = await p.query(
     `SELECT h.session_id, h.session_name, h.session_seq, h.rounds, h.entries, h.submitted,
@@ -1494,7 +1536,7 @@ async function archiveEntryRows(from, to, sessionId) {
   let sql = `
     SELECT a.session_id, a.session_name, a.session_seq, a.round, a.number AS drawn_number,
            a.odd_even AS drawn_odd_even, a.locked_at, a.archived_at, a.locked_by, a.rule_version,
-           e.member_id, e.odd_even, e.number, e.submitted, e.odd_even_hit, e.number_hit,
+           e.member_id, e.member_enc, e.odd_even, e.number, e.submitted, e.odd_even_hit, e.number_hit,
            e.registered_at, e.submitted_at
       FROM round_archive a
       JOIN round_archive_entry e ON e.archive_id = a.archive_id

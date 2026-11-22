@@ -15,7 +15,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   startServer, makeClient, login, unlock, scan, predict, confirm, resetRound,
-  exportCsv, toTable, withDb, resetSchema, PLAYER_PASSWORD
+  exportCsv, toTable, withDb, resetSchema, memberRef, PLAYER_PASSWORD
 } from './helpers.mjs';
 
 let server;
@@ -235,10 +235,10 @@ test('对账 CSV 的「规则版本」列记录每轮所用的版本（跨场次
 
   // 明细口径同一列也要有值，且与轮次一致
   const detailTable = toTable((await exportCsv(api, adminToken, { level: 'detail' })).text);
-  const aRow = detailTable.records.find((r) => r['会员号'] === 'RULE-A');
+  const aRow = detailTable.records.find((r) => r['会员号'] === memberRef('RULE-A'));
   assert.ok(aRow, '找不到 RULE-A 的明细行');
   assert.equal(aRow['规则版本'], '1');
-  const bRow = detailTable.records.find((r) => r['会员号'] === 'RULE-B');
+  const bRow = detailTable.records.find((r) => r['会员号'] === memberRef('RULE-B'));
   assert.ok(bRow, '找不到 RULE-B 的明细行');
   assert.equal(bRow['规则版本'], String(latest.body.ruleVersion));
 

@@ -12,7 +12,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   startServer, makeClient, login, unlock, scan, withDb, resetSchema, databaseUrl,
-  ADMIN_PASSWORD, PLAYER_PASSWORD
+  memberRef, ADMIN_PASSWORD, PLAYER_PASSWORD
 } from './helpers.mjs';
 
 let server;
@@ -22,8 +22,11 @@ let token;
 let sid;
 let ut;
 
-const A = 'M-A';
-const B = 'M-B';
+// 会员号原文（只在扫码入参里出现）；A/B 是接口与库里真正流转的盲索引 ref
+const PLAIN_A = 'M-A';
+const PLAIN_B = 'M-B';
+const A = memberRef(PLAIN_A);
+const B = memberRef(PLAIN_B);
 
 function q(path) {
   return path + (path.includes('?') ? '&' : '?')
@@ -78,7 +81,7 @@ before(async () => {
   assert.equal(u.body.ok, true, '场次口令：' + JSON.stringify(u.body));
   ut = u.body.ut;
 
-  for (const pid of [A, B]) {
+  for (const pid of [PLAIN_A, PLAIN_B]) {
     const r = await scan(api, sid, ut, pid);
     assert.equal(r.body.ok, true, '登记 ' + pid);
   }
@@ -122,7 +125,7 @@ test('离开后：两端列表、人数、场次摘要、库里标记全部同�
 });
 
 test('重新扫码 = 回到现场：名单与统计立刻恢复，草稿仍在', async () => {
-  const r = await scan(api, sid, ut, B);
+  const r = await scan(api, sid, ut, PLAIN_B);
   assert.equal(r.body.ok, true);
 
   const s = await state(A);
@@ -194,7 +197,7 @@ test('锁定后名单冻结：离开/登出与重新扫码都不能改写结果�
   assert.equal(lv.body.locked, true);
 
   // B 在锁定前就离开了：锁定后重新扫码也不能被放回本轮名单
-  const rs = await scan(api, sid, ut, B);
+  const rs = await scan(api, sid, ut, PLAIN_B);
   assert.equal(rs.body.ok, true);
 
   const s = await state(A);

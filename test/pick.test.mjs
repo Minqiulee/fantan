@@ -12,7 +12,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   startServer, makeClient, login, unlock, scan, withDb, resetSchema, databaseUrl,
-  ADMIN_PASSWORD, PLAYER_PASSWORD
+  memberRef, ADMIN_PASSWORD, PLAYER_PASSWORD
 } from './helpers.mjs';
 
 let server;
@@ -31,7 +31,7 @@ function q(path) {
 
 /** me 视角要带 pid（/api/state 只对请求里声明的 pid 生成 me），不带就是纯观众视角。 */
 function state(pid) {
-  return api.get(q('/api/state') + (pid ? '&pid=' + encodeURIComponent(pid) : ''));
+  return api.get(q('/api/state') + (pid ? '&pid=' + encodeURIComponent(memberRef(pid)) : ''));
 }
 
 function board() {
@@ -39,12 +39,13 @@ function board() {
     + '&token=' + encodeURIComponent(token) + '&view=bigscreen');
 }
 
+// 下面几个 helper 的 pid 入参都是**会员号原文**，出网前统一折算成盲索引 ref
 function pick(pid, oddEven, number, seq) {
-  return api.put('/api/pick', { sid, ut, pid, oddEven, number, seq });
+  return api.put('/api/pick', { sid, ut, pid: memberRef(pid), oddEven, number, seq });
 }
 
 function drop(pid, seq) {
-  return api.del('/api/pick', { sid, ut, pid, seq });
+  return api.del('/api/pick', { sid, ut, pid: memberRef(pid), seq });
 }
 
 /** 提交需要自定义 header，makeClient 只封了 body，这里直接 fetch。 */
@@ -52,7 +53,7 @@ async function submit(pid, oddEven, number, idemKey) {
   const r = await fetch(base + '/api/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [H_KEY]: idemKey },
-    body: JSON.stringify({ sid, ut, pid, oddEven, number }),
+    body: JSON.stringify({ sid, ut, pid: memberRef(pid), oddEven, number }),
     signal: AbortSignal.timeout(15000)
   });
   return { status: r.status, body: await r.json() };
@@ -62,7 +63,7 @@ async function playerRow(pid) {
   return withDb(async (c) => {
     const r = await c.query(
       'SELECT id, odd_even, number FROM player WHERE session_id = $1 AND id = $2',
-      [sid, pid]
+      [sid, memberRef(pid)]
     );
     return r.rows[0] || null;
   });
@@ -103,7 +104,7 @@ test('草稿只写内存：不推进 version，也不碰 player.odd_even', async
 
   const afterState = await state('M1');
   assert.equal(afterState.body.version, v0, '草稿不落库 → version 不能变');
-  const me = afterState.body.players.find((p) => p.id === 'M1');
+  const me = afterState.body.players.find((p) => p.id === memberRef('M1'));
   assert.equal(me.status, 'draft');
   assert.equal(me.submitted, false, '草稿不算已提交');
 
@@ -118,12 +119,12 @@ test('草稿只写内存：不推进 version，也不碰 player.odd_even', async
 
 test('玩家视图不泄露他人选项，大屏视图才带具体值', async () => {
   const pv = await state('M1');
-  const other = pv.body.players.find((p) => p.id === 'M1');
+  const other = pv.body.players.find((p) => p.id === memberRef('M1'));
   assert.equal(other.oe, undefined, '玩家视图不能出现 oe');
   assert.equal(other.num, undefined, '玩家视图不能出现 num');
 
   const bs = await board();
-  const onBoard = bs.body.players.find((p) => p.id === 'M1');
+  const onBoard = bs.body.players.find((p) => p.id === memberRef('M1'));
   assert.equal(onBoard.status, 'draft');
   assert.equal(onBoard.oe, '单');
   assert.equal(onBoard.num, 3);
@@ -145,7 +146,7 @@ test('seq 单调：旧序号迟到不回退，重复 seq 返回当前值', async
   assert.equal(same.body.draft.oe, '双', '同 seq 重发视为同一请求，不改值');
 
   const bs = await board();
-  assert.equal(bs.body.players.find((p) => p.id === 'M1').oe, '双');
+  assert.equal(bs.body.players.find((p) => p.id === memberRef('M1')).oe, '双');
 });
 
 test('撤销草稿：状态回到未选择，旧 seq 不能复活', async () => {
@@ -153,14 +154,14 @@ test('撤销草稿：状态回到未选择，旧 seq 不能复活', async () => 
   assert.equal(r.body.accepted, true);
 
   let bs = await board();
-  let m1 = bs.body.players.find((p) => p.id === 'M1');
+  let m1 = bs.body.players.find((p) => p.id === memberRef('M1'));
   assert.equal(m1.status, 'none');
   assert.equal(m1.oe, null);
 
   const revive = await pick('M1', '单', 1, 2);
   assert.equal(revive.body.accepted, false, '删除用掉了 seq 6，seq 2 必须被忽略');
   bs = await board();
-  assert.equal(bs.body.players.find((p) => p.id === 'M1').status, 'none');
+  assert.equal(bs.body.players.find((p) => p.id === memberRef('M1')).status, 'none');
 });
 
 test('提交幂等：同 key 重放 / 异 key 报已提交 / 提交后草稿清除', async () => {
@@ -186,13 +187,13 @@ test('提交幂等：同 key 重放 / 异 key 报已提交 / 提交后草稿清�
   assert.equal(Number(row.number), 5);
 
   const bs = await board();
-  assert.equal(bs.body.players.find((p) => p.id === 'M1').draftOddEven, null, '提交后草稿必须清掉');
+  assert.equal(bs.body.players.find((p) => p.id === memberRef('M1')).draftOddEven, null, '提交后草稿必须清掉');
 
   const afterSubmit = await pick('M1', '双', 2, 9);
   assert.equal(afterSubmit.status, 409);
   assert.equal(afterSubmit.body.code, 'already_submitted');
 
-  const noKey = await api.post('/api/submit', { sid, ut, pid: 'M2', oddEven: '单', number: 1 });
+  const noKey = await api.post('/api/submit', { sid, ut, pid: memberRef('M2'), oddEven: '单', number: 1 });
   assert.equal(noKey.status, 422, '缺幂等键直接拒绝');
   assert.equal(noKey.body.code, 'idempotency_key_required');
 });
@@ -206,7 +207,7 @@ test('锁定竞态：有草稿必须 ackPending；锁定后草稿作废、不算
   assert.equal(blocked.status, 409);
   assert.equal(blocked.body.code, 'pending_confirm_required');
   assert.equal(blocked.body.counts.draft, 1);
-  assert.equal(blocked.body.pending[0].pid, 'M2', '名单要能指出是谁没确认');
+  assert.equal(blocked.body.pending[0].pid, memberRef('M2'), '名单要能指出是谁没确认');
 
   const ok = await api.post('/api/confirm', { token, sid, number: 4, ackPending: true });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
@@ -217,7 +218,7 @@ test('锁定竞态：有草稿必须 ackPending；锁定后草稿作废、不算
   assert.equal(row.odd_even, null, '草稿不因锁定变成提交');
 
   const bs = await board();
-  const m2 = bs.body.players.find((p) => p.id === 'M2');
+  const m2 = bs.body.players.find((p) => p.id === memberRef('M2'));
   assert.equal(m2.status, 'none', '锁定后草稿清空');
   assert.equal(m2.submitted, false);
 
@@ -256,7 +257,7 @@ test('实例重启：草稿丢失，客户端用更大 seq 重发即恢复（最
   assert.equal(replay.body.accepted, true);
 
   const bs = await board();
-  const m3 = bs.body.players.find((p) => p.id === 'M3');
+  const m3 = bs.body.players.find((p) => p.id === memberRef('M3'));
   assert.equal(m3.status, 'draft');
   assert.equal(m3.num, 7);
 });
@@ -275,13 +276,13 @@ test('数字范围 0–9：两端都收，越界与缺失一律拒绝（0 不算
   assert.equal(zero.status, 200, JSON.stringify(zero.body));
   assert.equal(zero.body.accepted, true);
   let bs = await board();
-  assert.equal(bs.body.players.find((p) => p.id === 'M4').num, 0);
+  assert.equal(bs.body.players.find((p) => p.id === memberRef('M4')).num, 0);
 
   // 9 也是合法上界
   const nine = await pick('M5', '单', 9, 1);
   assert.equal(nine.body.accepted, true);
   bs = await board();
-  assert.equal(bs.body.players.find((p) => p.id === 'M5').num, 9);
+  assert.equal(bs.body.players.find((p) => p.id === memberRef('M5')).num, 9);
 
   // 越界 / 非整数 / 缺失（含 null，不能被 Number(null)=0 蒙过去）
   for (const bad of [10, -1, 3.5, '3x', null, '', undefined, true]) {

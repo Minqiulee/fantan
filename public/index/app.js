@@ -768,7 +768,7 @@
       pid = d.pid;
       localStorage.setItem(pidKey(sid), pid);
       // 登录成功 → 展示规则介绍（10 秒 / 点击即关）；规则层已占用全屏时不再叠 toast
-      if (!startRules(pid)) toast(t('p_welcome', { n: d.pid }), 'ok');
+      if (!startRules(pid)) toast(t('p_welcome', { n: d.maskedId || d.pid }), 'ok');
       startStream(); // pid 变化，重连以获取 me 视角
       poll();
     }).catch(function () { $('scanErr').textContent = t('p_scanNetErr'); });

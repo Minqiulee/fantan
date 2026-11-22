@@ -19,7 +19,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  resetSchema, startServer, makeClient, withDb,
+  resetSchema, startServer, makeClient, withDb, memberRef,
   login, unlock, scan, predict
 } from './helpers.mjs';
 
@@ -31,12 +31,13 @@ let ut;
 let sidB;  // 另一场次：验证身份隔离
 let utB;
 
-/** 直接读库：identity 是唯一权威，接口只暴露由它派生的 isVeteran。 */
-async function identityRow(sessionId, id) {
+/** 直接读库：identity 是唯一权威，接口只暴露由它派生的 isVeteran。
+ *  注意 id 列存的是盲索引 ref，不是会员号原文 —— 入参仍按原文写，内部折算。 */
+async function identityRow(sessionId, plain) {
   return withDb(async (c) => {
     const r = await c.query(
       'SELECT last_seen_round, completed_rounds FROM identity WHERE session_id = $1 AND id = $2',
-      [sessionId, id]
+      [sessionId, memberRef(plain)]
     );
     if (!r.rows[0]) return null;
     return {
@@ -46,11 +47,11 @@ async function identityRow(sessionId, id) {
   });
 }
 
-async function identityCount(sessionId, id) {
+async function identityCount(sessionId, plain) {
   return withDb(async (c) => {
     const r = await c.query(
       'SELECT count(*)::int AS n FROM identity WHERE session_id = $1 AND id = $2',
-      [sessionId, id]
+      [sessionId, memberRef(plain)]
     );
     return Number(r.rows[0].n);
   });
@@ -62,9 +63,9 @@ function board(sessionId) {
     + '&token=' + encodeURIComponent(token) + '&view=bigscreen');
 }
 
-function veteranOf(res, pid) {
-  const p = res.body.players.find((x) => x.id === pid);
-  assert.ok(p, '大屏里必须有 ' + pid + '：' + JSON.stringify(res.body.players));
+function veteranOf(res, plain) {
+  const p = res.body.players.find((x) => x.id === memberRef(plain));
+  assert.ok(p, '大屏里必须有 ' + plain + '：' + JSON.stringify(res.body.players));
   return p.isVeteran;
 }
 
@@ -110,7 +111,7 @@ describe('身份档案：本场次跨轮累计', () => {
   it('提交并开奖：完成轮次 +1；只放草稿的不算', async () => {
     assert.equal((await predict(api, sid, ut, 'V1', '单', 3)).status, 200);
     // V2 只放草稿不确认：草稿不等于参赛，开奖后必须仍是新人
-    const d = await api.put('/api/pick', { sid, ut, pid: 'V2', oddEven: '双', number: 8, seq: 1 });
+    const d = await api.put('/api/pick', { sid, ut, pid: memberRef('V2'), oddEven: '双', number: 8, seq: 1 });
     assert.equal(d.status, 200, JSON.stringify(d.body));
     assert.equal(d.body.accepted, true);
 

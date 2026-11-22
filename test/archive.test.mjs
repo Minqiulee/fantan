@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {
   resetSchema, startServer, makeClient, withDb, freePort,
   ADMIN_USERNAME, login, unlock, scan, predict, confirm, resetRound, summary, exportCsv,
-  toTable, rowOf
+  toTable, rowOf, memberRef
 } from './helpers.mjs';
 
 const CSV_DETAIL_HEADER = [
@@ -84,11 +84,11 @@ describe('竞猜归档与对账', () => {
     for (const code of ['M001', 'M002', 'M,003']) {
       const r = await scan(api, sidA, utA, code);
       assert.equal(r.status, 200, '扫码失败：' + JSON.stringify(r.body));
-      assert.equal(r.body.pid, code);
+      assert.equal(r.body.pid, memberRef(code), 'pid 是盲索引 ref，不是会员号原文');
     }
     const again = await scan(api, sidA, utA, 'M001');
     assert.equal(again.status, 200);
-    assert.equal(again.body.pid, 'M001', '重复扫码必须回到同一玩家');
+    assert.equal(again.body.pid, memberRef('M001'), '重复扫码必须回到同一玩家');
 
     const state = await api.get('/api/state?sid=' + sidA + '&ut=' + encodeURIComponent(utA));
     assert.equal(state.status, 200);
@@ -173,9 +173,13 @@ describe('竞猜归档与对账', () => {
     const table = toTable(r.text);
     assert.deepEqual(table.header, CSV_DETAIL_HEADER, '列头顺序即契约');
     assert.equal(table.rows.length, 3);
-    assert.ok(r.text.includes('"M,003"'), '含逗号的会员号必须加引号');
+    // 会员号列现在输出盲索引令牌：原文（含逗号的 M,003）不得出现在导出里
+    assert.ok(!r.text.includes('M,003'), '导出不得包含会员号原文');
+    for (const rec of table.records) {
+      assert.match(rec['会员号'], /^m_[0-9a-f]{32}$/, '会员号列必须是盲索引令牌');
+    }
 
-    const m1 = rowOf(table, 'M001');
+    const m1 = rowOf(table, memberRef('M001'));
     assert.equal(m1['开奖数字'], '4');
     assert.equal(m1['开奖单双'], '双');
     assert.equal(m1['预测单双'], '单');
@@ -183,11 +187,11 @@ describe('竞猜归档与对账', () => {
     assert.equal(m1['单双命中'], '未中');
     assert.equal(m1['数字命中'], '未中');
 
-    const m2 = rowOf(table, 'M002');
+    const m2 = rowOf(table, memberRef('M002'));
     assert.equal(m2['单双命中'], '命中', 'M002 猜双，开奖 4');
     assert.equal(m2['数字命中'], '未中');
 
-    const m3 = rowOf(table, 'M,003');
+    const m3 = rowOf(table, memberRef('M,003'));
     assert.equal(m3['是否提交'], '否');
     assert.equal(m3['预测单双'], '');
     assert.equal(m3['单双命中'], '未提交');
@@ -310,7 +314,7 @@ describe('竞猜归档与对账', () => {
 
     // 跨场导出：同一会员号在 A、B 两场各一行，逐行给出猜测与实际结果，不做合并
     const all = toTable((await exportCsv(api, token, { level: 'detail' })).text);
-    const m1Rows = all.records.filter((x) => x['会员号'] === 'M001');
+    const m1Rows = all.records.filter((x) => x['会员号'] === memberRef('M001'));
     assert.equal(m1Rows.length, 2, '两个场次各一行，不合并成一行');
     assert.deepEqual(m1Rows.map((x) => x['场次ID']), [sidA, sidB], '按会员聚合展示时同一人的记录连续且按时间排列');
     assert.deepEqual(m1Rows.map((x) => x['开奖数字']), ['4', '2']);

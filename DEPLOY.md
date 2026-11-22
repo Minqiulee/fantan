@@ -168,6 +168,15 @@ docker run -d --name oddeven-pg \
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
 | `BIGSCREEN_PUBLIC` | 大屏 `/bigscreen` 是否公开访问；`0` 恢复「仅有效员工 token 可见」，其余值/不设均为公开 | 公开 |
+| `MEMBER_ID_PEPPER` | 会员号盲索引（HMAC）密钥，base64 ≥32 字节。**必填，且上线后不可更换** | 无（缺失拒绝启动） |
+| `MEMBER_ID_KEY_<n>` | 第 n 版会员号加密密钥：RSA-OAEP(SHA-256) 包裹后的 32 字节 DEK（base64） | 无（缺失拒绝启动） |
+| `MEMBER_ID_KEY_<n>_PRIVATE` | 第 n 版 RSA 私钥，base64 的 PKCS#8 PEM（只用于解 DEK） | 无（缺失拒绝启动） |
+| `MEMBER_ID_DEK_<n>` | 简化模式：直接注入 32 字节裸 DEK（base64），跳过 RSA | 无 |
+| `MEMBER_ID_KEY_VERSION` | 当前写入使用的密钥版本 | 已配置的最大版本号 |
+
+> 会员号加密的 4 个 `MEMBER_ID_*` 变量用 `npm run member-keygen -- -v 1` 生成，生成结果直接 `fly secrets set`。
+> 首次部署**必须先配密钥**，否则服务启动即退出（有意不做明文兜底）。
+> 多实例必须共享同一份密钥与 pepper。轮换步骤见 `docs/member-id-encryption.md` §8。
 
 > `PG_HOST` / `PG_USER` / `PG_PASS` / `PG_PORT` / `PG_DB` / `PG_URL` 已从代码中移除，不再读取。
 > 用户名密码里的 `@`、`/`、`:` 请在连接串里 URL 编码（`encodeURIComponent`）。
@@ -179,4 +188,7 @@ docker run -d --name oddeven-pg \
 
 - 员工登录会话落在 `staff_session`，服务重启**不掉登录**（多实例的硬要求）。要立即下线某人：在管理界面停用该账号或重置其密码，该账号所有会话会被立刻删除。
 - 玩家端场次绑定（`oe_bind`：sid + 签名令牌 + 过期时间）**不受重启影响**，因为签名密钥持久化在 `app_config`；改 `PLAYER_SESSION_PASSWORD` 只会让后续选择场次需要新口令，已发出的令牌仍有效到 12 小时过期。
-- 玩家 ID 不再做 hash，直接以二维码内容/原始 ID 作为主键。
+- 玩家 ID 不再以明文入库：`player.id` / `identity.id` / `round_archive_entry.member_id` 存的是盲索引 `ref`
+  （HMAC-SHA256，形如 `m_3f2a…`），会员号原文以密文存同表的 `member_enc`（信封加密，密文自带 `mid:v1:` 版本号）。
+  接口、员工端、大屏、对账 CSV 只出现 ref 与脱敏标签 `****1234`。每一行都必须带密文，缺密文时读取直接报错（不做明文降级）。
+  见 `docs/member-id-encryption.md`。

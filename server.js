@@ -19,10 +19,12 @@
  *     因此改 URL / 本地存储都换不了场次；令牌 12 小时过期，过期后需重新验证
  *   - 只有「唯一进行中场次」时允许免口令自动绑定（此时不存在选错场的可能）
  *
- * 身份模型：玩家自带二维码或直接提交原始 ID，页面识别后，
- * 以「原始内容」直接作为玩家唯一 ID（不做 hash）：
- *   - players 按 ID 存储本轮登记与预测（每个场次各一份）
- *   - identities 在场次内跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
+ * 身份模型：玩家自带二维码或直接提交会员号，页面识别后，服务端**不保存也不下发原文**：
+ *   - 会员号先算盲索引 ref = HMAC-SHA256(pepper, 会员号)（不可逆、确定性），
+ *     以 ref 作为玩家唯一 ID：players / identities / 归档表的主键都是它
+ *   - 原文以密文存 member_enc（信封加密：RSA 包裹 DEK + AES-256-GCM，版本号写在密文里）
+ *   - 对外（接口负载、员工端、大屏、对账 CSV）只出现 ref 与脱敏标签 ****1234
+ *   - 实现见 lib/member-id.js；配置与轮换见 docs/member-id-encryption.md
  *
  * 规则模型（奖品 + 特殊数字的版本化）：
  *   - 「奖品四档 + 命中特殊数字全员加奖」合起来是一整套规则，按整体快照存版本
@@ -112,6 +114,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * 本进程不再持有任何权威状态，内存里只有可丢弃的读缓存。 */
 const { createStore } = require('./store');
 const { createPubSub } = require('./pubsub');
+const memberId = require('./lib/member-id');
 
 /* ---------------- 玩家端场次口令与绑定 ---------------- */
 
@@ -496,6 +499,7 @@ function buildStatePayload(session, pid, view) {
     players: bigscreen ? bigscreenPlayers(session) : publicPlayers(session),
     me: me ? {
       id: me.id,
+      maskedId: me.maskedId,
       oddEven: me.oddEven,
       number: me.number,
       // 草稿只在内存：刷新/重连后靠它把选择恢复出来，避免玩家以为白点了
@@ -1173,6 +1177,7 @@ function publicPlayers(session) {
     const completed = (session.identities[p.id] || {}).completedRounds || 0;
     const item = {
       id: p.id,
+      maskedId: p.maskedId,
       submitted: p.oddEven != null,
       status: choiceOf(session, p.id),
       draft: !!(drafts && drafts.has(p.id)) && p.oddEven == null,
@@ -1211,6 +1216,7 @@ function bigscreenPlayers(session) {
     const d = submitted ? null : (drafts && drafts.get(p.id)) || null;
     return {
       id: p.id,
+      maskedId: p.maskedId,
       status: submitted ? 'submitted' : (d ? 'draft' : 'none'),
       oe: submitted ? p.oddEven : (d ? d.oe : null),
       num: submitted ? p.number : (d ? d.num : null),
@@ -1311,6 +1317,8 @@ function buildCsv(header, rows) {
  * 需要新字段时只追加到末尾，不要插在中间、不要改名。
  * 两套列头都不含积分/总分字段——系统只记录每次猜测与实际开奖是否匹配。
  * 「锁定人」是该轮开奖的操作账号（与操作日志同源，空 = 无记录）。
+ * 「会员号」列的**内容已变**：现在输出盲索引令牌 m_xxxx（不可逆、跨场次稳定），
+ *   不再是二维码原文。列名保持不变（改名会打断按列名解析的下游），语义见 docs/member-id-encryption.md。
  * 末列「规则版本」是该轮所用规则（奖品四档 + 特殊数字）的版本号：
  *   取自场次开场时锁定的那一版，空 = 版本化之前的历史行（当时没有版本概念）。 */
 const CSV_DETAIL_HEADER = [
@@ -1616,8 +1624,10 @@ async function handleApi(req, res, url) {
     return json(res, 200, buildStatePayload(ctx.session, pid, view));
   }
 
-  /* 二维码识别：内容直接作为玩家唯一 ID（不做 hash）。重复扫码幂等返回同一玩家。
-   * 身份按场次隔离：同一内容在 A 场与 B 场是两个独立玩家。
+  /* 二维码识别：内容即会员号，但**不再直接当 ID 用**。
+   * 落库与内存一律用 ref = HMAC(pepper, 会员号)（盲索引，不可逆、确定性），
+   * 明文只以密文形式存 member_enc，接口和页面只出现 ref 与脱敏标签 ****1234。
+   * 身份按场次隔离：同一会员号在 A 场与 B 场是两个独立玩家（ref 相同、主键含 session_id）。
    * 登记走 store.mutate：两台实例同时扫同一个码，只会建出一个玩家（版本 CAS 保证）。 */
   if (req.method === 'POST' && url.pathname === '/api/scan') {
     const body = await readBody(req);
@@ -1629,7 +1639,11 @@ async function handleApi(req, res, url) {
 
     const ctx = await playerSessionContext(String(body.sid || ''), String(body.ut || ''));
     if (rejectPlayerSession(res, ctx)) return;
-    const id = content;
+
+    // 加密就在这一层做：ref 给主键与接口，enc 给落库，maskedId 给页面
+    const id = memberId.ref(content);
+    const enc = memberId.seal(content);
+    const maskedId = memberId.mask(content);
 
     const out = await store.mutate(ctx.session.id, (s) => {
       if (s.status !== 'open') {
@@ -1638,7 +1652,16 @@ async function handleApi(req, res, url) {
       // 情况一：本场次本轮已扫过该码 → 幂等恢复同一玩家（任意设备、任意次数）
       const existing = s.players[id];
       if (existing) {
-        if (s.identities[id]) s.identities[id].lastSeenRound = s.round;
+        // 密文不参与身份判定：ref 才是身份。这里只在「本进程刚生成的密文与库里不同」时更新，
+        // 效果是轮换后重扫一次就把这一行带到当前密钥版本（不强制，纯属顺手升级）。
+        existing.enc = enc;
+        const idt = s.identities[id];
+        if (idt) {
+          idt.lastSeenRound = s.round;
+          idt.enc = enc;
+        } else {
+          s.identities[id] = { lastSeenRound: s.round, completedRounds: 0, enc };
+        }
         // 重新扫码 = 回到现场，两端名单与统计立刻恢复。
         // 但本轮已锁定后不再放回：锁定即名单冻结，否则「离开前不算、回来后又有」
         // 会让结果表与已落库的归档对不上。
@@ -1653,13 +1676,14 @@ async function handleApi(req, res, url) {
 
       // 情况三：本场次本轮新码 → 建档
       s.players[id] = {
-        id, oddEven: null, number: null,
+        id, enc, maskedId, oddEven: null, number: null,
         registeredAt: Date.now(), submittedAt: null
       };
       const prev = s.identities[id];
       s.identities[id] = {
         lastSeenRound: s.round,
-        completedRounds: (prev && prev.completedRounds) || 0
+        completedRounds: (prev && prev.completedRounds) || 0,
+        enc
       };
       return { result: { pid: id, status: 'known' } };
     });
@@ -1668,7 +1692,7 @@ async function handleApi(req, res, url) {
     if (out.aborted) return json(res, out.aborted.status, out.aborted.body);
     if (out.conflict) return json(res, 409, { ok: false, code: 'write_conflict' });
     if (out.failed) return json(res, 500, { ok: false, code: 'write_failed' });
-    return json(res, 200, { ok: true, pid: out.result.pid, sid: out.session.id, status: out.result.status });
+    return json(res, 200, { ok: true, pid: out.result.pid, maskedId, sid: out.session.id, status: out.result.status });
   }
 
   /* 玩家离开现场 / 主动登出：打标记、不删数据。
@@ -1965,7 +1989,8 @@ async function handleApi(req, res, url) {
       // 已离开的不算参与本轮，也就不累计老玩家轮次
       presentPlayers(s).forEach((p) => {
         if (p.oddEven != null) {
-          const idt = s.identities[p.id] || (s.identities[p.id] = { lastSeenRound: s.round, completedRounds: 0 });
+          const idt = s.identities[p.id]
+            || (s.identities[p.id] = { lastSeenRound: s.round, completedRounds: 0, enc: p.enc });
           idt.completedRounds = (idt.completedRounds || 0) + 1;
           idt.lastSeenRound = s.round;
         }
@@ -2660,6 +2685,19 @@ function wireStoreEvents() {
 async function start() {
   initPlayerPassword();
   initStaffSessionPassword();
+
+  // 会员号加密密钥先校验：缺配置就直接拒绝启动，不做「明文兜底」。
+  // 放在最前面是因为一旦跑起来，写进库的就只能是密文，密钥不对等于数据永久读不出来。
+  try {
+    const mid = memberId.describe();
+    console.log('[member-id] 字段加密就绪：AES-256-GCM + RSA-OAEP 包裹，写入版本 v'
+      + mid.current + '，可用版本 [' + mid.versions.join(',') + ']');
+  } catch (e) {
+    console.error('[member-id] 会员号加密密钥配置有问题，应用无法启动：');
+    console.error('  ' + e.message);
+    console.error('  生成方法：node scripts/member-keygen.mjs（详见 docs/member-id-encryption.md）');
+    process.exit(1);
+  }
 
   // 连接参数统一由 db.js 解析：PUB/SUB 需要自己建一条长连接，且
   // 托管 pooler（Supabase 6543 事务模式）不支持 LISTEN，必须改走会话模式端口

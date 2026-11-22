@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 
 import {
   resetSchema, startServer, makeClient, openSse,
-  login, unlock, scan
+  login, unlock, scan, memberRef
 } from './helpers.mjs';
 
 let server;
@@ -110,7 +110,7 @@ describe('SSE 重连：Last-Event-ID 与断点对齐', () => {
       assert.ok(first, '重连必须立刻下发首帧');
       assert.equal(first.id, String(v1), '首帧 id 必须是当前版本，而不是断点那版');
       assert.equal(first.data.version, v1);
-      assert.ok(first.data.players.some((p) => p.id === 'S1'),
+      assert.ok(first.data.players.some((p) => p.id === memberRef('S1')),
         '断线期间漏掉的变更必须已经在首帧里（全量快照即补齐）');
     } finally {
       sse.close();
@@ -156,7 +156,7 @@ describe('SSE 重连：Last-Event-ID 与断点对齐', () => {
       const mark = sse.events.length;
 
       const picked = await api.put('/api/pick', {
-        sid, ut, pid: 'S1', oddEven: '双', number: 6, seq: 1
+        sid, ut, pid: memberRef('S1'), oddEven: '双', number: 6, seq: 1
       });
       assert.equal(picked.status, 200, JSON.stringify(picked.body));
 
@@ -176,7 +176,7 @@ describe('SSE 重连：Last-Event-ID 与断点对齐', () => {
       assert.ok(await sse.waitFor((e) => e.event === 'state'));
 
       assert.equal((await scan(api, sid, ut, 'S2')).status, 200);
-      assert.ok(await sse.waitFor((e) => e.event === 'state' && e.data.players.some((p) => p.id === 'S2')),
+      assert.ok(await sse.waitFor((e) => e.event === 'state' && e.data.players.some((p) => p.id === memberRef('S2'))),
         '扫码的变更必须推到已建立的连接上');
 
       // S1 只有草稿没有提交 → 锁定必须显式 ackPending（草稿不算参赛）

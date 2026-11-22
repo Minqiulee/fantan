@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import {
   resetSchema, startServer, makeClient, freePort,
-  login, unlock, scan, predict, confirm, resetRound, summary
+  login, unlock, scan, predict, confirm, resetRound, summary, memberRef
 } from './helpers.mjs';
 
 /** 极简 SSE 客户端：收集事件，支持等待某个条件成立。 */
@@ -111,7 +111,7 @@ describe('多实例：共享会话存储 / 跨实例广播 / 并发写', () => {
     const onB = await apiB.get('/api/state?sid=' + sid + '&ut=' + encodeURIComponent(ut));
     assert.equal(onB.status, 200);
     assert.equal(onB.body.players.length, 1, 'B 上必须看到 A 登记的人');
-    assert.equal(onB.body.players[0].id, 'M001');
+    assert.equal(onB.body.players[0].id, memberRef('M001'), '另一实例读到的 pid 也是 ref');
     assert.equal(onB.body.session.id, sid);
     assert.ok(onB.body.version >= 2, '版本号来自数据库，跨实例单调递增；实际 ' + onB.body.version);
   });
@@ -204,7 +204,7 @@ describe('多实例：共享会话存储 / 跨实例广播 / 并发写', () => {
     // 写入发生在 A 上，B 的这条连接必须收到（走 PUB/SUB → 重新读库 → 广播）
     assert.equal((await scan(apiA, target.id, uB.body.ut, 'X1')).status, 200);
 
-    const got = await sse.waitFor((e) => e.event === 'state' && e.data && e.data.players.some((p) => p.id === 'X1'));
+    const got = await sse.waitFor((e) => e.event === 'state' && e.data && e.data.players.some((p) => p.id === memberRef('X1')));
     assert.ok(got, 'B 的连接没有收到 A 的变更，实际事件：' + sse.events.map((e) => e.event).join(','));
 
     const last = sse.events.filter((e) => e.event === 'state').pop();
