@@ -346,8 +346,8 @@
 
   /**
    * 渲染全员额外奖励。触发条件来自服务端快照（s.bonus.triggered 表示本轮开奖命中特殊数字），
-   * 与个人档位无关：无论是否猜中，只要本轮触发了就显示。文案取 s.bonus 的 title/desc，
-   * 留空时回落内置文案。
+   * 与个人档位无关：无论是否猜中，只要本轮触发了就显示。文案取 s.bonus 的 title/desc（三语对象），
+   * 按玩家当前语言取对应那一份，留空时回落内置文案。
    */
   function renderBonus(s) {
     var box = $('bonusBox');
@@ -356,8 +356,8 @@
     var triggered = !!b.triggered;
     box.classList.toggle('hidden', !triggered);
     if (!triggered) return;
-    var title = String(b.title || '').trim() || t('p_bonusDefTitle');
-    var desc = String(b.desc || '').trim();
+    var title = localizedText(b.title) || t('p_bonusDefTitle');
+    var desc = localizedText(b.desc);
     $('bonusTitle').textContent = title;
     $('bonusDesc').textContent = desc;
     $('bonusDesc').classList.toggle('hidden', !desc);
@@ -369,30 +369,66 @@
            '<span class="pres">' + esc(hit ? t('p_hitYes') : t('p_hitNo')) + '</span>';
   }
 
-  /* 奖品档位 → 档位标签 / 后台未配置时的兜底文案（文案由 i18n 提供，三语各一份） */
+  /* 奖品档位 → 档位标签（文案由 i18n 提供，三语各一份） */
   var PRIZE_LABEL = {
     both: 'p_prizeTierBoth',
     number: 'p_prizeTierNumber',
     oddeven: 'p_prizeTierOddeven',
     miss: 'p_prizeTierMiss'
   };
-  var PRIZE_DEFAULT = {
-    both: 'p_prizeDefBoth',
-    number: 'p_prizeDefNumber',
-    oddeven: 'p_prizeDefOddeven',
-    miss: 'p_prizeDefMiss'
-  };
+
+  /* 奖品文案的三语字段：服务端存 { 'zh-CN': '', 'zh-HK': '', 'en-US': '' }，
+   * 这里按玩家当前语言取对应那一份。 */
+  var PRIZE_LOCALES = ['zh-CN', 'zh-HK', 'en-US'];
 
   /**
-   * 渲染结果奖品。prizes 来自服务端快照（管理界面保存后随 SSE 即时下发），
-   * 某一档 title/desc 留空时回落到内置文案 —— 后台没配也不会出现空白卡片。
+   * 取某个奖品字段在当前语言下的文案。
+   * 先取玩家选的语言，没有就按固定顺序回退（简 → 繁 → 英）——后台某一种语言漏填时
+   * 玩家看到的是别的语言的同一条奖品，而不是空白。旧版单语字符串同样兼容。
+   */
+  function localizedText(field) {
+    if (!field) return '';
+    if (typeof field === 'string') return String(field).trim();   // 旧版单语数据
+    var cur = window.I18N.getLocale();
+    var order = [cur].concat(PRIZE_LOCALES);
+    for (var i = 0; i < order.length; i += 1) {
+      var v = field[order[i]];
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+    return '';
+  }
+
+  /**
+   * 判断某一档奖品是否「有效配置」：必须是对象，且奖品名称有内容（任一语言非空）。
+   * 空配置、结构异常（非对象/数组/字段类型不对）、只有说明没有名称，一律视为未配置。
+   */
+  function hasValidPrize(cfg) {
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return false;
+    return !!localizedText(cfg.title);
+  }
+
+  /**
+   * 渲染结果奖品。prizes 来自服务端快照（管理界面保存后随 SSE 即时下发）。
+   * 只有该档奖品确实配置了有效内容才显示 prizeBox；未配置/为空/结构异常时
+   * 整个卡片隐藏（连带清空残留文案），其余结果信息照常展示。
    */
   function renderPrize(s, tier) {
     var box = $('prizeBox');
     if (!box) return;
-    var cfg = (s.prizes && s.prizes[tier]) || {};
-    var title = String(cfg.title || '').trim() || t(PRIZE_DEFAULT[tier]);
-    var desc = String(cfg.desc || '').trim();
+    var cfg = (s && s.prizes && s.prizes[tier]) || null;
+
+    // 非法/空配置：隐藏卡片并清空上一次渲染的文本，避免残留可见
+    if (!hasValidPrize(cfg)) {
+      box.classList.add('hidden');
+      $('prizeTier').textContent = '';
+      $('prizeTitle').textContent = '';
+      $('prizeDesc').textContent = '';
+      $('prizeDesc').classList.add('hidden');
+      return;
+    }
+
+    var title = localizedText(cfg.title);
+    var desc = localizedText(cfg.desc);
     $('prizeTier').textContent = t(PRIZE_LABEL[tier]);
     $('prizeTitle').textContent = title;
     $('prizeDesc').textContent = desc;
@@ -1186,12 +1222,24 @@
     }).finally(function () { submitting = false; });
   });
 
-  /* ---------- 登出（只清本机身份，保留场次绑定：仍在同一场次，避免被判为切换） ---------- */
+  /* ---------- 登出（清本机身份 + 通知服务端移出在场名单，保留场次绑定） ----------
+   * 只清本机不够：服务端仍会把这个 pid 算进人数/大屏，直到 SSE 重连或超时。
+   * 先关掉旧连接（阻止它带着旧 pid 自动重连把标记撤销），再上报离开，最后用空 pid 重连。 */
   $('logoutBtn').addEventListener('click', function () {
     if (!confirm(t('p_logoutConfirm'))) return;
     stopCamera();
     closeRules();             // 登出顺带收起规则层，避免残留遮挡
     rulesShownFor = '';       // 下次登录（重新扫码）再展示一次
+    var leavingPid = pid;
+    closeStream();
+    if (sid && leavingPid) {
+      var body = JSON.stringify({ sid: sid, ut: ut, pid: leavingPid, reason: 'logout' });
+      try {
+        if (!(navigator.sendBeacon && navigator.sendBeacon('/api/leave', body))) {
+          fetch('/api/leave', { method: 'POST', body: body, keepalive: true });
+        }
+      } catch (err) { /* 上报失败也不阻塞登出：SSE 断开后不会再用旧 pid 重连 */ }
+    }
     pid = '';
     localStorage.removeItem(pidKey(sid));
     selOE = null; selNum = null;
@@ -1236,12 +1284,13 @@
     if (window.I18N.setLocale(next)) applyI18n();
   });
 
-  /* ---------- 离开上报：只给大屏打「已离开」标记，不动本轮登记与预测 ----------
-     用 sendBeacon 保证页面关闭时也能发出；刷新/回前台时 SSE 重连会自动撤销该标记。 */
+  /* ---------- 离开上报：把玩家移出实时名单/统计，不动本轮已提交的预测 ----------
+     用 sendBeacon 保证页面关闭时也能发出；刷新/回前台时 SSE 重连会自动撤销该标记
+     （本轮未锁定时才撤销，锁定后名单冻结）。 */
   window.addEventListener('pagehide', function (e) {
     if (e.persisted) return;              // 进 bfcache 不算离开（返回时页面原样恢复）
     if (!sid || !pid) return;
-    var body = JSON.stringify({ sid: sid, ut: ut, pid: pid });
+    var body = JSON.stringify({ sid: sid, ut: ut, pid: pid, reason: 'leave' });
     try {
       if (navigator.sendBeacon && navigator.sendBeacon('/api/leave', body)) return;
     } catch (err) { /* 走下面的兜底 */ }
