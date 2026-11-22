@@ -21,7 +21,10 @@ const FILES = [
   'test/archive.test.mjs',
   'test/archive-failure.test.mjs',
   'test/multi-instance.test.mjs',
-  'test/pick.test.mjs'
+  'test/pick.test.mjs',
+  'test/prize.test.mjs',
+  'test/sse-reconnect.test.mjs',
+  'test/identity.test.mjs'
 ];
 
 let url = process.env.TEST_DATABASE_URL || '';

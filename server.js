@@ -183,8 +183,9 @@ const sseClients = new Map();
 /** 向单个 SSE 连接发送一条事件。返回是否写入成功（连接已关闭时返回 false）。 */
 function sseSend(res, event, data, id) {
   try {
-    // state 事件以场次版本号为 id：EventSource 重连时会经 Last-Event-ID 头带回，
-    // 服务端可据此判断客户端是否错过变更（本实现广播即全量快照，故天然对齐）
+    // state 事件以场次版本号为 id：EventSource 重连时会经 Last-Event-ID 头带回。
+    // 服务端不解析该头 —— 广播本来就是全量快照，重连首帧必定落在当前版本，
+    // 「客户端错过多少」不需要判断，也无从增量补发
     if (event === 'state' && id != null) {
       res.write('id: ' + id + '\n');
     }

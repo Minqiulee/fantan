@@ -157,6 +157,72 @@ export function makeClient(base) {
   };
 }
 
+/* ---------- SSE ---------- */
+
+/**
+ * 极简 SSE 客户端：按帧解析 event / id / data，支持等待条件成立。
+ *  - headers 用于模拟 EventSource 自动重连：浏览器会把上次的 id 放进 Last-Event-ID
+ *  - 每条事件的 id 就是该帧的 `id:` 行；没有该行时为 null（未推进断点）
+ *  - retry：服务端下发的重连间隔（毫秒），没下发时为 null
+ */
+export function openSse(url, { headers = {} } = {}) {
+  const events = [];
+  const ctrl = new AbortController();
+  let retry = null;
+
+  const ready = (async () => {
+    const res = await fetch(url, { headers, signal: ctrl.signal });
+    if (!res.ok) throw new Error('SSE 连接失败：' + res.status);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const chunk = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const lines = chunk.split('\n');
+            const ev = lines.find((l) => l.startsWith('event: '));
+            const data = lines.find((l) => l.startsWith('data: '));
+            const id = lines.find((l) => l.startsWith('id: '));
+            const rt = lines.find((l) => l.startsWith('retry: '));
+            if (rt) retry = Number(rt.slice(7));
+            if (!ev) continue; // retry / 心跳注释不是事件
+            events.push({
+              event: ev.slice(7),
+              id: id ? id.slice(4) : null,
+              data: data ? JSON.parse(data.slice(6)) : null
+            });
+          }
+        }
+      } catch {
+        /* abort 或断连，正常结束 */
+      }
+    })();
+    return res;
+  })();
+
+  return {
+    events,
+    ready,
+    get retry() { return retry; },
+    close: () => ctrl.abort(),
+    async waitFor(pred, timeoutMs = 4000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (events.some(pred)) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return false;
+    }
+  };
+}
+
 /* ---------- 领域动作：与前端调用的是同一批接口 ---------- */
 
 /** 用启动时引导创建的管理员账号登录（管理员免场次口令，操作类用例都走它）。 */
