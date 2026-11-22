@@ -150,6 +150,16 @@ let store = null;
 let pubsub = null;
 
 /**
+ * 读缓存条目上限（LRU）。按「单实例并发场次峰值 × 2~3」给，默认值在 store.js 里。
+ * 这是内存闸，不是新鲜度策略：TTL 仍然是 5 秒，两者职责不同。
+ * 不设或给非法值时 store 会回落到默认上限，不会退化成无上限。
+ */
+function cacheMaxEntries() {
+  const raw = Number(process.env.STORE_CACHE_MAX);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+}
+
+/**
  * 场次对象结构（由 db.loadSessionSnapshot 从库里重建，前端与 SSE 负载格式不变）：
  * {
  *   id, name, seq, status: 'open'|'closed', createdAt, closedAt,
@@ -2712,7 +2722,7 @@ async function start() {
     await bootstrapAccounts(); // 保证库里至少有一个管理员
     // 发布通道要先于 store 建好：store 每次提交都会通过它广播给其他实例
     pubsub = createPubSub({ ...listenConfig, instanceId: INSTANCE_ID });
-    store = createStore({ db, pubsub });
+    store = createStore({ db, pubsub, maxEntries: cacheMaxEntries() });
     wireStoreEvents();
 
     // 远端变更：重新读库 → 版本变了才广播给本实例的 SSE 连接

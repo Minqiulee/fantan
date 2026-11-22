@@ -10,6 +10,10 @@
  * 现在：
  *   - **Postgres 是唯一事实来源**。内存里只有 cache（读缓存），随时可以丢弃；
  *     缓存 TTL 兜底（默认 5 秒），所以即使通知全丢，最坏也只是短暂读到旧快照。
+ *   - **缓存有两个上限，各管一件事**：TTL 管「读到的旧不旧」，LRU 容量管「占多少内存」。
+ *     只有 TTL 的话，过期条目不会被删、只是读时回库，场次数长期增长就是内存泄漏。
+ *     已关闭的场次不进缓存（终态，只会被回看），所以缓存规模跟着「进行中的场次」走，
+ *     不跟历史总量走。
  *   - **所有写都必须走 mutate()**：读最新快照 → 交给 mutator 修改 → 带版本号提交。
  *     版本号 CAS 失败即说明别的实例抢先提交，重新读取重跑 mutator（最多 6 次）。
  *     mutator 必须是无外部副作用的纯函数式修改（只改入参快照、返回结果）。
@@ -24,22 +28,58 @@ const { EventEmitter } = require('events');
 /** 读缓存有效期：通知机制正常时用不到它，纯粹是「通知丢了」的兜底。 */
 const CACHE_TTL_MS = 5000;
 
+/**
+ * 读缓存条目上限（LRU 淘汰）。
+ *
+ * TTL 只决定「一次读要不要回库」，它不删条目——过期条目照样占着内存。
+ * 所以必须另设一道容量闸：超上限就淘汰最久未用的那个。
+ * 取值口径是「单实例上的并发场次数 × 2~3」，不是历史总场次（那等于没有上限）。
+ */
+const MAX_CACHE_ENTRIES = 64;
+
 /** 同一场次的提交冲突重试上限。冲突意味着并发写，重跑 mutator 即可。 */
 const MAX_COMMIT_RETRIES = 6;
 
-function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS } = {}) {
+function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS, maxEntries = MAX_CACHE_ENTRIES } = {}) {
   const emitter = new EventEmitter();
   emitter.setMaxListeners(50);
 
-  /** sid -> { session, at } */
+  /** 上限兜底：传 0 / NaN / 负数一律回到默认值，否则缓存会退化成「一条都不留」。 */
+  const rawLimit = Math.floor(Number(maxEntries));
+  const cacheLimit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : MAX_CACHE_ENTRIES;
+
+  /**
+   * sid -> { session, at }
+   *
+   * LRU 靠 Map 的插入顺序实现：命中时先 delete 再 set，把该条挪到队尾；
+   * 超上限就从队头（最久未用）删。淘汰的代价只是一次额外的读库查询，
+   * 不影响正确性——Postgres 才是事实来源，缓存随时可以丢。
+   */
   const cache = new Map();
   /** sid -> Promise：远端通知的合并去重，避免一次突发把库读穿 */
   const refreshing = new Map();
   /** 刷新期间又有新通知的场次 */
   const pending = new Set();
+  /** 缓存命中统计：只看 cached 一个数没法判断上限给得合不合适 */
+  const metrics = { hits: 0, misses: 0, evictions: 0, closedDrops: 0 };
 
   function put(session) {
+    if (!session || !session.id) return;
+    // 已关闭的场次是终态、只会被回看，留在缓存里等于让历史场次永久占内存。
+    // 用 delete 而不是「跳过」：远端刚把场次关掉时，本地可能还躺着一条 status=open
+    // 的旧快照，必须顺手清掉，否则 TTL 窗口内还会被读到。
+    if (session.status === 'closed') {
+      if (cache.delete(session.id)) metrics.closedDrops += 1;
+      return;
+    }
+    cache.delete(session.id); // 先删后插：无论新增还是刷新，都移到队尾
     cache.set(session.id, { session, at: Date.now() });
+    while (cache.size > cacheLimit) {
+      const oldest = cache.keys().next();
+      if (oldest.done) break;
+      cache.delete(oldest.value);
+      metrics.evictions += 1;
+    }
   }
 
   /**
@@ -49,7 +89,13 @@ function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS
   async function load(sid, { fresh = false } = {}) {
     if (!sid) return null;
     const hit = cache.get(sid);
-    if (!fresh && hit && Date.now() - hit.at < ttlMs) return hit.session;
+    if (!fresh && hit && Date.now() - hit.at < ttlMs) {
+      metrics.hits += 1;
+      cache.delete(sid); // 命中即刷新 LRU 位置：热场次不能被冷场次挤掉
+      cache.set(sid, hit);
+      return hit.session;
+    }
+    if (!fresh) metrics.misses += 1;
     const session = await db.loadSessionSnapshot(sid);
     if (!session) {
       cache.delete(sid);
@@ -59,7 +105,11 @@ function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS
     return session;
   }
 
-  /** 场次摘要列表（每台实例都直接查库：场次数是十位数量级，缓存反而更容易错）。 */
+  /**
+   * 场次摘要列表：每台实例都直查库，不进缓存。
+   * 摘要查询本身是轻量 JOIN，而它天然要求「全量、最新」（列表页、准入判定、上限计数都用它），
+   * 缓存一份反而要自己维护失效，收益为负。
+   */
   async function list() {
     return db.listSessionSummaries();
   }
@@ -238,7 +288,6 @@ function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS
   function forget(sid) {
     cache.delete(sid);
   }
-
   return {
     on: (event, fn) => emitter.on(event, fn),
     load,
@@ -248,8 +297,20 @@ function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS
     applyRemote,
     resync,
     forget,
-    stats: () => ({ cached: cache.size })
+    /**
+     * 缓存运行态。cached 是当前条目数，capacity 是上限：
+     * cached 长期贴着 capacity、evictions 持续上涨，说明上限给小了；
+     * hits/misses 是命中率，判断这个缓存到底还有没有意义。
+     */
+    stats: () => ({
+      cached: cache.size,
+      capacity: cacheLimit,
+      hits: metrics.hits,
+      misses: metrics.misses,
+      evictions: metrics.evictions,
+      closedDrops: metrics.closedDrops
+    })
   };
 }
 
-module.exports = { createStore, CACHE_TTL_MS, MAX_COMMIT_RETRIES };
+module.exports = { createStore, CACHE_TTL_MS, MAX_CACHE_ENTRIES, MAX_COMMIT_RETRIES };

@@ -701,7 +701,7 @@ fly deploy
 
 | 问题 | 机制 | 代码 |
 |---|---|---|
-| 会话丢失 / 各实例状态不一致 | Postgres 是唯一事实来源；进程内只有读缓存（TTL 5s，通知到达即失效） | `store.js`、`db.loadSessionSnapshot` |
+| 会话丢失 / 各实例状态不一致 | Postgres 是唯一事实来源；进程内只有读缓存（TTL 5s 管新鲜度，LRU 容量上限管内存，默认 64 条；已关闭场次不入缓存） | `store.js`、`db.loadSessionSnapshot` |
 | 状态变更不同步 | 每次提交后 `pg_notify` 一条 `{type,sid,version}`；收到通知的实例重新读库、比对版本、广播给本机 SSE 连接 | `pubsub.js`、`store.applyRemote` |
 | 同一资源的并发写被覆盖 | 提交事务先做 `UPDATE session_state SET version = version + 1 WHERE session_id=$1 AND version=$2`；更新不到行即视为冲突，整体回滚、重新读最新快照后重跑业务逻辑（最多 6 次） | `db.commitSnapshot`、`store.mutate` |
 
@@ -717,6 +717,7 @@ fly deploy
 - **不要把 `LISTEN/NOTIFY` 接到事务级连接池**（如 pgbouncer `pool_mode=transaction`）：`LISTEN` 要求连接长期归属同一会话，事务池会在语句之间换连接。用 session 池或直连。
 - **SSE 连接由各实例各自持有**：不需要粘性会话（客户端连任意实例，写入都会广播回来），但容量规划要按「总连接数 / 实例数」算单机连接数。
 - **通知是尽力而为**：消息丢失不会导致状态错误——接收方收到提示后一律回库读；通知全丢时读缓存 TTL（5s）兜底，重连成功后 `store.resync()` 再全量对齐一次。
+- **读缓存有容量上限**：TTL 只让过期条目「读时回库」，并不会删掉它，所以另设 LRU 上限（`STORE_CACHE_MAX`，默认 64 条），超限淘汰最久未用的场次；场次关闭后直接出缓存。容量按「单实例并发场次峰值 × 2~3」给。`store.stats()` 会给出 `cached / capacity / hits / misses / evictions`，用来判断上限是否合适。
 - **滚动发布**：新旧实例可短暂共存（协议只有通道名 + `{type,sid,version}` 三个字段）。换通道名等于换协议，需同时升级所有实例。
 - **健康检查**：任何实例的 `/api/sessions` 都反映集群真实场次列表，可直接用作存活探针。
 
@@ -792,8 +793,9 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 以下是已确认需要做、但当前代码尚未实现的事项：
 
-1. **多实例支持**：遗留项：`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
-2. 按 `locked_at` 做小时分区或冷备导出。
+1. 按 `locked_at` 做小时分区或冷备导出。
+
+读缓存的容量上限已落地（见 9.5「读缓存有容量上限」），不再列为待办。
 
 ---
 

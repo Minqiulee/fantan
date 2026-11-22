@@ -18,6 +18,7 @@ import { Client } from 'pg';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTAINER = 'oddeven-test-pg';
 const FILES = [
+  'test/store-cache.test.mjs',
   'test/member-crypto.test.mjs',
   'test/archive.test.mjs',
   'test/archive-failure.test.mjs',
