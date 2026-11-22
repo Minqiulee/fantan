@@ -7,8 +7,9 @@ Postgresql：
 - 数据层：`db.js`（连接池 + 幂等建表 + 快照读写 + 会话/限频）
 - 会话存储：`store.js`（读缓存 + 乐观锁提交 + 变更事件）、`pubsub.js`（跨实例 LISTEN/NOTIFY）
 - 服务入口：`server.js` 启动时 `initDb()` 建表，`bootstrapSessions()` 自举首场次，`backfillArchives()` 补写未归档轮次；状态本体始终在库里，进程内只有可丢弃的读缓存
-- 连接串：由 secret 拼接 —— `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`
-  （`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）
+- 连接串：优先 `DATABASE_URL`（完整串，托管库如 Supabase pooler 用这个），
+  其次由 `PG_USER` / `PG_PASS` / `PG_HOST` 拼接（`PG_PORT` 默认 `5432`，`PG_DB` 默认 `postgres`）；
+  解析与池参数集中在 `db.js` 的 `resolveConnectionString()` / `getPool()`
 
 ## 数据实体与表结构
 
@@ -67,23 +68,37 @@ DATABASE_URL=postgres://... PORT=3002 INSTANCE_ID=node-c node server.js
 
 ### 1. 准备 Postgres 并写入 secrets
 
-把主机、用户名、密码写进 Fly secrets（端口和库名可选，不设则用 `5432` / `postgres`）：
+数据库连接只走 secrets，**不写进 `fly.toml`**（那个文件进 git）。当前用的是 Supabase
+pooler，一条完整连接串就够：
 
 ```bash
 fly secrets set \
-  PG_HOST=your-db-host \
-  PG_USER=your-db-user \
-  PG_PASS='your-db-password' \
-  PG_PORT=5432 \
-  PG_DB=postgres \
+  DATABASE_URL='postgresql://postgres.siuilxncmpklkpcnpimg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require' \
   --app ft-faithful-darkness-5345
 ```
 
-应用会用这些值拼出连接串：`postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`。
-设置 secret 会触发一次自动重启。
+设置 secret 会触发一次重启，启动日志会打印脱敏后的目标库（`[db] 连接 postgresql://...:***@host:port/db`），
+先核对这里再去点业务功能。
 
-> 如果还在用 `fly postgres attach` 注入的 `DATABASE_URL`，两者同时存在时
-> **以 PG_HOST/PG_USER/PG_PASS 为准**，`DATABASE_URL` 只在三个变量不全时兜底。
+**换库时必须清掉旧的三件套**，否则排障时容易被残留值误导：
+
+```bash
+fly secrets unset PG_HOST PG_USER PG_PASS PG_PORT PG_DB --app ft-faithful-darkness-5345
+```
+
+> 优先级：`DATABASE_URL` > `PG_URL` > `PG_HOST/PG_USER/PG_PASS`（完整串优先）。
+> 只要设了 `DATABASE_URL`，拆开的 `PG_*` 就不再生效。
+
+#### Supabase pooler 的两个坑（代码里已处理）
+
+| 坑 | 处理 |
+| --- | --- |
+| pooler 强制 TLS，连接串不带 `sslmode` 会连不上 | 主机为 `*.supabase.com` 且没写 `sslmode` 时，`db.js` 自动补 `sslmode=require` |
+| **6543 是事务模式，不支持 LISTEN/NOTIFY**，跨实例通知会静默失效 | `pubsub` 长连接自动改走同一主机的会话模式 `5432`（`db.js` 的 `resolveListenConnectionString()`） |
+
+池子默认 `max=5`（事务模式连接被复用，开大只会在 pooler 侧排队），
+可用 `PG_POOL_MAX` 覆盖。跨区访问 `ap-south-1` 延迟约 70–100ms，
+应用区域建议放 `bom`（孟买）而不是现在的 `nrt`（东京）。
 
 ### 2. 部署应用
 
@@ -111,7 +126,7 @@ curl "https://<your-app>/api/archive/summary?token=<staff-token>"
 
 ## 本地开发（可选）
 
-本地不设 `PG_HOST/PG_USER/PG_PASS` 时，回退到 `DATABASE_URL`；两者都不设则连本地默认库：
+本地不设 `DATABASE_URL` 也不设 `PG_HOST/PG_USER/PG_PASS` 时，连本地默认库：
 
 ```bash
 DATABASE_URL=postgres://user:pass@localhost:5432/oddeven node server.js
@@ -129,12 +144,14 @@ docker run -d --name oddeven-pg \
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `PG_HOST` | Postgres 主机（Fly secret） | 无 |
-| `PG_USER` | Postgres 用户名（Fly secret） | 无 |
-| `PG_PASS` | Postgres 密码（Fly secret） | 无 |
-| `PG_PORT` | Postgres 端口（Fly secret，可选） | `5432` |
-| `PG_DB` | 数据库名（Fly secret，可选） | `postgres` |
-| `DATABASE_URL` | 完整连接串，`PG_*` 主机/用户/密码不全时才生效 | 无 |
+| `DATABASE_URL` | 完整连接串（**优先**，托管库用这个） | 无 |
+| `PG_URL` | 同 `DATABASE_URL` 的别名 | 无 |
+| `PG_HOST` | Postgres 主机（拆开写时的兜底） | 无 |
+| `PG_USER` | Postgres 用户名（拆开写时的兜底） | 无 |
+| `PG_PASS` | Postgres 密码（拆开写时的兜底） | 无 |
+| `PG_PORT` | Postgres 端口（拆开写时用） | `5432` |
+| `PG_DB` | 数据库名（拆开写时用） | `postgres` |
+| `PG_POOL_MAX` | 连接池上限 | `5` |
 | `PORT` | 服务端口 | `3000` |
 | `ADMIN_USERNAME` | 首次启动创建的管理员账号 | `admin` |
 | `ADMIN_PASSWORD` | 首次启动创建的管理员密码（**只在库里没有任何管理员时生效**） | `123456` |
@@ -142,9 +159,10 @@ docker run -d --name oddeven-pg \
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
 
-> 连接串拼成 `postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB`；`PG_HOST`、`PG_USER`、`PG_PASS` 三者缺一就整体回退到 `DATABASE_URL`。
-> 用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。
-> 若目标数据库要求 TLS，需要在 `db.js` 的 `Pool` 配置里加 `ssl`，Fly 内网同组织互访不需要。
+> 优先级：`DATABASE_URL` / `PG_URL` > `PG_HOST` + `PG_USER` + `PG_PASS`（三者缺一才回退）。
+> 拆开写时用户名和密码会自动 URL 编码，含 `@`、`/`、`:` 等字符不用手工转义。
+> TLS：连接串写 `?sslmode=require` 即可（Supabase 主机名在 `db.js` 里会自动补上）；
+> 不需要校验证书时用 `sslmode=require` 而不是 `verify-full`。Fly 内网同组织互访可不开 TLS。
 
 ## 说明
 

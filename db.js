@@ -31,17 +31,31 @@
  *   - 跨实例通知不经过数据库表，走 LISTEN/NOTIFY（见 pubsub.js），本层只负责写与读
  *
  * 连接串来源（优先级从高到低）：
- *   1. PG_HOST / PG_USER / PG_PASS —— Fly.io secrets，拼成
+ *   1. DATABASE_URL / PG_URL —— 完整连接串；**完整串优先**，避免残留的 PG_* 旧值
+ *      悄悄盖掉新换的库（托管库如 Supabase 只给一条连接串）
+ *   2. PG_HOST / PG_USER / PG_PASS —— 拆开的三个值，拼成
  *      postgresql://PG_USER:PG_PASS@PG_HOST:PG_PORT/PG_DB
  *      （PG_PORT 默认 5432，PG_DB 默认 postgres）
- *   2. DATABASE_URL / PG_URL —— 完整连接串，本地开发用
  *   3. 本地默认值
+ *
+ * 托管 PgBouncer（Supabase pooler）注意点：
+ *   - pooler 强制 TLS，连接串没写 sslmode 时这里自动补 `sslmode=require`；
+ *   - 事务模式 pooler（端口 6543）不支持 LISTEN/NOTIFY，长连接订阅必须走
+ *     会话模式（同一主机 5432），见 resolveListenConnectionString()；
+ *   - 事务模式下连接是被多客户端复用的，池子不宜开大：默认 max=5，
+ *     用 PG_POOL_MAX 覆盖。
  */
 const { Pool } = require('pg');
 
+const LOCAL_DEFAULT_URL = 'postgres://postgres:postgres@localhost:5432/oddeven';
+
+/** Supabase pooler 事务模式 / 会话模式端口。 */
+const POOLER_TX_PORT = '6543';
+const POOLER_SESSION_PORT = '5432';
+
 let pool = null;
 
-/** 由 Fly.io secrets 拼接连接串；主机/用户/密码缺一不可，否则返回 null 交由上层回退。 */
+/** 由拆开的 PG_* 拼接连接串；主机/用户/密码缺一不可，否则返回 null 交由上层回退。 */
 function buildConnectionString() {
   const { PG_HOST, PG_USER, PG_PASS, PG_PORT, PG_DB } = process.env;
   if (PG_HOST && PG_USER && PG_PASS) {
@@ -53,15 +67,61 @@ function buildConnectionString() {
   return null;
 }
 
-/** 懒加载连接池。配置允许通过独立环境变量覆盖，方便本地/测试。 */
-function getPool() {
-  if (pool) return pool;
-  const connectionString =
-    buildConnectionString() ||
+/** 当前生效的连接串（读写用，已保证托管库带 sslmode）。 */
+function resolveConnectionString() {
+  return ensureSslMode(
     process.env.DATABASE_URL ||
     process.env.PG_URL ||
-    'postgres://postgres:postgres@localhost:5432/oddeven';
-  pool = new Pool({ connectionString });
+    buildConnectionString() ||
+    LOCAL_DEFAULT_URL
+  );
+}
+
+/** 是否托管 pooler 主机（Supabase pooler 形如 aws-1-xxx.pooler.supabase.com）。 */
+function isSupabasePooler(url) {
+  const m = /^postgres(?:ql)?:\/\/[^/]*@([^/:?]+)/i.exec(url || '');
+  return !!m && /\.supabase\.com$/i.test(m[1]);
+}
+
+/**
+ * 托管库必须 TLS。连接串里已经写了 sslmode 就尊重用户的写法，
+ * 否则补 `sslmode=require`（pg 会按 require 处理为「加密但不校验证书」）。
+ */
+function ensureSslMode(url) {
+  if (!isSupabasePooler(url)) return url;
+  if (/[?&]sslmode=/i.test(url)) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'sslmode=require';
+}
+
+/**
+ * LISTEN/NOTIFY 专用的连接串（见 pubsub.js）。
+ * 事务模式 pooler（6543）会把连接随机分给不同客户端，LISTEN 订阅注定失效，
+ * 因此同一主机改走会话模式 5432；非 pooler 主机原样返回。
+ */
+function resolveListenConnectionString() {
+  const url = resolveConnectionString();
+  if (!isSupabasePooler(url)) return url;
+  return url.replace(':' + POOLER_TX_PORT + '/', ':' + POOLER_SESSION_PORT + '/');
+}
+
+/** 日志用：抹掉连接串里的密码。 */
+function maskUrl(url) {
+  return String(url).replace(/^([a-z]+:\/\/[^:/@]+:)[^@]*@/i, '$1***@');
+}
+
+/** 懒加载连接池。池参数可用 PG_POOL_MAX 覆盖，方便本地/测试。 */
+function getPool() {
+  if (pool) return pool;
+  const connectionString = resolveConnectionString();
+  const max = Number(process.env.PG_POOL_MAX || 5);
+  pool = new Pool({
+    connectionString,
+    max: Number.isFinite(max) && max > 0 ? max : 5,
+    idleTimeoutMillis: 10000,       // pooler 会主动踢掉空闲连接，别攥太久
+    connectionTimeoutMillis: 10000, // 跨区访问（如 ap-south-1）握手偏慢
+    keepAlive: true
+  });
+  console.log('[db] 连接 ' + maskUrl(connectionString) + '（池上限 ' + pool.options.max + '）');
   pool.on('error', (err) => {
     // 空闲连接出错不应导致进程崩溃，仅记录
     console.error('[db] 连接池空闲连接错误:', err.message);
@@ -1218,6 +1278,11 @@ module.exports = {
   initDb,
   getPool,
   lineOfNumber,
+
+  // 连接串解析（pubsub 需要一条独立的 LISTEN 长连接）
+  resolveConnectionString,
+  resolveListenConnectionString,
+  maskUrl,
 
   // 运行态（快照 + 乐观锁）
   loadSessionSnapshot,

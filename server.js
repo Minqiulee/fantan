@@ -25,9 +25,8 @@
  *   - identities 在场次内跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
  *
  * 持久化：状态存 Postgres（见 db.js），应用重启后数据仍在。
- * 需要 PG_HOST / PG_USER / PG_PASS 三个 secret 提供连接信息（见 db.js），
- * 端口和库名可用 PG_PORT / PG_DB 覆盖（默认 5432 / postgres），
- * 或直接用 DATABASE_URL 给出完整连接串。
+ * 连接串优先取 DATABASE_URL（完整串，托管库如 Supabase 用这个），
+ * 其次才用 PG_HOST / PG_USER / PG_PASS 三件套（端口和库名可用 PG_PORT / PG_DB 覆盖）。
  *
  * 运行：node server.js （默认 3000 端口，可用 PORT 环境变量覆盖）
  */
@@ -2162,14 +2161,9 @@ async function start() {
   initPlayerPassword();
   initStaffSessionPassword();
 
-  // 连接串与 db.js 保持一致：PUB/SUB 需要自己建一条长连接
-  const connectionString =
-    process.env.DATABASE_URL ||
-    process.env.PG_URL ||
-    (process.env.PG_HOST && process.env.PG_USER && process.env.PG_PASS
-      ? `postgresql://${encodeURIComponent(process.env.PG_USER)}:${encodeURIComponent(process.env.PG_PASS)}`
-        + `@${process.env.PG_HOST}:${process.env.PG_PORT || 5432}/${process.env.PG_DB || 'postgres'}`
-      : 'postgres://postgres:postgres@localhost:5432/oddeven');
+  // 连接串统一由 db.js 解析：PUB/SUB 需要自己建一条长连接，且
+  // 托管 pooler（Supabase 6543 事务模式）不支持 LISTEN，必须改走会话模式端口
+  const connectionString = db.resolveListenConnectionString();
 
   try {
     await db.initDb();        // 幂等建表（只创建缺失的表，不改既有数据）
@@ -2203,7 +2197,8 @@ async function start() {
     await backfillArchives(); // 已锁定但未归档的轮次补写（幂等）
   } catch (e) {
     console.error('[db] 数据库初始化失败，应用无法启动:', e.message);
-    console.error('  请确认 PG_HOST / PG_USER / PG_PASS 已配置（Fly.io: fly secrets set PG_HOST=... PG_USER=... PG_PASS=...），可选 PG_PORT / PG_DB，或设置 DATABASE_URL');
+    console.error('  请确认 DATABASE_URL 已配置（Fly.io: fly secrets set DATABASE_URL=postgresql://user:pass@host:port/db）；'
+      + '也支持 PG_HOST / PG_USER / PG_PASS 三件套，可选 PG_PORT / PG_DB');
     process.exit(1);
   }
 

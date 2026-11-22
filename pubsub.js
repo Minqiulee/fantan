@@ -14,6 +14,10 @@
  * 连接模型：每个实例一条专用连接，既 LISTEN 也发 pg_notify。
  * 不复用连接池：LISTEN 要求连接长期存活，混进池里会被其他查询借走。
  *
+ * 托管 PgBouncer 注意：LISTEN 是会话级状态，事务模式 pooler（Supabase 端口 6543）
+ * 里连接会被随机复用，订阅必然失效。因此传进来的 connectionString 必须是
+ * 会话模式端口（db.js 的 resolveListenConnectionString() 负责把 6543 换成 5432）。
+ *
  * 断线处理：指数退避重连（1s → 30s 封顶），重连成功后 emit 'ready'，
  * 由 store 做一次全量重新同步（补上断线期间错过的变更）。
  */
