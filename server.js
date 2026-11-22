@@ -2640,6 +2640,73 @@ function serveStatic(req, res, url) {
   });
 }
 
+/* ---------------- 健康检查 ---------------- */
+
+/**
+ * 两个探针分工不同，不要混成一个：
+ *
+ *   /healthz  存活（liveness）：只证明「进程还活着、能接 HTTP」，**不碰数据库**。
+ *             数据库挂了不该被误判成「进程坏了」而去重启——重启治不了库。
+ *             用途：编排器判断要不要杀进程、外部监控/告警。
+ *   /readyz   就绪（readiness）：证明「现在能对外服务」——数据库真的能查询才 200，
+ *             否则 503。用途：决定这个实例要不要留在负载均衡后面。
+ *
+ * Fly.io 只会因为 checks 失败把实例摘出流量，**不会重启实例**；
+ * 且任一条 check 失败即视为不健康，所以真正参与流量决策的是 /readyz，
+ * /healthz 用于监控与人工判断。
+ */
+const HEALTH_STARTED_AT = Date.now();
+const READY_DB_TIMEOUT_MS = 2000;
+
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new Error(message);
+      err.code = 'timeout';
+      reject(err);
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+async function handleHealth(req, res, url) {
+  if (url.pathname === '/healthz') {
+    // 故意不查库：存活探针一旦依赖下游，下游抖动会变成「实例批量重启」
+    return json(res, 200, {
+      ok: true,
+      status: 'ok',
+      uptimeSec: Math.round((Date.now() - HEALTH_STARTED_AT) / 1000),
+      instance: INSTANCE_ID,
+      time: new Date().toISOString()
+    });
+  }
+
+  // /readyz：一次最轻的往返，确认连接池能拿到可用连接
+  const t0 = Date.now();
+  try {
+    await withTimeout(db.getPool().query('SELECT 1'), READY_DB_TIMEOUT_MS, '数据库就绪检查超时');
+    return json(res, 200, {
+      ok: true,
+      status: 'ready',
+      db: { ok: true, latencyMs: Date.now() - t0 },
+      instance: INSTANCE_ID,
+      time: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error('[health] 就绪检查失败:', e && e.message);
+    return json(res, 503, {
+      ok: false,
+      status: 'not_ready',
+      db: { ok: false, latencyMs: Date.now() - t0, error: (e && (e.code || e.name)) || 'db_error' },
+      instance: INSTANCE_ID,
+      time: new Date().toISOString()
+    });
+  }
+}
+
 /* ---------------- 启动 ---------------- */
 
 /**
@@ -2757,7 +2824,13 @@ async function start() {
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname === '/api/stream') {
+    if (url.pathname === '/healthz' || url.pathname === '/readyz') {
+      handleHealth(req, res, url).catch((e) => {
+        console.error('[health] 探针异常:', e && e.message);
+        if (!res.headersSent) json(res, 503, { ok: false, status: 'unknown' });
+        else res.end();
+      });
+    } else if (url.pathname === '/api/stream') {
       handleStream(req, res, url).catch(() => {
         if (!res.headersSent) json(res, 500, { ok: false, error: '服务器内部错误' });
         else res.end();

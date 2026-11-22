@@ -7,6 +7,7 @@ app = 'ft-faithful-darkness-5345'
 primary_region = 'nrt'
 
 [build]
+
 [http_service]
   internal_port = 3000
   force_https = true
@@ -14,6 +15,25 @@ primary_region = 'nrt'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+
+  # 就绪探针：真正决定这台机器要不要接流量的那条。
+  # /readyz 在数据库不可查询时返回 503，Fly 随即把实例摘出负载均衡，
+  # 等 /readyz 恢复 200 再放回去——不重启进程（重启治不了数据库）。
+  [[http_service.checks]]
+    grace_period = '20s'   # 冷启动留给 initDb（建表）+ 场次自举 + 跨区连库握手，别在初始化期间就判死
+    interval = '15s'
+    timeout = '3s'
+    method = 'GET'
+    path = '/readyz'
+
+  # 存活探针：不查数据库，只证明进程还能接 HTTP。
+  # 间隔放长、与就绪探针错开，避免两套探测同时打库（auto_stop 场景下机器本来就不多）。
+  [[http_service.checks]]
+    grace_period = '10s'
+    interval = '30s'
+    timeout = '3s'
+    method = 'GET'
+    path = '/healthz'
 
 [[vm]]
   memory = '256mb'
