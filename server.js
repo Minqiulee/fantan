@@ -24,6 +24,16 @@
  *   - players 按 ID 存储本轮登记与预测（每个场次各一份）
  *   - identities 在场次内跨轮次记住每个 ID 的完整竞猜轮次（判定老玩家）
  *
+ * 规则模型（奖品 + 特殊数字的版本化）：
+ *   - 「奖品四档 + 命中特殊数字全员加奖」合起来是一整套规则，按整体快照存版本
+ *     （表 rule_version，append-only，一次保存 = 一版，内容没变不新增版本）
+ *   - **场次在创建时锁定版本**（game_session.rule_version），运行中只读自己那一版：
+ *     管理员改规则对正在进行的场次零影响，只有之后新建的场次才用新规则
+ *   - 归档表记下每轮用的版本（round_archive.rule_version → 对账 CSV「规则版本」列），
+ *     事后能回答「这一轮按哪一版规则发的奖」
+ *   - 规则**不进进程内存**：读场次快照时一条 SQL 连规则一起取，管理端读配置直接查库。
+ *     没有缓存就没有 TTL，也就不存在「通知丢了要等一会儿才对得上」的窗口
+ *
  * 持久化：状态存 Postgres（见 db.js），应用重启后数据仍在。
  * 连接串只认 DATABASE_URL（托管库如 Supabase 就给这一条），未设则用本地默认库。
  *
@@ -141,6 +151,7 @@ let pubsub = null;
  * {
  *   id, name, seq, status: 'open'|'closed', createdAt, closedAt,
  *   round, number, lockedAt,           // 场次内轮次状态（number 非 null 即已锁定）
+ *   ruleVersion,                       // 本场次锁定的规则版本（奖品 + 特殊数字，开场即定死）
  *   players: { [pid]: {...} },         // 本场次本轮的玩家
  *   identities: { [pid]: {...} },      // 本场次跨轮身份档案
  *   version                            // 状态版本号（乐观锁凭据 + SSE 事件 id）
@@ -177,6 +188,7 @@ function staffSessionList(list) {
     round: s.round,
     locked: s.number != null,
     players: s.playerCount,
+    ruleVersion: s.ruleVersion,
     createdAt: s.createdAt,
     closedAt: s.closedAt
   }));
@@ -448,6 +460,9 @@ function buildStatePayload(session, pid, view) {
   const bigscreen = view === 'bigscreen';
   const me = pid ? session.players[pid] : null;
   const myDraft = me ? draftOf(session.id, me.id) : null;
+  // 规则按本场次**锁定的版本**取，不取「现在最新的一版」：
+  // 管理员改了奖品/特殊数字，正在进行的场次看到的仍然是它开场时那一版
+  const rule = ruleOf(session);
   return {
     ok: true,
     ...(bigscreen ? { view: 'bigscreen' } : {}),
@@ -457,12 +472,13 @@ function buildStatePayload(session, pid, view) {
     round: session.round,
     locked: session.number != null,
     number: session.number != null ? session.number : undefined,
-    prizes: prizeSnapshot(),
-    // 额外奖励：触发结果不落库，由「本轮开奖数字是否命中特殊数字」现场重算
+    ruleVersion: rule.version,
+    prizes: rule.prizes,
+    // 额外奖励：触发结果不落库，由「本轮开奖数字是否命中该版本的特殊数字」现场重算
     // （锁定后开奖数字不再变，同一轮重算结果恒定；重置后 number=null 自然不触发）
     bonus: {
-      ...bonusSnapshot(),
-      triggered: session.number != null && bonusHit(session.number)
+      ...rule.bonus,
+      triggered: ruleBonusHit(rule, session.number)
     },
     counts: countChoices(session),
     players: bigscreen ? bigscreenPlayers(session) : publicPlayers(session),
@@ -719,26 +735,29 @@ function verifyBind(token) {
   return { sid, exp };
 }
 
-/* ---------------- 奖品配置（按结果分四档） ----------------
+/* ---------------- 规则版本（奖品四档 + 特殊数字） ----------------
  * 单双与数字是两次独立猜测，四种组合各成一档：
  *   both    数字和单双都中
  *   number  只中数字（数字对、单双错）
  *   oddeven 只中单双（单双对、数字错）
  *   miss    两项都没中
- * 配置是**全局**的（门店口径，不按场次/轮次区分），存 app_config：
- *   - 玩家端从 /api/state 的 prizes 字段拿，配置一改立刻随 SSE 推下去
+ *
+ * 四档文案 + 「命中特殊数字 → 全员加奖」合起来是一整套规则，按**整体快照**存版本
+ * （表 rule_version，append-only）：
+ *   - 一次保存 = 一版；内容没变不新增版本（反复点保存不该刷出一堆空版本）
+ *   - 场次在**创建时**锁定版本（game_session.rule_version），运行中只读自己那一版
+ *   - 所以更新规则对正在进行的场次零影响，只有之后新建的场次用新规则
+ *   - 对账归档记录每轮用的是哪一版（round_archive.rule_version → CSV「规则版本」列）
  *   - 每档只有 title / desc 两个字段，空串表示「后台没配」，玩家端回落到内置文案
  *   - 长度在上限处截断而不是拒绝：奖品文案不是安全边界，没必要让管理员保存失败
+ *
+ * 规则**不进进程内存**：场次快照那条 SQL 把 rule_version 一起 JOIN 出来（见 db.SNAPSHOT_SQL），
+ * 管理端的配置读取也每次直查库。因此不存在缓存、也不存在 TTL —— 任何一个实例都不会读到
+ * 别的实例改过之后才「过一会儿」才对得上的旧规则。
  */
 const PRIZE_TIERS = ['both', 'number', 'oddeven', 'miss'];
 const PRIZE_TITLE_MAX = 32;
 const PRIZE_DESC_MAX = 120;
-/** 缓存兜底：跨实例通知丢了也不会一直显示旧奖品，最多旧 15 秒。 */
-const PRIZE_TTL_MS = 15000;
-
-let prizeConfig = emptyPrizeConfig();
-let prizeLoadedAt = 0;
-let prizeRefreshing = null;
 
 function emptyPrizeConfig() {
   const cfg = {};
@@ -759,70 +778,17 @@ function normalizePrizeConfig(input) {
   return out;
 }
 
-/** 从库里重新读一份奖品配置。并发调用共用同一个请求，避免热点路径把库读穿。 */
-function refreshPrizeConfig() {
-  if (prizeRefreshing) return prizeRefreshing;
-  prizeRefreshing = (async () => {
-    try {
-      const raw = await db.getConfig('prize_config');
-      let parsed = null;
-      if (raw) {
-        try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
-      }
-      prizeConfig = normalizePrizeConfig(parsed);
-    } catch (e) {
-      // 读失败保留上一份：奖品只是展示信息，不值得让整个状态负载失败
-      console.error('[prize] 读取奖品配置失败:', e.message);
-    } finally {
-      prizeLoadedAt = Date.now();
-      prizeRefreshing = null;
-    }
-  })();
-  return prizeRefreshing;
-}
-
-/** 同步取当前配置（过期就在后台补一次，本次先返回手里的）。 */
-function prizeSnapshot() {
-  if (Date.now() - prizeLoadedAt > PRIZE_TTL_MS) {
-    refreshPrizeConfig().catch(() => { /* 已在内部记录 */ });
-  }
-  return prizeConfig;
-}
-
-/** 保存配置：先落库，成功后才换内存里的那份，保证「保存成功」= 玩家看到的就是它。 */
-async function savePrizeConfig(input) {
-  const next = normalizePrizeConfig(input);
-  await db.setConfig('prize_config', JSON.stringify(next));
-  prizeConfig = next;
-  prizeLoadedAt = Date.now();
-  return next;
-}
-
-/** 把新奖品推给本实例所有场次的在线页面（SSE 全量快照里带 prizes）。 */
-async function broadcastPrizes() {
-  const list = await store.list();
-  for (const sum of list) {
-    const s = await store.load(sum.id);
-    if (s) broadcastSessionState(s);
-  }
-}
-
-/* ---------------- 额外奖品（命中特殊数字 → 全员加奖） ----------------
- * 与四档奖品完全独立的一套配置：开奖数字等于「特殊数字」时，除原有中奖判定外，
- * 所有参与者（含未猜中者）额外获得一份指定奖品。
- * 存 app_config.bonus_prize：{ number: 0-9|null, title, desc }。
+/**
+ * 全员额外奖励（命中特殊数字 → 全员加奖）：
+ * 开奖数字等于「特殊数字」时，除原有中奖判定外，所有参与者（含未猜中者）额外获得一份指定奖品。
+ * 它是规则的一部分（与四档文案同版本保存），字段为 { number: 0-9|null, title, desc }。
  *   - number 为 null 表示未启用（不触发）。**0 是合法特殊数字，不能再用 0 表示「不启用」**
- *   - 触发**不落库**：/api/state 里按「本轮开奖数字是否命中特殊数字」现场重算，
+ *   - 触发**不落库**：/api/state 里按「本轮开奖数字是否命中该场次锁定版本的特殊数字」现场重算，
  *     锁定后开奖数字不再变 → 同一轮重算结果恒定；一轮只锁定一次，天然只触发一次；
  *     新一轮 reset 把 number 置 null，自然不再触发
- *   - 特殊数字事后改动只影响「之后新开的轮」，不影响已锁定轮（已锁定的开奖数字不变，
- *     但若管理员在锁定后改了特殊数字，已锁定轮的 triggered 会跟着变 —— 这是纯内存展示态，
- *     无历史留痕诉求，属预期行为）
+ *   - 改特殊数字只影响之后新建的场次：老场次读的是它自己锁定的那一版，
+ *     所以「锁定后再改配置把已开奖轮翻成触发」这种情况不再出现
  */
-let bonusConfig = emptyBonusConfig();
-let bonusLoadedAt = 0;
-let bonusRefreshing = null;
-
 function emptyBonusConfig() {
   return { number: null, title: '', desc: '' };
 }
@@ -839,48 +805,97 @@ function normalizeBonusConfig(input) {
   return out;
 }
 
-/** 从库里重新读一份额外奖品配置。并发调用共用同一个请求。 */
-function refreshBonusConfig() {
-  if (bonusRefreshing) return bonusRefreshing;
-  bonusRefreshing = (async () => {
+/** 空规则：只在「库里连一版都没有」的极端情况下兜底（启动引导保证不会发生）。 */
+function emptyRule() {
+  return { version: 0, prizes: emptyPrizeConfig(), bonus: emptyBonusConfig() };
+}
+
+/**
+ * 取某个场次该用的规则 —— **按场次锁定的版本**，不是「现在最新的版本」。
+ * 规则来自 `session.rule`（读场次快照那条 SQL 一起查出来的），因此这里不发查询、也不读缓存。
+ */
+function ruleOf(session) {
+  const r = session && session.rule;
+  if (!r) return emptyRule();
+  return {
+    version: Number(r.version),
+    prizes: normalizePrizeConfig(r.prizes),
+    bonus: normalizeBonusConfig(r.bonus)
+  };
+}
+
+/** 库里最新一版（管理端配置接口用）。每次直查，不缓存 —— 否则另一台实例刚存的版本要「等一会儿」才看得到。 */
+async function loadLatestRule() {
+  const row = await db.getLatestRule();
+  if (!row) return emptyRule();
+  return {
+    version: Number(row.version),
+    prizes: normalizePrizeConfig(row.prizes),
+    bonus: normalizeBonusConfig(row.bonus)
+  };
+}
+
+/**
+ * 保存一版新规则。patch 只带要改的那一块（`{prizes}` 或 `{bonus}`）：
+ * 另一块由数据库在同一个事务里沿用最新一版 —— 不要拿调用方手里那份规则去拼，
+ * 多实例下它可能是旧的，会把别的实例刚改的那块悄悄回滚。
+ *
+ * 内容与最新版相同 → 库里不新增版本（created:false），返回值仍是那一版。
+ */
+async function saveRule(patch, { source, actor }) {
+  const payload = { source, createdBy: actor || '' };
+  if (patch.prizes !== undefined) payload.prizes = normalizePrizeConfig(patch.prizes);
+  if (patch.bonus !== undefined) payload.bonus = normalizeBonusConfig(patch.bonus);
+  const result = await db.saveRuleVersion(payload);
+  if (!result.ok) throw new Error(result.error || 'rule_save_failed');
+
+  // 不回填任何进程内状态：下一次读场次快照 / 读配置时自然拿到新版本
+  const rule = {
+    version: Number(result.rule.version),
+    prizes: normalizePrizeConfig(result.rule.prizes),
+    bonus: normalizeBonusConfig(result.rule.bonus)
+  };
+  return { rule, created: !!result.created };
+}
+
+/** 本轮开奖数字命中特殊数字吗（按该场次锁定的那一版规则判定，未启用返回 false）。 */
+function ruleBonusHit(rule, number) {
+  return number != null && rule.bonus.number != null && Number(number) === rule.bonus.number;
+}
+
+/**
+ * 启动时保证「至少有一版规则」，并把版本化之前建的场次挂到最早一版上。
+ *
+ * 升级场景：老库把奖品配置存在 app_config（每次保存就地覆盖，没有历史），
+ * 这里把最后一份落成 v1 —— 老场次当时用的就是这份配置，所以统一挂 min(version)
+ * 是对历史最接近的还原。空库则落一版空配置，保证新建场次一定锁得到版本。
+ */
+async function bootstrapRules() {
+  const existing = await db.listRuleVersions();
+  if (!existing.length) {
+    let oldPrizes = null;
+    let oldBonus = null;
     try {
-      const raw = await db.getConfig('bonus_prize');
-      let parsed = null;
-      if (raw) {
-        try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
-      }
-      bonusConfig = normalizeBonusConfig(parsed);
+      const rawPrizes = await db.getConfig('prize_config');
+      const rawBonus = await db.getConfig('bonus_prize');
+      if (rawPrizes) { try { oldPrizes = JSON.parse(rawPrizes); } catch (e) { oldPrizes = null; } }
+      if (rawBonus) { try { oldBonus = JSON.parse(rawBonus); } catch (e) { oldBonus = null; } }
     } catch (e) {
-      console.error('[bonus] 读取额外奖品配置失败:', e.message);
-    } finally {
-      bonusLoadedAt = Date.now();
-      bonusRefreshing = null;
+      console.error('[rule] 读取旧奖品配置失败（按空配置初始化）:', e.message);
     }
-  })();
-  return bonusRefreshing;
-}
-
-/** 同步取当前配置（过期后台补一次）。 */
-function bonusSnapshot() {
-  if (Date.now() - bonusLoadedAt > PRIZE_TTL_MS) {
-    refreshBonusConfig().catch(() => { /* 已在内部记录 */ });
+    const seeded = await db.saveRuleVersion({
+      prizes: normalizePrizeConfig(oldPrizes),
+      bonus: normalizeBonusConfig(oldBonus),
+      source: 'seed',
+      createdBy: 'bootstrap'
+    });
+    if (!seeded.ok) throw new Error(seeded.error || 'rule_bootstrap_failed');
+    console.log('[rule] 初始化规则 v' + seeded.rule.version
+      + '（来源：' + (oldPrizes || oldBonus ? 'app_config 旧配置' : '空配置') + '）');
   }
-  return bonusConfig;
-}
 
-/** 保存配置：先落库，成功后才换内存。 */
-async function saveBonusConfig(input) {
-  const next = normalizeBonusConfig(input);
-  await db.setConfig('bonus_prize', JSON.stringify(next));
-  bonusConfig = next;
-  bonusLoadedAt = Date.now();
-  return next;
-}
-
-/** 开奖数字命中特殊数字吗（配置未启用返回 false）。 */
-function bonusHit(number) {
-  const cfg = bonusSnapshot();
-  return cfg.number != null && Number(number) === cfg.number;
+  const pinned = await db.pinSessionsWithoutRule();
+  if (pinned) console.log('[rule] 已为 ' + pinned + ' 个历史场次补上规则版本');
 }
 
 /** 来源 IP：优先取反向代理头，退化到 socket 地址。 */
@@ -1184,15 +1199,17 @@ function buildCsv(header, rows) {
 /* 列头常量：**顺序即契约**，下游脚本按位置/列名解析，改动等于破坏对账。
  * 需要新字段时只追加到末尾，不要插在中间、不要改名。
  * 两套列头都不含积分/总分字段——系统只记录每次猜测与实际开奖是否匹配。
- * 末列「锁定人」是该轮开奖的操作账号（与操作日志同源，空 = 无记录）。 */
+ * 「锁定人」是该轮开奖的操作账号（与操作日志同源，空 = 无记录）。
+ * 末列「规则版本」是该轮所用规则（奖品四档 + 特殊数字）的版本号：
+ *   取自场次开场时锁定的那一版，空 = 版本化之前的历史行（当时没有版本概念）。 */
 const CSV_DETAIL_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
   '锁定时间', '归档时间', '会员号', '预测单双', '预测数字', '是否提交',
-  '单双命中', '数字命中', '登记时间', '提交时间', '锁定人'
+  '单双命中', '数字命中', '登记时间', '提交时间', '锁定人', '规则版本'
 ];
 const CSV_ROUND_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
-  '锁定时间', '归档时间', '扫码人数', '提交人数', '锁定人'
+  '锁定时间', '归档时间', '扫码人数', '提交人数', '锁定人', '规则版本'
 ];
 const CSV_AUDIT_HEADER = [
   '时间', '账号', '角色', '操作', '场次ID', '对象', '明细', 'IP'
@@ -1387,7 +1404,10 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       ok: true,
       sid: session.id,
-      session: { id: session.id, name: session.name, round: session.round, status: session.status },
+      session: {
+        id: session.id, name: session.name, round: session.round, status: session.status,
+        ruleVersion: session.ruleVersion
+      },
       sessions: staffSessionList(await store.list())
     });
   }
@@ -1841,10 +1861,14 @@ async function handleApi(req, res, url) {
 
     // 归档在提交事务里用 SAVEPOINT 隔离（见 db.commitSnapshot）：
     // 归档失败时锁定已生效，如实告知「已锁定但未归档」，可稍后由 /api/archive-sync 补齐。
+    // 本轮是否命中特殊数字，按**该场次锁定的规则版本**判定（与玩家端展示同一口径）。
+    const lockedRule = ruleOf(out.session);
+    const bonusTriggered = ruleBonusHit(lockedRule, number);
     await audit(req, staff, 'round_lock', {
       sid: sidConfirm, target: String(number),
       detail: {
         number, round: out.session ? out.session.round : null, archived: !!out.archived,
+        ruleVersion: lockedRule.version, bonusTriggered,
         voidedDrafts: voided.length
       }
     });
@@ -1852,13 +1876,13 @@ async function handleApi(req, res, url) {
       console.error('[archive] 归档写入失败 sid=' + sidConfirm + ': ' + (out.archiveError || 'unknown'));
       return json(res, 200, {
         ok: true, number, sid: sidConfirm, archived: false, warning: 'archive_write_failed',
-        bonusTriggered: bonusHit(number),
+        bonusTriggered,
         counts: out.session ? countChoices(out.session) : undefined
       });
     }
     return json(res, 200, {
       ok: true, number, sid: sidConfirm, archived: true,
-      bonusTriggered: bonusHit(number),
+      bonusTriggered,
       counts: out.session ? countChoices(out.session) : undefined
     });
   }
@@ -1966,7 +1990,8 @@ async function handleApi(req, res, url) {
         Number(r.number), r.odd_even,
         fmtArchiveTime(r.locked_at), fmtArchiveTime(r.archived_at),
         Number(r.player_count), Number(r.submitted_count),
-        r.locked_by || ''
+        r.locked_by || '',
+        r.rule_version == null ? '' : Number(r.rule_version)
       ]);
     } else {
       header = CSV_DETAIL_HEADER;
@@ -1983,7 +2008,8 @@ async function handleApi(req, res, url) {
         r.submitted ? (r.number_hit ? '命中' : '未中') : '未提交',
         fmtArchiveTime(r.registered_at),
         fmtArchiveTime(r.submitted_at),
-        r.locked_by || ''
+        r.locked_by || '',
+        r.rule_version == null ? '' : Number(r.rule_version)
       ]);
     }
 
@@ -2011,19 +2037,26 @@ async function handleApi(req, res, url) {
    * 密码只以 scrypt 派生值落库，任何接口都不会返回它。
    * 两条硬规则：不能停用自己、不能把最后一个可用管理员降级或停用（否则谁都进不去）。 */
 
+  /* ---------------- 规则配置（仅管理员） ----------------
+   * 奖品四档 + 特殊数字是一整套规则，按版本保存：保存只产生「新的一版」，
+   * **对正在进行的场次没有任何影响**，只有之后新建的场次才锁定它。
+   * 两个接口分开只是为了让管理界面按区块编辑，落库永远是一整套快照：
+   * 改四档时特殊数字沿用当前最新版（反之亦然），不会把另一块清空。 */
+
   if (req.method === 'GET' && url.pathname === '/api/prize-config') {
     const admin = await requireAdmin(url.searchParams.get('token') || '');
     if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
-    await refreshPrizeConfig();
+    // 管理端看的是「最新一版」= 之后新建场次会用到的规则，每次直查库（多实例下不会读到旧的那版）
+    const latest = await loadLatestRule();
     return json(res, 200, {
       ok: true,
-      prizes: prizeConfig,
+      prizes: latest.prizes,
+      ruleVersion: latest.version,
       limits: { title: PRIZE_TITLE_MAX, desc: PRIZE_DESC_MAX }
     });
   }
 
-  /* 奖品配置保存：只认 admin；写库成功后才换内存，再推给所有在线页面。
-   * 跨实例靠 PUB/SUB 的 prize 通知：其他实例收到后回库重读并各自广播。 */
+  /* 保存四档奖品文案 → 新规则版本。跨实例靠 PUB/SUB 的 rule 通知让各实例重拉版本表。 */
   if (req.method === 'POST' && url.pathname === '/api/prize-config') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -2032,39 +2065,44 @@ async function handleApi(req, res, url) {
 
     let saved;
     try {
-      saved = await savePrizeConfig(body.prizes);
+      saved = await saveRule({ prizes: body.prizes }, { source: 'prize', actor: admin.username });
     } catch (e) {
-      console.error('[prize] 保存失败:', e.message);
+      console.error('[rule] 保存奖品配置失败:', e.message);
       return json(res, 500, { ok: false, code: 'prize_save_failed' });
     }
     await audit(req, admin, 'prize_config', {
       detail: {
+        ruleVersion: saved.rule.version,
+        created: saved.created,
         tiers: PRIZE_TIERS.map((tier) => ({
           tier,
-          title: saved[tier].title,
-          desc: saved[tier].desc
+          title: saved.rule.prizes[tier].title,
+          desc: saved.rule.prizes[tier].desc
         }))
       }
     });
-    broadcastPrizes().catch((e) => console.error('[prize] 广播失败:', e.message));
-    if (pubsub) pubsub.publish({ type: 'prize' }).catch(() => { /* 尽力而为 */ });
-    return json(res, 200, { ok: true, prizes: saved });
+    // 不广播、不发通知：进行中的场次读的是它自己锁定的版本，本来就不该变；
+    // 其他实例下一次读库自然拿到新版本。
+    return json(res, 200, {
+      ok: true, prizes: saved.rule.prizes, ruleVersion: saved.rule.version, created: saved.created
+    });
   }
 
   /* 额外奖品（命中特殊数字 → 全员加奖）配置读取：仅 admin。 */
   if (req.method === 'GET' && url.pathname === '/api/bonus-prize') {
     const admin = await requireAdmin(url.searchParams.get('token') || '');
     if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
-    await refreshBonusConfig();
+    const latest = await loadLatestRule();
     return json(res, 200, {
       ok: true,
-      bonus: bonusConfig,
+      bonus: latest.bonus,
+      ruleVersion: latest.version,
       limits: { title: PRIZE_TITLE_MAX, desc: PRIZE_DESC_MAX },
       range: { min: NUMBER_MIN, max: NUMBER_MAX }
     });
   }
 
-  /* 额外奖品配置保存：仅 admin；写库成功后才换内存并广播。 */
+  /* 保存特殊数字 + 全员加奖文案 → 新规则版本（同样只对之后新建的场次生效）。 */
   if (req.method === 'POST' && url.pathname === '/api/bonus-prize') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -2073,21 +2111,24 @@ async function handleApi(req, res, url) {
 
     let saved;
     try {
-      saved = await saveBonusConfig(body.bonus);
+      saved = await saveRule({ bonus: body.bonus }, { source: 'bonus', actor: admin.username });
     } catch (e) {
-      console.error('[bonus] 保存失败:', e.message);
+      console.error('[rule] 保存额外奖品失败:', e.message);
       return json(res, 500, { ok: false, code: 'bonus_save_failed' });
     }
     await audit(req, admin, 'bonus_config', {
       detail: {
-        number: saved.number,
-        title: saved.title,
-        desc: saved.desc
+        ruleVersion: saved.rule.version,
+        created: saved.created,
+        number: saved.rule.bonus.number,
+        title: saved.rule.bonus.title,
+        desc: saved.rule.bonus.desc
       }
     });
-    broadcastPrizes().catch((e) => console.error('[bonus] 广播失败:', e.message));
-    if (pubsub) pubsub.publish({ type: 'bonus' }).catch(() => { /* 尽力而为 */ });
-    return json(res, 200, { ok: true, bonus: saved });
+    // 同上：不广播、不发通知，规则改动只影响之后新建的场次
+    return json(res, 200, {
+      ok: true, bonus: saved.rule.bonus, ruleVersion: saved.rule.version, created: saved.created
+    });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/accounts') {
@@ -2465,10 +2506,11 @@ async function start() {
   const listenConfig = db.resolveListenConfig();
 
   try {
-    await db.initDb();        // 幂等建表（只创建缺失的表，不改既有数据）
+    await db.initDb();        // 幂等建表（缺失的表 / 新增的列，不改既有数据）
     await loadBindSecret();   // 绑定令牌签名密钥（存 app_config，重启复用）
-    await refreshPrizeConfig(); // 奖品展示配置（存 app_config，全局一份）
-    await refreshBonusConfig(); // 额外奖品（命中特殊数字全员加奖）配置（存 app_config，全局一份）
+    // 规则版本要先于场次就绪：新建场次会锁定「当时的最新一版」，
+    // bootstrapRules 保证至少有一版，并把版本化之前建的场次挂到最早一版
+    await bootstrapRules();
     await bootstrapAccounts(); // 保证库里至少有一个管理员
     // 发布通道要先于 store 建好：store 每次提交都会通过它广播给其他实例
     pubsub = createPubSub({ ...listenConfig, instanceId: INSTANCE_ID });
@@ -2477,21 +2519,10 @@ async function start() {
 
     // 远端变更：重新读库 → 版本变了才广播给本实例的 SSE 连接
     // 草稿例外：它不在库里，通知里直接带内容，合进本地内存后按 500ms 窗口广播
+    // 规则没有分支：规则不进进程内存（读快照时一起从库里取），没有缓存要失效，
+    // 也就没有「别的实例改了规则要通知我重读」这件事。老实例发来的 prize/bonus 通知
+    // 没有 sid，会在 applyRemote 里被直接忽略。
     pubsub.on('event', (evt) => {
-      if (evt && evt.type === 'prize') {
-        // 别的实例改了奖品配置：回库重读后按本实例的连接各自广播一次
-        refreshPrizeConfig()
-          .then(() => broadcastPrizes())
-          .catch((e) => console.error('[prize] 应用远端配置失败:', e.message));
-        return;
-      }
-      if (evt && evt.type === 'bonus') {
-        // 别的实例改了额外奖品配置：回库重读后广播（玩家端据此刷新「特殊数字」提示）
-        refreshBonusConfig()
-          .then(() => broadcastPrizes())
-          .catch((e) => console.error('[bonus] 应用远端配置失败:', e.message));
-        return;
-      }
       if (evt && evt.type === 'draft') {
         try {
           ingestRemoteDrafts(evt);

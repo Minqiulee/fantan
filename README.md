@@ -28,13 +28,14 @@
 | 身份档案 | 跨轮次累计每人完成的竞猜轮次数，用于区分「新玩家 / 老玩家」 |
 | 实时同步 | 落库变更经 SSE 全量快照广播到全部在线页面，含开奖瞬间；草稿变更按 500ms 合并成 `draft` 补丁；断线重连后全量对齐，玩家端按本地序号补发最后一次选择 |
 | 管理界面 | `/admin` 七个入口：当日对账、大屏、新建场次、关闭场次、员工账号、操作日志、奖品设置；仅 `admin` 角色可进 |
+| 规则版本 | 奖品四档 + 特殊数字作为一整套规则按版本落库（append-only，一次保存 = 一版，内容不变不新增）；**场次在创建时锁定版本**，改规则不影响正在进行的场次，只有之后新建的场次才用新规则；对账表记录每轮用的是哪一版 |
 | 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），三态区分「已确认 / 已选待确认 / 未选择」（待确认用虚线边框），另标新加入 / 已离开；与员工端共用 SSE 广播与场次版本号，草稿走独立 `draft` 补丁事件，过期帧直接丢弃 |
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
 | 员工账号 | 一人一账号一独立密码，由管理员在管理界面创建 / 改密 / 停用；密码只存 scrypt 派生值，接口不下发 |
 | 员工鉴权 | 账号 + 密码 → 会话 token（12 小时），按账号限频（5 次失败锁 30 秒）；停用或改密立即踢掉该账号所有会话 |
 | 玩家端口令 | 口令只以 scrypt 哈希存在于进程内存，不落库、不下发；验证通过后签发 HMAC 绑定令牌，按来源 IP 限频（5 次错误锁 30 秒） |
 | 操作日志 | 登录 / 失败 / 退出、切场次、锁定开奖、新一轮、关闭场次、账号增改密、对账导出、日志导出全部落库；append-only，可按天查看与导出 CSV |
-| 持久化 | Postgres，八张业务表 + 一张配置表，首次启动自动建表，重启后状态保留 |
+| 持久化 | Postgres，运行态 / 归档 / 规则版本 / 账号会话全部落库，首次启动自动建表（新增列幂等补齐），重启后状态保留 |
 
 ---
 
@@ -232,7 +233,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 关闭场次 | 二次确认（红色危险弹窗）→ 关闭当前归属场次，玩家端立即断开 | 当前场次必须是进行中 |
 | 员工账号 | 建号 / 改显示名 / 调角色 / 停用 / 重置密码；一人一账号一密码 | 无 |
 | 操作日志 | 按天（默认今天）列出所有操作：时间、账号、动作、对象、场次、IP；可导出 CSV | 无 |
-| 奖品设置 | 四档结果（数字和单双都中 / 只中数字 / 只中单双 / 未猜中）各配一份「奖品名称 + 说明」；保存即落库并推送所有在线玩家端 | 无 |
+| 奖品设置 | 四档结果（数字和单双都中 / 只中数字 / 只中单双 / 未猜中）各配一份「奖品名称 + 说明」，另配全员额外奖励（特殊数字 + 文案）；保存即新增一个规则版本，页面顶部显示「当前规则版本 vN」，**只对之后新建的场次生效** | 无 |
 
 **只允许 `admin` 角色进入。** 员工账号登录 `/admin` 会被挡回登录页并提示需要管理员账号；管理侧接口（对账、账号、日志）在服务端同样只认 `admin`，前端隐藏不是唯一防线。
 
@@ -255,17 +256,17 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | `login` / `login_failed` / `logout` | 登录成功、登录失败（含原因：无此账号 / 已停用 / 密码错）、退出 | 账号、角色、IP |
 | `session_create` / `session_select` / `session_close` | 新建 / 切换 / 关闭场次 | 场次名、sid、切换前场次 |
 | `switch_denied` | 场次口令错误 | 账号、IP |
-| `round_lock` | 锁定开奖数字 | 数字、轮次号、是否归档成功 |
+| `round_lock` | 锁定开奖数字 | 数字、轮次号、是否归档成功、本轮所用 `ruleVersion`、是否命中特殊数字 |
 | `round_reset` | 开始新一轮 | 原轮次 → 新轮次、当时是否已锁定 |
 | `export_archive` / `export_audit` | 导出对账 CSV / 导出日志 CSV | 口径 level、日期区间、行数 |
 | `account_create` / `account_update` / `account_password` | 建号 / 改角色状态 / 重置密码 | 目标账号、变更前后 |
 | `archive_sync` | 归档补齐 | 检查轮次数、失败数 |
-| `prize_config` | 保存奖品配置 | 四档文案快照（`detail.tiers`） |
-| `bonus_config` | 保存全员额外奖励配置 | 特殊数字 + 文案快照（`detail.{number,title,desc}`） |
+| `prize_config` | 保存四档奖品文案 | 四档文案快照（`detail.tiers`）+ `ruleVersion` + `created`（是否真的新增了一版） |
+| `bonus_config` | 保存特殊数字与全员额外奖励文案 | 特殊数字 + 文案快照（`detail.{number,title,desc}`）+ `ruleVersion` + `created` |
 
 - 表是 **append-only**：`UPDATE` / `DELETE` / `TRUNCATE` 在数据库层被触发器拒绝（与归档表同一套机制）
 - 每条记录都带操作账号与角色；未登录的失败尝试记「尝试的账号名」，不记任何密码
-- 「锁定人」落在 `round.locked_by` 与 `round_archive.locked_by`，两种对账 CSV 的末列就是它（空值 = 无记录）
+- 「锁定人」落在 `round.locked_by` 与 `round_archive.locked_by`，两种对账 CSV 都有这一列（空值 = 无记录）；其后的「规则版本」列来自 `round_archive.rule_version`
 
 ### 6.6 竞猜归档与当日对账
 
@@ -273,6 +274,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 - 表头 `round_archive`：`session_id` + 场次名称/序号快照 + 轮次号 + 开奖数字 + 开奖单双 + 锁定时间 + 归档时间 + 扫码人数 + 提交人数 + 锁定人
 - 明细 `round_archive_entry`：会员号 + 预测单双 + 预测数字 + 是否提交 + 单双匹配 + 数字匹配 + 登记/提交时间
+- 表头带**规则版本**（`rule_version`）：记录这一轮按哪一版规则（奖品四档 + 特殊数字）发的奖，导出 CSV 的「规则版本」列就是它；版本化之前的历史行该列为空
 - **不记录任何积分、得分、总分字段**：归档只回答「谁猜了什么、实际开了什么、猜中没猜中」，折算积分是门店侧的事
 - 归档与运行态快照在**同一个事务**里写：要么「已锁定且有归档」，要么整体回滚，不存在只锁不归档的中间态
 - 归档表由数据库触发器守着，`UPDATE` / `DELETE` / `TRUNCATE` 一律抛错；`reset` 只清 `round` / `player`，碰不到归档
@@ -331,8 +333,8 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 - **一个玩家只显示一档**，按上面四种组合一一对应，不会出现两个奖品卡片
 - 判定在前端用原始值计算（单双按开奖数字奇偶性、数字按相等），与界面语言无关，避免「单/單」字形差异造成误判
-- 文案由管理界面「奖品设置」维护（`GET/POST /api/prize-config`），**全局一份**，不按场次/轮次区分：门店改奖品不需要重开一场
-- 保存后立即写 `app_config`，本实例直接广播 `state`，其他实例通过 PUB/SUB 的 `prize` 通知回库重读后各自广播——在线玩家端无需刷新即可看到新文案
+- 文案由管理界面「奖品设置」维护（`GET/POST /api/prize-config`）。四档文案与「特殊数字」合起来是一整套**规则**，按版本保存在 `rule_version` 表（详见 6.10）
+- **保存不会改变正在进行的场次**：场次在创建时锁定当时的规则版本，玩家端读的是自己那一版；保存只产生新的一版，由之后新建的场次使用。管理界面上的「当前规则版本 vN」就是下一次新建场次会锁定的版本
 - 某一档 `title` 与 `desc` 都留空时，玩家端回落到内置文案（三语各一份）；`desc` 单独留空则只显示名称
 - 未提交预测的玩家不会进入结果页（状态停在「已登记」），因此不存在「没猜也有奖品」的情况
 
@@ -340,11 +342,28 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 在四档个人奖品之外，另有一套**全员额外奖励**：当开奖数字命中管理员预设的「特殊数字」时，**所有参与者**（含未猜中者）除原有中奖处理外，额外获得一份指定奖品。
 
-- 配置由管理界面「奖品设置」里的「全员额外奖励」区块维护（`GET/POST /api/bonus-prize`），存 `app_config.bonus_prize`：`{ number: 0-9|null, title, desc }`。`number` 与开奖数字同一范围 **0–9**，`0` 是合法特殊数字；「不启用」只能用 `null` / 空值表达（管理界面下拉选「不启用」即传 `null`），因为 `0` 不再当哨兵
-- **触发只发生一次**：触发态**不落库**，由「本轮开奖数字是否命中特殊数字」现场重算；开奖后数字不再变、一轮只锁定一次（`confirm` 的 `already_locked` 拒绝重复锁定），故同一轮结果恒定、天然只触发一次；新一轮 `reset` 把数字置 `null` 自然不再触发
+- 配置由管理界面「奖品设置」里的「全员额外奖励」区块维护（`GET/POST /api/bonus-prize`），与四档奖品同存于规则版本（`rule_version.bonus`）：`{ number: 0-9|null, title, desc }`。**改特殊数字同样只对之后新建的场次生效**，进行中的场次按它开场时锁定的那一版判定。`number` 与开奖数字同一范围 **0–9**，`0` 是合法特殊数字；「不启用」只能用 `null` / 空值表达（管理界面下拉选「不启用」即传 `null`），因为 `0` 不再当哨兵
+- **触发只发生一次**：触发态**不落库**，由「本轮开奖数字是否命中该场次版本的特殊数字」现场重算；开奖后数字不再变、一轮只锁定一次（`confirm` 的 `already_locked` 拒绝重复锁定），故同一轮结果恒定、天然只触发一次；新一轮 `reset` 把数字置 `null` 自然不再触发
 - 玩家端 `/api/state` 的 `bonus` 字段带 `{ number, title, desc, triggered }`：`triggered` 表示本轮是否命中特殊数字，命中时结果页额外显示「全员额外奖励」横幅（与个人档位并存，互不影响）
 - 员工端结果区同样显示触发提示；**与原有四档判定、发奖流程、结果展示完全独立**，不改变任何命中判定
 - 边界：无参与者时照常判定（奖励对象为空但状态正确）；配置缺失/`number` 非法一律视为未启用，不触发
+
+### 6.10 规则版本（改规则怎么生效）
+
+**一句话：规则按版本落库，场次开场即锁定版本，改规则只影响「之后新建的场次」。**
+
+- 「规则」= 奖品四档文案 + 全员额外奖励（特殊数字 + 文案）。两者是同一个整体快照，不拆开各存一份，否则对账时分不清「这轮到底按哪套规则」。
+- 保存（`POST /api/prize-config` 或 `POST /api/bonus-prize`）→ `rule_version` 里新增一版（`version` = max+1），旧版本原样保留。只改其中一块时另一块沿用最新版，不会被清空。
+- **内容没变不新增版本**：库里按规范化快照的 sha256 判重，反复点保存不会刷出一堆空版本。
+- 新建场次时（`POST /api/session-create`、启动自举）把当时的最新版本写进 `game_session.rule_version`，此后该场次的所有轮次（含 `reset` 之后的轮次）都用这一版：
+  - 正在进行的场次：玩家端奖品文案、特殊数字判定、`confirm` 的 `bonusTriggered` 全部按锁定的版本
+  - 已锁定的轮次：不会再被「事后改特殊数字」翻成触发或翻掉触发
+- **规则不缓存，也不存在 TTL**：场次快照那条 SQL 把 `rule_version` 一起 JOIN 出来（`COALESCE(gs.rule_version, max(version))`），管理端读配置每次也直查库。进程里没有规则副本，因此没有「通知丢了要等一会儿才对得上」这种窗口——别的实例刚存的版本，本实例的下一次请求就能看到。
+- 对账留痕：`round_archive.rule_version` 在锁定那一刻写入，`/api/archive/export.csv` 的末列「规则版本」就是它；历史行（版本化之前）为空。
+- 版本表 `rule_version` 是 append-only（触发器挡 `UPDATE` / `DELETE` / `TRUNCATE`）：要更正规则只能再存一版，改不了历史。
+- 升级兼容：老库把配置存在 `app_config`（就地覆盖、无历史）。首次启动时把最后一份配置落成 `v1`，并把版本化之前建的场次统一挂到 `v1`（它们当时用的正是这份配置）。
+
+> 想让新奖品立刻生效？关掉当前场次、新建一场即可（`POST /api/session-close` → `POST /api/session-create`）。这是「改规则不影响正在玩的玩家」的代价，也是它的意义。
 
 ---
 
@@ -380,10 +399,10 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/account-password` | **admin** | `{token, username, password}` | 重置密码；该账号所有会话立即失效 |
 | GET | `/api/audit` | **admin** | `?token=&date=` 或 `from=&to=`，可选 `&actor=&action=&limit=` | 操作日志，新的在前，`limit` 默认 200、上限 1000 |
 | GET | `/api/audit/export.csv` | **admin** | 同上（不分页） | 操作日志 CSV（`时间,账号,角色,操作,场次ID,对象,明细,IP`）；导出动作记 `export_audit` 日志 |
-| GET | `/api/prize-config` | **admin** | `?token=` | 读取四档奖品文案：`prizes.{both,number,oddeven,miss}.{title,desc}`，附字段上限 `limits` |
-| POST | `/api/prize-config` | **admin** | `{token, prizes:{both,number,oddeven,miss}}` | 保存奖品文案：每档 `{title, desc}`，去空白、超长按 32 / 120 截断、未知档位与多余字段丢弃；写 `prize_config` 审计并立即广播给所有在线页面 |
-| GET | `/api/bonus-prize` | **admin** | `?token=` | 读取全员额外奖励配置：`bonus.{number,title,desc}`（`number` 为 `null` 表示未启用），附 `limits` 与 `range:{min,max}` |
-| POST | `/api/bonus-prize` | **admin** | `{token, bonus:{number,title,desc}}` | 保存全员额外奖励配置：`number` 只认 0-9（`0` 合法；非法/缺失/空值视为未启用），`title`/`desc` 去空白并按 32/120 截断；写 `bonus_config` 审计并立即广播给所有在线页面 |
+| GET | `/api/prize-config` | **admin** | `?token=` | 读取**最新一版**规则的四档奖品文案：`prizes.{both,number,oddeven,miss}.{title,desc}` + `ruleVersion`，附字段上限 `limits` |
+| POST | `/api/prize-config` | **admin** | `{token, prizes:{both,number,oddeven,miss}}` | 保存奖品文案 → **新增一个规则版本**（内容不变则不新增，返回 `created:false`）。每档 `{title, desc}`，去空白、超长按 32 / 120 截断、未知档位与多余字段丢弃；特殊数字沿用最新版。返回 `{prizes, ruleVersion, created}`，写 `prize_config` 审计。**只对之后新建的场次生效** |
+| GET | `/api/bonus-prize` | **admin** | `?token=` | 读取最新一版的全员额外奖励配置：`bonus.{number,title,desc}`（`number` 为 `null` 表示未启用）+ `ruleVersion`，附 `limits` 与 `range:{min,max}` |
+| POST | `/api/bonus-prize` | **admin** | `{token, bonus:{number,title,desc}}` | 保存特殊数字 → **新增一个规则版本**（同上，内容不变不新增）。`number` 只认 0-9（`0` 合法；非法/缺失/空值视为未启用），`title`/`desc` 去空白并按 32/120 截断；四档文案沿用最新版。返回 `{bonus, ruleVersion, created}`，写 `bonus_config` 审计。**只对之后新建的场次生效** |
 | GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
 **玩家侧准入（`/api/state`、`/api/scan`、`/api/predict`、`/api/stream` 共用一套判定）**：
@@ -514,13 +533,13 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 ```
 场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,
-会员号,预测单双,预测数字,是否提交,单双命中,数字命中,登记时间,提交时间,锁定人
+会员号,预测单双,预测数字,是否提交,单双命中,数字命中,登记时间,提交时间,锁定人,规则版本
 ```
 
 `level=round`（一轮一行，含 0 人轮次）：
 
 ```
-场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,扫码人数,提交人数,锁定人
+场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,扫码人数,提交人数,锁定人,规则版本
 ```
 
 格式约定：
@@ -528,6 +547,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 - 时间列一律为运营时区（`ARCHIVE_TZ_OFFSET_MIN`）下的 `YYYY-MM-DD HH:mm:ss`，**不带偏移后缀**，跨时区使用请自行按列头口径换算
 - `是否提交`：`是` / `否`；`单双命中` / `数字命中`：`命中` / `未中` / `未提交`
 - `锁定人`：该轮点「确认并锁定」的账号；两种口径都有此列，空值表示该行没有记录（历史数据）
+- `规则版本`：该轮所用规则（奖品四档 + 特殊数字）的版本号，取自场次开场时锁定的那一版（见 6.10）；空值 = 版本化之前的历史行，当时没有版本概念。同一场次的所有轮次版本号相同，跨场次可能不同
 - **没有任何积分、总分、命中率列**：明细只给逐次匹配结果，跨场不做合并；某会员当天参与几场就看他有几行
 - 含逗号 / 引号 / 换行的字段会被标准 CSV 双引号包裹（会员号来自二维码原文，可能出现任意字符）
 - ⚠️ 会员号是**原文**，不做公式转义：若某个 ID 以 `=` `+` `-` `@` 开头，Excel 可能当成公式。对账请按文本导入，或用 `level=round` 做人数交叉校验
@@ -561,18 +581,21 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 启动时 `initDb()` 幂等建表（`CREATE TABLE IF NOT EXISTS`），**只负责建出缺失的表**：表结构以本文档与 `db.js` 的定义为唯一基准。
 
-`initDb()` **不补列、不回填、不改约束**：表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表。库结构与之不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建。
+`initDb()` **不回填数据、不改约束**：表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表。库结构与之不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建。
+
+唯一的例外是**新增列**：`game_session.rule_version` 与 `round_archive.rule_version` 用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 幂等补齐（已经在跑的库拿不到新列，历史上踩过这个坑）。补列不写数据：老场次由启动流程挂到最早一版规则，老归档行保持 `null`（归档表 append-only，不允许回填）。改类型、加约束、批量回填仍然只能手工做。
 
 | 表 | 内容 | 写入策略 |
 |---|---|---|
-| `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间 | 随快照提交 upsert |
+| `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间、**锁定的规则版本 `rule_version`** | 建场次时插入（版本由 `max(rule_version)` 算出）；随快照提交 upsert 元信息，不动版本 |
 | `session_state` | 每个场次一行：**状态版本号** + 最近提交时间（多实例乐观锁凭据） | 提交事务里 `version + 1`（CAS） |
 | `round` | 每个场次一行：当前轮次、开奖数字、锁定时间、锁定人账号 `locked_by`（**主键 `session_id`**） | 按场次 upsert |
 | `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为大屏用的离开标记，null = 在场 | 批量 `unnest` upsert + 删除快照里不存在的行 |
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | 批量 `UPSERT`，不删除，跨轮保留 |
-| `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by`（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
+| `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by` + **规则版本 `rule_version`**（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
+| `rule_version` | 规则版本：版本号 + 四档奖品 JSONB + 全员额外奖励 JSONB + 快照指纹 `config_hash` + 来源 + 操作人（**append-only**） | 管理界面保存时追加一版；内容与最新版相同则不写 |
 | `round_archive_entry` | 归档明细：一人一行，会员号 + 预测内容 + 命中结果（主键 `(archive_id, member_id)`） | 只 `INSERT`，重复行跳过 |
-| `app_config` | 键值配置：`player_bind_secret`（绑定令牌签名密钥）、`prize_config`（四档奖品文案 JSON）、`bonus_prize`（全员额外奖励 JSON） | 首次启动生成 / 管理界面保存 |
+| `app_config` | 键值配置：`player_bind_secret`（绑定令牌签名密钥）。旧的 `prize_config` / `bonus_prize` 只在升级时作为 v1 的来源被读取一次，之后不再写入 | 首次启动生成 |
 | `staff_session` | 员工登录会话：token、当前归属场次、过期时间、**登录账号 `username`**（角色回查账号表，不存快照）（**跨实例共享**） | 登录插入；过期 / 账号停用 / 改密时按需清理 |
 | `staff_account` | 员工账号：账号名、显示名、角色（`staff`/`admin`）、状态、**scrypt 密码派生值**、建号人、最近登录时间 | 管理界面建号 / 改角色状态 / 改密 |
 | `audit_log` | 操作日志：时间、账号、角色、动作、场次、对象、明细 JSON、IP（**append-only**） | 只 `INSERT`，`UPDATE` / `DELETE` / `TRUNCATE` 被触发器拒绝 |
@@ -696,12 +719,13 @@ npm test                                  # 用 Docker 起临时 postgres:16-alp
 TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 ```
 
-覆盖范围（30 个用例，跑真实 `server.js` + 真实 Postgres，不 mock 业务逻辑）：
+覆盖范围（71 个用例，跑真实 `server.js` + 真实 Postgres，不 mock 业务逻辑）：
 
 | 文件 | 覆盖 |
 |---|---|
 | `test/archive.test.mjs` | 登录/口令/扫码/预测的全部错误码；锁定与归档同事务；当日聚合口径（场次/轮次/去重人数/命中）；`detail`/`round` 两种 CSV 的列头、转义、命中判定，以及已移除的 `member` 口径返回 400；`reset` 不清归档；0 人轮次口径；跨场次分账与 `sid` 筛选；日期区间与非法日期；接口鉴权；append-only 触发器拒绝 UPDATE/DELETE/TRUNCATE |
 | `test/archive-failure.test.mjs` | 归档表不可写时锁定仍生效且返回 `archived:false`；`reset` 被 409 拦住；恢复后 `archive-sync` 幂等补齐；重启自动回填「已锁定但未归档」的轮次 |
+| `test/rule-version.test.mjs` | 规则版本落库与边界：升级时旧 `app_config` 落成 v1、历史场次挂 v1；保存 = 新增版本且旧版本原样保留；版本表 append-only（UPDATE/DELETE/TRUNCATE 被拒）；四档与特殊数字同版本、改一块不清空另一块；场次锁定版本（跨轮次不变、新场次用新版）；对账 CSV「规则版本」列与归档行一致；**直查库**（另一实例直接写库、无任何通知，本实例立刻读到新版本与新版奖品） |
 | `test/multi-instance.test.mjs` | 两个真实进程共用一个库：员工 token 跨实例有效、A 写入 B 立刻可读、并发提交预测/并发锁定/并发开新一轮只有一个成功、场次上限是集群口径、A 的变更推到 B 的 SSE、A 关闭场次时 B 收到 `session_closed`、实例重启后登录态仍在 |
 
 注意：
@@ -722,6 +746,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - **场次口令是「一个场景一个」，不是「一场一个」。** 玩家侧所有场次共用 `PLAYER_SESSION_PASSWORD`，员工侧所有场次共用 `STAFF_SESSION_PASSWORD`；它们拦的是「随便乱换场次」，不构成场次机密（知道该场景口令的人可以进任何一场）。员工侧的口令按账号计数、连续 5 次错误锁 60 秒，且管理员免校验——它是给员工设的操作边界，不是身份认证（身份认证靠登录）。要按场发不同口令，需要给 `game_session` 加口令哈希列，见「12. 待办」。
 - **玩家绑定是「防误换」而非强身份认证。** 令牌绑定场次、不可跨场，但任何人拿到这台设备即可沿用其绑定继续玩（与扫码身份同一台设备的既有模型一致）；令牌 12 小时过期，口令本身从不落地，所以清掉 localStorage 只会退回选择界面，仍需口令才能重新进场。
 - **令牌走查询参数。** SSE（EventSource）无法自定义请求头，所以员工 token 与玩家绑定令牌都以 `?token=` / `?ut=` 传递，会进访问日志。反向代理层建议关闭查询串记录，或改走 Cookie。令牌都不含口令，泄露影响是「可读该场次状态」，不能改口令、不能跨场。
+- **规则改动不会立刻生效，这是设计而非缺陷。** 保存奖品/特殊数字只产生新版本，正在进行的场次继续用它开场时锁定的那一版，只有之后新建的场次才用新规则（详见 6.10）。需要立刻切换就关场重建。
 - **没有人数上限校验。** 单场 6–12 位是运营约定，服务端不拦；人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
 - **支持多实例（水平扩容）。** 会话、员工登录态、限频全部在 Postgres，跨实例变更走 `LISTEN/NOTIFY`，写入用 `session_state.version` 乐观锁 + 全局 advisory lock 串行化（详见 9.5）。仍有的边界：`LISTEN` 不能走事务级连接池；SSE 连接是每实例各自的（不需要粘性会话）；进程内读缓存 TTL 5 秒，通知全丢时最坏有 5 秒延迟；同时进行的场次上限 4 是**全集群**口径。
 - **员工会话重启不再丢失（行为变化）。** 会话落在 `staff_session`，有效期 12 小时；这是多实例的硬要求（A 签发的 token 必须能被 B 认）。要立刻下线某人：在管理界面**停用该账号或重置密码**，会立即删掉它所有会话行（不会等 12 小时）。登录会话的鉴权以账号表当前状态为准，所以降级角色同样立即生效。

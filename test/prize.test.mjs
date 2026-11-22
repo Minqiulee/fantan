@@ -2,10 +2,11 @@
  * 奖品配置：四档文案的读写契约 / 权限 / 归一化 / 玩家端可见性 / 审计留痕。
  *
  * 要钉死的几件事：
- *   1. 配置是全局一份（存 app_config），只有 admin 能读能写 —— staff 账号不行；
- *   2. 保存后玩家端 /api/state 立刻带上新 prizes（不依赖轮次、不依赖开奖）；
+ *   1. 配置只有 admin 能读能写（staff 账号不行），读的是「最新一版」规则；
+ *   2. **一次保存 = 一个新规则版本**；当前场次锁的是开场时的版本，玩家端一个字都不变，
+ *      只有保存之后新建的场次才用新文案（这是本轮改造的核心语义）；
  *   3. 只认四档 × title/desc 两个字段：未知档位、多余字段一律丢弃，超长按上限截断；
- *   4. 每次保存写一条 prize_config 审计，包含四档文案快照。
+ *   4. 每次保存写一条 prize_config 审计，包含四档文案快照与规则版本号。
  *
  * 四档（都中 / 只中数字 / 只中单双 / 都没中）的归属判定在玩家端完成：
  * 数字与单双是两次独立猜测，命中互不蕴含，四种组合一一对应一档。
@@ -45,9 +46,30 @@ function playerState() {
   return api.get('/api/state?sid=' + encodeURIComponent(sid) + '&ut=' + encodeURIComponent(ut));
 }
 
+/**
+ * 关掉当前场次、新建一个并把玩家绑定切过去。
+ * 「改完规则后新建的场次才用新规则」这条语义只能靠真开一场来验，
+ * 先关后建是为了不撞「同时进行 4 场」的上限。
+ */
+async function openNewSession() {
+  const old = sid;
+  if (old) {
+    const closed = await api.post('/api/session-close', { token: adminToken, sid: old });
+    assert.equal(closed.status, 200, '关场失败：' + JSON.stringify(closed.body));
+  }
+  const created = await api.post('/api/session-create', { token: adminToken, name: '规则版本' });
+  assert.equal(created.status, 200, '建场失败：' + JSON.stringify(created.body));
+  sid = created.body.sid;
+  const un = await unlock(api, sid, PLAYER_PASSWORD);
+  assert.equal(un.body.ok, true, '玩家端解锁失败：' + JSON.stringify(un.body));
+  ut = un.body.ut;
+  return created.body.session;
+}
+
 test('默认没有配置：四档都是空串，玩家端也能拿到结构', async () => {
   const r = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.equal(r.status, 200);
+  assert.equal(r.body.ruleVersion, 1, '空库启动就该有 v1（空配置），新建场次才锁得到版本');
   assert.deepEqual(r.body.prizes, {
     both: { title: '', desc: '' },
     number: { title: '', desc: '' },
@@ -85,7 +107,10 @@ test('无 token / 非管理员不能读写配置', async () => {
   assert.equal(p.status, 401);
 });
 
-test('保存后玩家端立即看到新文案，落库为同一份 JSON', async () => {
+test('保存只产生新规则版本：当前场次不变，改完后新建的场次才用新文案', async () => {
+  const before = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
+  const beforeVersion = before.body.ruleVersion;
+
   const prizes = {
     both: { title: '特等奖 · 羊绒围巾', desc: '两项全中，凭本页面到前台领取' },
     number: { title: '一等奖 · 保温杯', desc: '只中数字' },
@@ -95,21 +120,41 @@ test('保存后玩家端立即看到新文案，落库为同一份 JSON', async 
   const saved = await api.post('/api/prize-config', { token: adminToken, prizes });
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.body.prizes, prizes);
+  assert.equal(saved.body.created, true, '内容变了就要新增版本');
+  assert.equal(saved.body.ruleVersion, beforeVersion + 1, '保存 = 版本号 +1');
 
-  // 读回（管理端）
+  // 读回（管理端）：管理员看到的永远是「最新一版」= 之后新建场次会用到的规则
   const g = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.deepEqual(g.body.prizes, prizes);
+  assert.equal(g.body.ruleVersion, saved.body.ruleVersion);
 
-  // 玩家端 state：不必等下一轮、不必等开奖
-  const s = await playerState();
-  assert.deepEqual(s.body.prizes, prizes);
+  // 正在进行的场次锁的是开场那一版：玩家端一个字都不变
+  const cur = await playerState();
+  assert.equal(cur.body.ruleVersion, beforeVersion, '进行中的场次不跟着改');
+  assert.deepEqual(cur.body.prizes, before.body.prizes, '进行中的场次文案保持不变');
 
-  // 落库：app_config 里就是这一份，没有任何多余字段
-  const row = await withDb(async (c) => {
-    const r = await c.query("SELECT value FROM app_config WHERE key = 'prize_config'");
-    return r.rows[0] ? JSON.parse(r.rows[0].value) : null;
+  // 改完之后新建的场次才锁定新版本
+  const created = await openNewSession();
+  assert.equal(created.ruleVersion, saved.body.ruleVersion, '新场次锁定保存后的最新版');
+  const next = await playerState();
+  assert.equal(next.body.ruleVersion, saved.body.ruleVersion);
+  assert.deepEqual(next.body.prizes, prizes);
+
+  // 落库：版本表一行一版，旧版本原样留着（不是就地覆盖）
+  const rows = await withDb(async (c) => {
+    const r = await c.query('SELECT version, prizes FROM rule_version ORDER BY version ASC');
+    return r.rows;
   });
-  assert.deepEqual(row, prizes);
+  assert.equal(rows.length, saved.body.ruleVersion, '每个版本一行');
+  assert.deepEqual(rows[rows.length - 1].prizes, prizes);
+});
+
+test('内容没变就不新增版本（反复点保存不刷版本号）', async () => {
+  const g = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
+  const again = await api.post('/api/prize-config', { token: adminToken, prizes: g.body.prizes });
+  assert.equal(again.status, 200);
+  assert.equal(again.body.created, false);
+  assert.equal(again.body.ruleVersion, g.body.ruleVersion, '内容一样，版本号不动');
 });
 
 test('归一化：去空白、超长截断、丢弃未知档位与多余字段', async () => {
@@ -135,6 +180,8 @@ test('归一化：去空白、超长截断、丢弃未知档位与多余字段',
   assert.equal(Object.prototype.hasOwnProperty.call(r.body.prizes, 'extra'), false);
 
   // 玩家端拿到的同样是归一化后的值（不能出现「管理端截断、玩家端原文」的分裂）
+  // 归一化后的配置是一个新版本，要看新场次
+  await openNewSession();
   const s = await playerState();
   assert.deepEqual(s.body.prizes, r.body.prizes);
 });
@@ -159,10 +206,13 @@ test('保存写审计：prize_config 带四档快照，actor 是管理员', asyn
   const tiers = (detail && detail.tiers) || [];
   assert.deepEqual(tiers.map((t) => t.tier), ['both', 'number', 'oddeven', 'miss']);
   assert.deepEqual(tiers.map((t) => t.title), ['审计用 A', '审计用 B', '审计用 C', '审计用 D']);
+  assert.ok(detail.ruleVersion >= 1, '审计要能追到这一版规则是几号');
+  assert.equal(detail.created, true);
 });
 
-test('重启后配置仍在（管理员不必每次开机重配）', async () => {
-  await api.post('/api/prize-config', {
+test('重启后配置与规则版本都在（管理员不必每次开机重配）', async () => {
+  const pinned = (await playerState()).body.ruleVersion;
+  const saved = await api.post('/api/prize-config', {
     token: adminToken,
     prizes: {
       both: { title: '', desc: '' },
@@ -171,8 +221,10 @@ test('重启后配置仍在（管理员不必每次开机重配）', async () =>
       miss: { title: '', desc: '' }
     }
   });
-  await server.stop();
+  const newVersion = saved.body.ruleVersion;
+  assert.ok(newVersion > pinned, '这一版应该在开场那一版之后');
 
+  await server.stop();
   server = await startServer();
   api = makeClient(server.base);
   const admin = await login(api);
@@ -181,6 +233,14 @@ test('重启后配置仍在（管理员不必每次开机重配）', async () =>
   const un = await unlock(api, sid, PLAYER_PASSWORD);
   ut = un.body.ut;
 
+  // 最新一版（= 之后新建场次要用的）从库里读得回来
   const g = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.equal(g.body.prizes.number.title, '重启后仍在');
+  assert.equal(g.body.ruleVersion, newVersion);
+
+  // 重启不改变任何场次锁定的版本：场次仍停在开场那一版，不会被「最新版」顶掉
+  const list = await api.get('/api/sessions?token=' + encodeURIComponent(adminToken));
+  const cur = list.body.sessions.find((x) => x.id === sid);
+  assert.equal(cur.ruleVersion, pinned, '重启后场次仍锁定原版本');
+  assert.notEqual(cur.ruleVersion, g.body.ruleVersion, '新版只对之后新建的场次生效');
 });

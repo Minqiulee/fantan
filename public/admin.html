@@ -172,6 +172,11 @@
     font-family:inherit;
   }
   .form-row select:focus { border-color:var(--accent); }
+  .rule-ver { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    margin:0 0 14px; padding:10px 14px; border-radius:12px; font-size:13px; line-height:1.6;
+    background:rgba(255,190,80,.10); border:1px solid rgba(255,190,80,.35); }
+  .rule-ver b { font-weight:900; color:var(--gold); }
+  .rule-ver .rv-sub { color:var(--muted); }
   .bonus-block { border-color:rgba(255,190,80,.45); }
   .bonus-block .pb-tier { background:rgba(255,170,40,.20); color:#ffb84d; border-color:rgba(255,190,80,.55); }
 
@@ -476,6 +481,11 @@
       <div class="card">
         <h2 class="row-head"><span data-i18n="prizeTitle">奖品设置</span></h2>
         <div class="arch-hint prize-tip" data-i18n="prizeHint"></div>
+        <!-- 规则版本：奖品四档 + 特殊数字是一整套，按版本保存；只对之后新建的场次生效 -->
+        <div class="rule-ver" id="prizeRuleVer">
+          <span><span data-i18n="ruleVersionLab">当前规则版本</span>：<b id="prizeRuleVerNo">—</b></span>
+          <span class="rv-sub" data-i18n="ruleVersionHint">保存后仅对之后新建的场次生效，正在进行的场次不受影响</span>
+        </div>
 
         <div class="prize-block" data-tier="both">
           <div class="pb-head">
@@ -1264,6 +1274,13 @@
   };
   var prizeLoaded = false;
 
+  /* 规则版本：只显示版本号，多解释一句「只对新建场次生效」——
+   * 这是运营最容易误解的地方（以为一保存玩家端就变），所以写在保存按钮上方。 */
+  function showRuleVersion(version) {
+    var n = Number(version);
+    $('prizeRuleVerNo').textContent = (Number.isInteger(n) && n > 0) ? ('v' + n) : '—';
+  }
+
   function fillPrizeForm(prizes) {
     Object.keys(PRIZE_FIELDS).forEach(function (tier) {
       var ids = PRIZE_FIELDS[tier];
@@ -1293,6 +1310,7 @@
           return;
         }
         fillBonusForm(d.bonus);
+        showRuleVersion(d.ruleVersion);
       })
       .catch(function () { /* 读失败不打扰：保留表单现状 */ });
   }
@@ -1309,6 +1327,7 @@
           return;
         }
         fillPrizeForm(d.prizes);
+        showRuleVersion(d.ruleVersion);
       })
       .catch(function () { $('prizeErr').textContent = t('prizeLoadFail'); });
     loadBonus();
@@ -1341,11 +1360,16 @@
           return;
         }
         fillPrizeForm(d.prizes);
+        showRuleVersion(d.ruleVersion);
         // 四档保存成功后，再保存额外奖品（独立接口，失败单独提示）
         return postJson('/api/bonus-prize', { token: token, bonus: bonus });
       })
       .then(function (d2) {
-        if (d2 && d2.ok) { fillBonusForm(d2.bonus); toast(t('prizeSaved'), 'ok'); }
+        if (d2 && d2.ok) {
+          fillBonusForm(d2.bonus);
+          showRuleVersion(d2.ruleVersion);
+          toast(t('prizeSaved'), 'ok');
+        }
         else if (d2 && d2.code === 'unauthorized') forceLogout();
         else if (d2) $('prizeErr').textContent = t('bonusSaveFail');
       })

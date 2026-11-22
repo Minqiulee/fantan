@@ -213,6 +213,8 @@
       /* ---- 奖品设置（结果各一份文案） ---- */
       prizeTitle: '奖品设置',
       prizeHint: '数字与单双是两次独立猜测，按四种组合各配一份文案：都中 / 只中数字 / 只中单双 / 都没中。某一档留空时玩家端显示系统默认文案。',
+      ruleVersionLab: '当前规则版本',
+      ruleVersionHint: '保存后仅对之后新建的场次生效，正在进行的场次不受影响',
       prizeTierBoth: '数字和单双都中',
       prizeTierBothSub: '两项全对',
       prizeTierNumber: '只中数字',
@@ -607,6 +609,8 @@
       /* ---- 獎品設置（三類結果各一份文案） ---- */
       prizeTitle: '獎品設置',
       prizeHint: '數字與單雙是兩次獨立猜測，按四種組合各配一份文案：都中 / 只中數字 / 只中單雙 / 都沒中。某一檔留空時玩家端顯示系統預設文案。',
+      ruleVersionLab: '當前規則版本',
+      ruleVersionHint: '儲存後僅對之後新建的場次生效，正在進行的場次不受影響',
       prizeTierBoth: '數字和單雙都中',
       prizeTierBothSub: '兩項全對',
       prizeTierNumber: '只中數字',
@@ -1000,6 +1004,8 @@
       /* ---- Prize settings (one copy per outcome tier) ---- */
       prizeTitle: 'Prizes',
       prizeHint: 'Number and odd/even are separate guesses — one copy per combination: both / number only / odd/even only / no hit. Leave a tier empty to use the built-in default copy.',
+      ruleVersionLab: 'Current rules version',
+      ruleVersionHint: 'Applies to sessions created after saving; running sessions keep their version',
       prizeTierBoth: 'Number + Odd/Even',
       prizeTierBothSub: 'Both guesses correct',
       prizeTierNumber: 'Number only',

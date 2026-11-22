@@ -6,7 +6,7 @@ Postgresql：
 
 - 数据层：`db.js`（连接池 + 幂等建表 + 快照读写 + 会话/限频）
 - 会话存储：`store.js`（读缓存 + 乐观锁提交 + 变更事件）、`pubsub.js`（跨实例 LISTEN/NOTIFY）
-- 服务入口：`server.js` 启动时 `initDb()` 建表，`bootstrapSessions()` 自举首场次，`backfillArchives()` 补写未归档轮次；状态本体始终在库里，进程内只有可丢弃的读缓存
+- 服务入口：`server.js` 启动时 `initDb()` 建表，`bootstrapRules()` 保证至少一版规则并把老场次挂到最早一版，`bootstrapSessions()` 自举首场次，`backfillArchives()` 补写未归档轮次；状态本体始终在库里，进程内只有可丢弃的读缓存
 - 连接串：**只认 `DATABASE_URL`**（一条完整串，托管库如 Supabase pooler 就给这个）；
   不设时回落到本地默认库。解析与池参数集中在 `db.js` 的 `resolveConnectionString()` / `getPool()`
 
@@ -14,20 +14,21 @@ Postgresql：
 
 | 表 | 说明 | 时间戳字段 |
 |---|---|---|
-| `game_session` | 场次实体（ID、名称、开关状态、显示序号） | `created_at`、`closed_at` |
+| `game_session` | 场次实体（ID、名称、开关状态、显示序号、**锁定的规则版本 `rule_version`**） | `created_at`、`closed_at` |
 | `round` | 每个场次一行：轮次、开奖数字、锁定人账号 | `locked_at` |
 | `player` | 每轮玩家登记与预测（主键 `(session_id, id)`） | `registered_at`、`submitted_at` |
 | `identity` | 场次内跨轮次玩家身份档案（主键 `(session_id, id)`） | `created_at`、`updated_at` |
-| `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数、锁定人（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
+| `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数、锁定人、**规则版本 `rule_version`**（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
 | `round_archive_entry` | 归档明细：一人一行，含会员号、预测内容、命中结果（主键 `(archive_id, member_id)`） | `registered_at`、`submitted_at`、`archived_at` |
-| `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥） | `updated_at` |
+| `rule_version` | 规则版本：`version`、四档奖品 JSONB、全员额外奖励 JSONB、快照指纹 `config_hash`、来源、操作人（append-only；场次创建时锁定 `max(version)`） | `created_at` |
+| `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥）；旧的 `prize_config` / `bonus_prize` 只在升级时读一次作为 v1 来源 | `updated_at` |
 | `session_state` | 每个场次一行：状态版本号（多实例乐观锁凭据） | `updated_at` |
 | `staff_session` | 员工登录会话（token、归属场次、过期时间、登录账号；角色回查账号表），跨实例共享 | `expires_at`、`created_at` |
 | `staff_account` | 员工账号：账号名（主键）、显示名、角色（`staff`/`admin`）、状态、scrypt 密码派生值、建号人 | `created_at`、`updated_at`、`last_login_at` |
 | `audit_log` | 操作日志：时间、账号、角色、动作、场次、对象、明细 JSON、IP（append-only） | `at` |
 | `auth_throttle` | 登录 / 场次口令错误计数（`login:<账号>`、`switch:<账号>` 或 `player:<ip>`），跨实例共享 | `updated_at` |
 
-**归档表是 append-only 的**：`round_archive` / `round_archive_entry` 由触发器 `archive_block_mutation()` 守着，任何 `UPDATE` / `DELETE` / `TRUNCATE` 都会抛异常。要修正历史只能追加新记录（或走导出层处理），不要直连数据库改这两张表。`reset` 只清 `round` / `player`，不影响归档。
+**归档表与规则版本表是 append-only 的**：`round_archive` / `round_archive_entry` / `rule_version` 由触发器 `archive_block_mutation()` 守着，任何 `UPDATE` / `DELETE` / `TRUNCATE` 都会抛异常。要修正历史只能追加新记录（或走导出层处理），不要直连数据库改这两张表。`reset` 只清 `round` / `player`，不影响归档。
 
 玩家 ID 统一为「二维码内容 / 原始 ID」（未经 hash），`player.id` 与 `identity.id` 一致；同一 ID 可同时存在于多个场次，因此主键带 `session_id`。
 
@@ -37,7 +38,9 @@ Postgresql：
 
 表会在应用首次启动时自动创建（幂等，`CREATE TABLE IF NOT EXISTS`），无需手动建表。
 
-> 应用**不做结构迁移**：不补列、不回填历史行、不改主键、不改既有列类型。表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表；库结构与代码不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建库。
+> 应用**不做结构迁移**：不回填历史行、不改主键、不改既有列类型。表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表；库结构与代码不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建库。
+>
+> 例外是**新增列**：`game_session.rule_version`、`round_archive.rule_version` 用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 幂等补齐（老库升级靠这一句拿到新列，不需要手工 DDL）。补列不写数据——老场次由启动流程挂到最早一版规则，老归档行保持 `null`。
 
 ## 多实例部署
 

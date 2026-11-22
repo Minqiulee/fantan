@@ -24,6 +24,7 @@ const FILES = [
   'test/pick.test.mjs',
   'test/prize.test.mjs',
   'test/bonus.test.mjs',
+  'test/rule-version.test.mjs',
   'test/sse-reconnect.test.mjs',
   'test/identity.test.mjs'
 ];
