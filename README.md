@@ -29,7 +29,7 @@
 | 实时同步 | 落库变更经 SSE 全量快照广播到全部在线页面，含开奖瞬间；草稿变更按 500ms 合并成 `draft` 补丁；断线重连后全量对齐，玩家端按本地序号补发最后一次选择 |
 | 管理界面 | `/admin` 七个入口：当日对账、大屏、新建场次、关闭场次、员工账号、操作日志、奖品设置；仅 `admin` 角色可进 |
 | 规则版本 | 奖品四档 + 特殊数字作为一整套规则按版本落库（append-only，一次保存 = 一版，内容不变不新增）；**场次在创建时锁定版本**，改规则不影响正在进行的场次，只有之后新建的场次才用新规则；对账表记录每轮用的是哪一版 |
-| 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），三态区分「已确认 / 已选待确认 / 未选择」（待确认用虚线边框），另标新加入 / 已离开；与员工端共用 SSE 广播与场次版本号，草稿走独立 `draft` 补丁事件，过期帧直接丢弃 |
+| 实时大屏 | `/bigscreen` 按场次实时展示在场玩家的当前选项（单/双 + 数字），三态区分「已确认 / 已选待确认 / 未选择」（待确认用虚线边框）；已登出 / 已离开的玩家直接移除、不计数；与员工端共用 SSE 广播与场次版本号，草稿走独立 `draft` 补丁事件，过期帧直接丢弃 |
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
 | 员工账号 | 一人一账号一独立密码，由管理员在管理界面创建 / 改密 / 停用；密码只存 scrypt 派生值，接口不下发 |
 | 员工鉴权 | 账号 + 密码 → 会话 token（12 小时），按账号限频（5 次失败锁 30 秒）；停用或改密立即踢掉该账号所有会话 |
@@ -190,6 +190,8 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 6. **查看结果**：员工端展示逐人命中表（单双命中、数字命中）；玩家端展示开奖数字与自己两项预测的命中情况。
 7. **开启新一轮**：员工端「开始新一轮」→ 轮次 +1、本轮玩家清空、跨轮身份档案保留；玩家需重新扫码登记。
 
+**离开与登出。** 玩家关闭/离开页面（`pagehide`）或点「登出」，即视为不在现场：**所有实时列表、大屏卡片、人数与统计立刻不再包含他**。本轮锁定前，重新扫码或页面回到前台（SSE 重连）会把他放回名单；**锁定即名单冻结**，之后的离开、登出、重新扫码都不再改写本轮结果表与归档。
+
 ### 6.3 玩家端状态
 
 | 状态 | 含义 | 页面表现 |
@@ -202,6 +204,8 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 身份有效性以服务端返回的 `me` 为准：新一轮开始后 `me` 变空，本地保存的身份自动清除，需重新扫码。
 
+**登出是双向动作**：除了清本机身份，还会上报 `/api/leave`，让服务端立即把该玩家移出在场名单并广播给员工端与大屏；否则只是本机看不见，现场两块屏仍会把他算在人数里。刷新/断线重连不算登出，SSE 重连会自动撤销离开标记（本轮未锁定时）。
+
 登记成功（登录）后自动展示一次玩法说明：10 秒倒计时，页面最底部一条细进度条随剩余时间收缩，卡片内同时显示剩余秒数；点击任意区域立即关闭，超时自动关闭。关闭后遮罩 `display:none`，不拦截后续点击。触发条件只有「登记成功」且同一身份每次页面只触发一次，因此刷新、SSE 重连、状态推送都不会重放；切到后台会暂停计时，回到前台接着算。仅玩家端加载该层，员工端与大屏不受影响。
 
 场次绑定的优先级高于一切入口参数：本地已有绑定（`oe_bind`）时，连 `?s=` 也不会把它切走；想换场次只能点「切换场次」→ 选场次 → 输口令。只有 1 场进行中时免口令，且仍会写入绑定，避免之后开出第二场时被判为「需要重选」。
@@ -213,9 +217,9 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 - **登录 = 账号 + 自己的密码**。账号由管理员在管理界面创建，一人一份；顶栏会显示当前账号的显示名
 - 登录态存 `sessionStorage`，关闭标签页即失效；服务端会话 12 小时过期
 - 顶栏右侧：**管理**（只有 `admin` 角色可见，跳 `/admin`）与**切换场次**
-- 「本轮概况」实时显示已扫码人数与已提交人数
-- 玩家列表用颜色区分新玩家（蓝）与老玩家（金）
-- 每个状态变更都会实时刷新，无需手动刷新页面
+- 「本轮概况」实时显示在场人数与已提交人数 —— 只算还在现场的玩家，已登出/已离开的不计入
+- 玩家列表同样只列在场玩家，用颜色区分新玩家（蓝）与老玩家（金）
+- 每个状态变更（登记、提交、离开、登出、锁定、开新一轮）都会实时刷新，无需手动刷新页面；人数直接取服务端 `counts`，与大屏同一份快照、同一口径
 - 场次条只展示当前场次名称与状态，页面上没有任何新建 / 关闭 / 对账 / 大屏入口
 
 **「切换场次」与玩家端同一套交互**：点顶栏胶囊按钮 → 页面就地展开「选择场次」卡片，其余内容暂时收起；选项整行可点（名称 + 轮次/状态/人数），当前场次打勾（✓）、其他场次显示 `›`；选中后弹出**场次口令**输入层，验证通过才切换，并 toast「已切换到「X」」，卡片自动收起。切换期间按钮自身隐藏，卡片底部给出「取消切换」，取消即原样退回原场次。
@@ -234,7 +238,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 关闭场次 | 二次确认（红色危险弹窗）→ 关闭当前归属场次，玩家端立即断开 | 当前场次必须是进行中 |
 | 员工账号 | 建号 / 改显示名 / 调角色 / 停用 / 重置密码；一人一账号一密码 | 无 |
 | 操作日志 | 按天（默认今天）列出所有操作：时间、账号、动作、对象、场次、IP；可导出 CSV | 无 |
-| 奖品设置 | 四档结果（数字和单双都中 / 只中数字 / 只中单双 / 未猜中）各配一份「奖品名称 + 说明」，另配全员额外奖励（特殊数字 + 文案）；保存即新增一个规则版本，页面顶部显示「当前规则版本 vN」，**只对之后新建的场次生效** | 无 |
+| 奖品设置 | 四档结果（数字和单双都中 / 只中数字 / 只中单双 / 未猜中）各配一份「奖品名称 + 说明」，**每档都按简体中文 / 繁体中文 / English 三列分开填写**（名称三语必填，说明要么三语都填要么都留空）；另配全员额外奖励（特殊数字 + 三语文案）。保存即新增一个规则版本，页面顶部显示「当前规则版本 vN」，**只对之后新建的场次生效** | 无 |
 
 **只允许 `admin` 角色进入。** 员工账号登录 `/admin` 会被挡回登录页并提示需要管理员账号；管理侧接口（对账、账号、日志）在服务端同样只认 `admin`，前端隐藏不是唯一防线。
 
@@ -275,6 +279,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 - 表头 `round_archive`：`session_id` + 场次名称/序号快照 + 轮次号 + 开奖数字 + 开奖单双 + 锁定时间 + 归档时间 + 扫码人数 + 提交人数 + 锁定人
 - 明细 `round_archive_entry`：会员号 + 预测单双 + 预测数字 + 是否提交 + 单双匹配 + 数字匹配 + 登记/提交时间
+- **只归档锁定那一刻仍在场的玩家**：已登出 / 已离开的人既不计入表头的扫码/提交人数，也不进明细，与实时大屏、员工端保持同一口径。历史上已写入的行不受影响（append-only）
 - 表头带**规则版本**（`rule_version`）：记录这一轮按哪一版规则（奖品四档 + 特殊数字）发的奖，导出 CSV 的「规则版本」列就是它；版本化之前的历史行该列为空
 - **不记录任何积分、得分、总分字段**：归档只回答「谁猜了什么、实际开了什么、猜中没猜中」，折算积分是门店侧的事
 - 归档与运行态快照在**同一个事务**里写：要么「已锁定且有归档」，要么整体回滚，不存在只锁不归档的中间态
@@ -314,10 +319,12 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   - **已选待确认** — 有草稿未提交：虚线金边框 + 阻尼金文字，状态行写「已选待确认」；这是现场最容易吵的一态（「我选了为什么不算」），视觉上必须和「已确认」明显不同
   - **选项变更** — 同一 `pid` 的选项变化（含草稿来回改），卡片闪一次金色描边；草稿走独立的 `draft` 补丁事件，不动 `version`
   - **已确认** — 点了「确认提交」：实心金边框 + 勾选态
-  - **离开** — 玩家页面 `pagehide` 时用 `sendBeacon` 上报 `POST /api/leave`，卡片变灰并保留其已提交的选项；重新扫码或 SSE 重连即撤销标记（刷新、回前台都算回来）
+  - **离开 / 登出** — 玩家页面 `pagehide`（`sendBeacon`）或玩家端「登出」（`fetch keepalive`）上报 `POST /api/leave`：卡片与对应人数**立即移除**，只在「最近动态」留一条「离开」。不再保留灰色卡片，也不再统计「已离开」人数
+  - **回来** — 重新扫码或 SSE 重连（刷新、回前台）即撤销离开标记，卡片重新出现并计入人数；**本轮锁定后不再放回**
   - **新一轮** — `round` 变化时整屏清空，只留一条「新一轮」动态，不会把上一轮的人当成离场逐个播报
 - 一致性：客户端按 `version` 丢弃过期帧（重连补发、并发请求乱序都不会把旧选项盖回去），按 `pid` 增量 diff，DOM 上不会出现重复卡片；卡片数量少时自动放大、多了自动收窄
-- 离开标记随 `player.left_at` 落库，服务重启后仍然有效；`reset` 清空本轮玩家时一并消失
+- 顶部「参与玩家 / 已确认 / 待确认 / 未选择」四项全部只算在场玩家，取服务端 `counts`（与员工端同一份快照），不存在两端人数不一致；已离开的人没有独立计数格
+- 离开标记随 `player.left_at` 落库，服务重启后仍然有效；`reset` 清空本轮玩家时一并消失。锁定即名单冻结，之后的离开/登出不改变结果表与归档
 
 ### 6.8 开奖结果与奖品（四档）
 
@@ -336,16 +343,18 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 - 判定在前端用原始值计算（单双按开奖数字奇偶性、数字按相等），与界面语言无关，避免「单/單」字形差异造成误判
 - 文案由管理界面「奖品设置」维护（`GET/POST /api/prize-config`）。四档文案与「特殊数字」合起来是一整套**规则**，按版本保存在 `rule_version` 表（详见 6.10）
 - **保存不会改变正在进行的场次**：场次在创建时锁定当时的规则版本，玩家端读的是自己那一版；保存只产生新的一版，由之后新建的场次使用。管理界面上的「当前规则版本 vN」就是下一次新建场次会锁定的版本
-- 某一档 `title` 与 `desc` 都留空时，玩家端回落到内置文案（三语各一份）；`desc` 单独留空则只显示名称
+- 每档文案是**三语对象**：`title` / `desc` 都是 `{ 'zh-CN': '', 'zh-HK': '', 'en-US': '' }`。管理界面按三种语言分栏录入，玩家端按自己当前选的界面语言取对应那一份（`zh-CN` 简体 / `zh-HK` 繁体 / `en-US` 英文）；某一种语言缺失时按「当前语言 → 简 → 繁 → 英」回退，绝不出现空白奖品卡
+- 某一档三个语言都留空 = 该档视为「未配置」：玩家端不渲染奖品卡（不掺入占位文案）；`desc` 三语都留空则只显示名称
+- **三语必须一起填**：只要这一档开始配置，`title` 三种语言就得齐全，`desc` 要么三语都填、要么都留空。缺语言时 `POST /api/prize-config` 直接 400（`prize_incomplete`，`missing` 里带档位 / 字段 / 缺的语言），配置不会落库——否则等于让另一种语言的玩家拿到别的语言的奖品名
 - 未提交预测的玩家不会进入结果页（状态停在「已登记」），因此不存在「没猜也有奖品」的情况
 
 ### 6.9 额外奖品（命中特殊数字 → 全员加奖）
 
 在四档个人奖品之外，另有一套**全员额外奖励**：当开奖数字命中管理员预设的「特殊数字」时，**所有参与者**（含未猜中者）除原有中奖处理外，额外获得一份指定奖品。
 
-- 配置由管理界面「奖品设置」里的「全员额外奖励」区块维护（`GET/POST /api/bonus-prize`），与四档奖品同存于规则版本（`rule_version.bonus`）：`{ number: 0-9|null, title, desc }`。**改特殊数字同样只对之后新建的场次生效**，进行中的场次按它开场时锁定的那一版判定。`number` 与开奖数字同一范围 **0–9**，`0` 是合法特殊数字；「不启用」只能用 `null` / 空值表达（管理界面下拉选「不启用」即传 `null`），因为 `0` 不再当哨兵
+- 配置由管理界面「奖品设置」里的「全员额外奖励」区块维护（`GET/POST /api/bonus-prize`），与四档奖品同存于规则版本（`rule_version.bonus`）：`{ number: 0-9|null, title, desc }`，其中 `title` / `desc` 与四档一样是**三语对象**（缺语言同样 400 `bonus_incomplete`）。**改特殊数字同样只对之后新建的场次生效**，进行中的场次按它开场时锁定的那一版判定。`number` 与开奖数字同一范围 **0–9**，`0` 是合法特殊数字；「不启用」只能用 `null` / 空值表达（管理界面下拉选「不启用」即传 `null`），因为 `0` 不再当哨兵
 - **触发只发生一次**：触发态**不落库**，由「本轮开奖数字是否命中该场次版本的特殊数字」现场重算；开奖后数字不再变、一轮只锁定一次（`confirm` 的 `already_locked` 拒绝重复锁定），故同一轮结果恒定、天然只触发一次；新一轮 `reset` 把数字置 `null` 自然不再触发
-- 玩家端 `/api/state` 的 `bonus` 字段带 `{ number, title, desc, triggered }`：`triggered` 表示本轮是否命中特殊数字，命中时结果页额外显示「全员额外奖励」横幅（与个人档位并存，互不影响）
+- 玩家端 `/api/state` 的 `bonus` 字段带 `{ number, title, desc, triggered }`（`title`/`desc` 为三语对象，前端按当前语言取用，缺失回退）：`triggered` 表示本轮是否命中特殊数字，命中时结果页额外显示「全员额外奖励」横幅（与个人档位并存，互不影响）
 - 员工端结果区同样显示触发提示；**与原有四档判定、发奖流程、结果展示完全独立**，不改变任何命中判定
 - 边界：无参与者时照常判定（奖励对象为空但状态正确）；配置缺失/`number` 非法一律视为未启用，不触发
 
@@ -363,6 +372,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 - 对账留痕：`round_archive.rule_version` 在锁定那一刻写入，`/api/archive/export.csv` 的末列「规则版本」就是它；历史行（版本化之前）为空。
 - 版本表 `rule_version` 是 append-only（触发器挡 `UPDATE` / `DELETE` / `TRUNCATE`）：要更正规则只能再存一版，改不了历史。
 - 升级兼容：老库把配置存在 `app_config`（就地覆盖、无历史）。首次启动时把最后一份配置落成 `v1`，并把版本化之前建的场次统一挂到 `v1`（它们当时用的正是这份配置）。
+- 三语改造不做数据迁移：历史版本里的**单语字符串**在读取时归一化成「简体中文有值、繁/英为空」，展示端按语言回退，升级前后玩家看到的内容完全一致；管理员下次保存时会被要求补齐三语。历史版本是 append-only 的，不会被就地改写。
 
 > 想让新奖品立刻生效？关掉当前场次、新建一场即可（`POST /api/session-close` → `POST /api/session-create`）。这是「改规则不影响正在玩的玩家」的代价，也是它的意义。
 
@@ -388,7 +398,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | DELETE | `/api/pick` | — | `{sid, ut, pid, seq}` | 撤销草稿，同样按 `seq` 单调判定（删除也吃序号，避免旧请求复活选择） |
 | POST | `/api/submit` | — | 头 `Idempotency-Key`，体 `{sid, ut, pid, oddEven, number}` | **确认提交**：`oddEven` 为 `"单"` / `"双"`，`number` 为 0–9；同 key 重放返回 `200 {replay:true}`，异 key 已提交返回 `409 already_submitted` + 终态。**只有它才落库、才算参赛** |
 | POST | `/api/predict` | — | `{sid, ut, pid, oddEven, number}` | 老接口，保留兼容（重复提交 → `400 predict_duplicate`）；新前端一律用 `/api/submit` |
-| POST | `/api/leave` | — | `{sid, ut, pid}` | 玩家离开现场：只给大屏打 `left` 标记，不删登记与预测；幂等，重复上报不递增版本号 |
+| POST | `/api/leave` | — | `{sid, ut, pid, reason?}` | 玩家离开现场 / 登出：把该玩家移出所有实时名单、人数与统计（不删登记与已提交的预测）；幂等，重复上报不递增版本号；本轮已锁定时忽略（`ignored:true, locked:true`），名单冻结 |
 | POST | `/api/confirm` | token | `{token, sid, number, ackPending?}` | 锁定该场次本轮数字（唯一写入点，写后不可改）。本轮存在「已选但未确认」的草稿时必须带 `ackPending:true`，否则 `409 pending_confirm_required` + `counts` + `pending[]`；锁定后草稿全部作废 |
 | POST | `/api/reset` | token | `{token, sid}` | 该场次轮次 +1 并清空本场本轮玩家（已锁定轮次必须先归档成功，否则返回 409 `archive_write_failed`） |
 | GET | `/api/archive/summary` | **admin** | `?token=&date=` 或 `?token=&from=&to=` | 当日聚合：场次数、轮次数、去重参与人数、分场次明细。默认今天 |
@@ -400,10 +410,10 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/account-password` | **admin** | `{token, username, password}` | 重置密码；该账号所有会话立即失效 |
 | GET | `/api/audit` | **admin** | `?token=&date=` 或 `from=&to=`，可选 `&actor=&action=&limit=` | 操作日志，新的在前，`limit` 默认 200、上限 1000 |
 | GET | `/api/audit/export.csv` | **admin** | 同上（不分页） | 操作日志 CSV（`时间,账号,角色,操作,场次ID,对象,明细,IP`）；导出动作记 `export_audit` 日志 |
-| GET | `/api/prize-config` | **admin** | `?token=` | 读取**最新一版**规则的四档奖品文案：`prizes.{both,number,oddeven,miss}.{title,desc}` + `ruleVersion`，附字段上限 `limits` |
-| POST | `/api/prize-config` | **admin** | `{token, prizes:{both,number,oddeven,miss}}` | 保存奖品文案 → **新增一个规则版本**（内容不变则不新增，返回 `created:false`）。每档 `{title, desc}`，去空白、超长按 32 / 120 截断、未知档位与多余字段丢弃；特殊数字沿用最新版。返回 `{prizes, ruleVersion, created}`，写 `prize_config` 审计。**只对之后新建的场次生效** |
-| GET | `/api/bonus-prize` | **admin** | `?token=` | 读取最新一版的全员额外奖励配置：`bonus.{number,title,desc}`（`number` 为 `null` 表示未启用）+ `ruleVersion`，附 `limits` 与 `range:{min,max}` |
-| POST | `/api/bonus-prize` | **admin** | `{token, bonus:{number,title,desc}}` | 保存特殊数字 → **新增一个规则版本**（同上，内容不变不新增）。`number` 只认 0-9（`0` 合法；非法/缺失/空值视为未启用），`title`/`desc` 去空白并按 32/120 截断；四档文案沿用最新版。返回 `{bonus, ruleVersion, created}`，写 `bonus_config` 审计。**只对之后新建的场次生效** |
+| GET | `/api/prize-config` | **admin** | `?token=` | 读取**最新一版**规则的四档奖品文案：`prizes.{both,number,oddeven,miss}.{title,desc}`，`title`/`desc` 为三语对象 `{zh-CN, zh-HK, en-US}`；另带 `ruleVersion` 与字段上限 `limits` |
+| POST | `/api/prize-config` | **admin** | `{token, prizes:{both,number,oddeven,miss}}` | 保存奖品文案 → **新增一个规则版本**（内容不变则不新增，返回 `created:false`）。每档 `{title, desc}`，两者都是三语对象 `{zh-CN, zh-HK, en-US}`：逐语言去空白、超长按 32 / 120 截断、未知档位与多余字段丢弃；**三语不齐直接 400 `{code:'prize_incomplete', missing:[{tier,field,locales}]}` 且不落库**（整档全空仍合法 = 玩家端不显示该档奖品卡）；特殊数字沿用最新版。返回 `{prizes, ruleVersion, created}`，写 `prize_config` 审计。**只对之后新建的场次生效** |
+| GET | `/api/bonus-prize` | **admin** | `?token=` | 读取最新一版的全员额外奖励配置：`bonus.{number,title,desc}`（`number` 为 `null` 表示未启用；`title`/`desc` 为三语对象）+ `ruleVersion`，附 `limits` 与 `range:{min,max}` |
+| POST | `/api/bonus-prize` | **admin** | `{token, bonus:{number,title,desc}}` | 保存特殊数字 → **新增一个规则版本**（同上，内容不变不新增）。`number` 只认 0-9（`0` 合法；非法/缺失/空值视为未启用）；`title`/`desc` 为三语对象，逐语言去空白并按 32/120 截断，**文案一旦填就必须三语齐全**，否则 400 `{code:'bonus_incomplete', missing:[{tier:'bonus',field,locales}]}`；四档文案沿用最新版。返回 `{bonus, ruleVersion, created}`，写 `bonus_config` 审计。**只对之后新建的场次生效** |
 | GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
 **玩家侧准入（`/api/state`、`/api/scan`、`/api/predict`、`/api/stream` 共用一套判定）**：
@@ -432,7 +442,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
     "miss":    { "title": "", "desc": "" }
   },
   "bonus": { "number": 8, "title": "幸运加奖", "desc": "全员一瓶饮料", "triggered": false },
-  "counts": { "total": 3, "submitted": 1, "draft": 1, "none": 1, "left": 0 },
+  "counts": { "total": 2, "submitted": 1, "draft": 1, "none": 0 },
   "players": [
     { "id": "M00123", "submitted": true,  "status": "submitted", "draft": false, "isVeteran": true },
     { "id": "M00124", "submitted": false, "status": "draft",     "draft": true,  "isVeteran": false }
@@ -459,7 +469,9 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 开奖后 `players[]` 才会补上每人的 `oddEven` 与 `number`；开奖前任何人都拿不到他人的预测内容。`version` 与 `round`、`players` 一样都是**该场次**的，各场次互不影响。
 
-`view=bigscreen`（默认公开，无需 token）换成大屏视图：多了 `"view": "bigscreen"`，`players[]` 在开奖前就带选项 —— `oe`/`num` 是**当前显示值**（已确认取提交值，未确认取草稿值），另有 `status`（`submitted`/`draft`/`none`）与 `draftOddEven`/`draftNumber`/`draftSeq`、`left`/`leftAt`/`registeredAt`/`submittedAt`。`submitted` 只表示**已确认提交**，统计与归档只认它。
+`view=bigscreen`（默认公开，无需 token）换成大屏视图：多了 `"view": "bigscreen"`，`players[]` 在开奖前就带选项 —— `oe`/`num` 是**当前显示值**（已确认取提交值，未确认取草稿值），另有 `status`（`submitted`/`draft`/`none`）与 `draftOddEven`/`draftNumber`/`draftSeq`、`registeredAt`/`submittedAt`。`submitted` 只表示**已确认提交**，统计与归档只认它。
+
+**两种视图的 `players[]` 都只含在场玩家**：已登出 / 已离开（`player.left_at` 非空）的人不会下发，`counts` 也不计入。大屏不再下发 `left`/`leftAt` 字段 —— 卡片消失就是离开，客户端不需要自己判断状态。
 
 ### 7.1 SSE 事件
 
@@ -591,7 +603,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间、**锁定的规则版本 `rule_version`** | 建场次时插入（版本由 `max(rule_version)` 算出）；随快照提交 upsert 元信息，不动版本 |
 | `session_state` | 每个场次一行：**状态版本号** + 最近提交时间（多实例乐观锁凭据） | 提交事务里 `version + 1`（CAS） |
 | `round` | 每个场次一行：当前轮次、开奖数字、锁定时间、锁定人账号 `locked_by`（**主键 `session_id`**） | 按场次 upsert |
-| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为大屏用的离开标记，null = 在场 | 批量 `unnest` upsert + 删除快照里不存在的行 |
+| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为离开/登出标记，null = 在场。非空的行保留在库里（重新扫码可复用），但不出现在任何实时列表、人数、统计与归档中 | 批量 `unnest` upsert + 删除快照里不存在的行 |
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | 批量 `UPSERT`，不删除，跨轮保留 |
 | `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by` + **规则版本 `rule_version`**（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
 | `rule_version` | 规则版本：版本号 + 四档奖品 JSONB + 全员额外奖励 JSONB + 快照指纹 `config_hash` + 来源 + 操作人（**append-only**） | 管理界面保存时追加一版；内容与最新版相同则不写 |
@@ -782,8 +794,6 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 1. **多实例支持**：遗留项：`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
 2. 引入密钥对（公钥加密 / 私钥解密，密钥经环境变量注入），对 `player.id`、`identity.id`、归档表的 `member_id` 及展示用的会员号做加密处理，并配套密钥轮换方案；不需要迁移与清理现有数据。
-3. 员工配置奖品时，需要输入简体、繁体、英文三种语言。
-4. 大屏幕和员工端，不显示和统计已经登出和离开的玩家。
 
 ---
 

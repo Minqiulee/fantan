@@ -411,41 +411,53 @@ function flushDrafts(sid) {
   emitToSession({ id: sid }, 'draft', { sid, items });
 }
 
-/** 本轮选择统计：total / submitted / draft / none / left。只算内存 + 快照，不查库。 */
+/**
+ * 「在场玩家」—— 所有对外列表、人数与统计的唯一口径。
+ *
+ * 已登出 / 已离开（leftAt 非空）的玩家视为不在现场：不下发、不计数、不进归档明细。
+ * 只有两条路径会重新把人放回名单：重新扫码（/api/scan）或玩家端 SSE 重连，
+ * 且都只在本轮未锁定前生效 —— 锁定即名单冻结，之后的离开/登出不再改写本轮结果。
+ */
+function presentPlayers(session) {
+  return Object.values(session.players)
+    .filter((p) => p.leftAt == null)
+    .sort((a, b) => a.registeredAt - b.registeredAt);
+}
+
+/** 本轮选择统计：total / submitted / draft / none。只算在场玩家，只读内存 + 快照，不查库。 */
 function countChoices(session) {
   const m = draftStore.get(session.id);
-  let submitted = 0, draft = 0, left = 0;
-  const players = Object.values(session.players);
+  let submitted = 0, draft = 0;
+  const players = presentPlayers(session);
   for (const p of players) {
     if (p.oddEven != null) submitted += 1;
     else if (m && m.has(p.id)) draft += 1;
-    if (p.leftAt != null) left += 1;
   }
   return {
     total: players.length,
     submitted,
     draft,
-    none: players.length - submitted - draft,
-    left
+    none: players.length - submitted - draft
   };
 }
 
 /** 本轮「选了但没确认」的名单：锁定前的二次确认用它，也是对账时解释
- *  「这个人为什么没成绩」的唯一依据（草稿不落库，锁定即清）。 */
+ *  「这个人为什么没成绩」的唯一依据（草稿不落库，锁定即清）。
+ *  已离开的玩家不在此列表里：人都走了，不能拿他的草稿挡住开奖。 */
 function pendingDraftsOf(session) {
   const m = draftStore.get(session.id);
   if (!m || m.size === 0) return [];
   const out = [];
   m.forEach((d, pid) => {
     const p = session.players[pid];
-    if (!p || p.oddEven != null) return;
+    if (!p || p.leftAt != null || p.oddEven != null) return;
     out.push({ pid, oddEven: d.oe, number: d.num, seq: d.seq, at: d.at });
   });
   return out.sort((a, b) => a.at - b.at);
 }
 
 /** 单个玩家的选择态（对外统一口径）：submitted > draft > none。
- *  presence（左）是独立维度，不参与这里的判定。 */
+ *  已离开的玩家不进入任何对外列表，因此这里也不考虑 left。 */
 function choiceOf(session, pid) {
   const p = session.players[pid];
   if (!p) return 'none';
@@ -748,8 +760,22 @@ function verifyBind(token) {
  *   - 场次在**创建时**锁定版本（game_session.rule_version），运行中只读自己那一版
  *   - 所以更新规则对正在进行的场次零影响，只有之后新建的场次用新规则
  *   - 对账归档记录每轮用的是哪一版（round_archive.rule_version → CSV「规则版本」列）
- *   - 每档只有 title / desc 两个字段，空串表示「后台没配」，玩家端回落到内置文案
+ *   - 每档只有 title / desc 两个字段，**每个字段都是三语对象**
+ *     （zh-CN 简体 / zh-HK 繁体 / en-US 英文），空串表示「这一种语言没填」，
+ *     某种语言没填时展示端按固定顺序回退，绝不显示空白
  *   - 长度在上限处截断而不是拒绝：奖品文案不是安全边界，没必要让管理员保存失败
+ *
+ * ## 三语文案（本次改造的核心）
+ *
+ * 奖品文案要同时在三种界面语言下正确显示，所以 title / desc 由单串变成
+ * `{ 'zh-CN': '', 'zh-HK': '', 'en-US': '' }`。两条铁律：
+ *   1. **一旦这一档开始配置，名称就必须三语齐全**（只填一种语言的文案等于另外两种语言的
+ *      玩家看到的是别的语言的内容，属于配置事故）。说明（desc）要么三语都不填，要么三语都填，
+ *      避免「中文有说明、英文没说明」的半截状态。校验不过直接 400，不落库。
+ *   2. 未配置的档位（六个字段全空）仍然合法 —— 玩家端不显示该档奖品卡（不会被当成配置错误）。
+ *
+ * 旧的单语数据（字符串）不迁移、不改写历史版本：读取时归一化成「简体中文有值、其余为空」，
+ * 展示端按语言回退，升级前后玩家看到的内容完全一致；管理员下次保存时会被要求补齐三语。
  *
  * 规则**不进进程内存**：场次快照那条 SQL 把 rule_version 一起 JOIN 出来（见 db.SNAPSHOT_SQL），
  * 管理端的配置读取也每次直查库。因此不存在缓存、也不存在 TTL —— 任何一个实例都不会读到
@@ -759,29 +785,98 @@ const PRIZE_TIERS = ['both', 'number', 'oddeven', 'miss'];
 const PRIZE_TITLE_MAX = 32;
 const PRIZE_DESC_MAX = 120;
 
+/** 三语字段的固定顺序（= 管理界面字段顺序 = 展示端回退顺序）。 */
+const PRIZE_LOCALES = ['zh-CN', 'zh-HK', 'en-US'];
+/** 旧版单语文案落位到哪种语言：历史文案都是简体中文，其余语言由展示端回退。 */
+const PRIZE_LEGACY_LOCALE = 'zh-CN';
+
+function emptyLocalizedText() {
+  const out = {};
+  for (const loc of PRIZE_LOCALES) out[loc] = '';
+  return out;
+}
+
 function emptyPrizeConfig() {
   const cfg = {};
-  for (const tier of PRIZE_TIERS) cfg[tier] = { title: '', desc: '' };
+  for (const tier of PRIZE_TIERS) cfg[tier] = { title: emptyLocalizedText(), desc: emptyLocalizedText() };
   return cfg;
 }
 
-/** 归一化：只认四档 × 两个字符串字段，其余字段一律丢弃（防止把任意 JSON 塞进库）。 */
+/**
+ * 单个三语字段归一化。三种输入形态都要认：
+ *   - 三语对象（正常保存）→ 逐语言去空白 + 按上限截断，缺的语言补空串
+ *   - 字符串（旧版单语数据）→ 落到 PRIZE_LEGACY_LOCALE，其余语言留空由展示端回退
+ *   - 其他（null / 数字 / 数组）→ 全空
+ * 只做「能读懂就收下」的宽松处理；「三语是否齐全」由下面的 validate* 单独判定，
+ * 这样读历史数据永远不会因为校验规则收紧而报错。
+ */
+function normalizeLocalizedText(input, max) {
+  const out = emptyLocalizedText();
+  if (input == null) return out;
+  if (typeof input === 'string') {
+    out[PRIZE_LEGACY_LOCALE] = input.trim().slice(0, max);
+    return out;
+  }
+  if (typeof input !== 'object') return out;
+  for (const loc of PRIZE_LOCALES) {
+    const v = input[loc];
+    out[loc] = String(v == null ? '' : v).trim().slice(0, max);
+  }
+  return out;
+}
+
+/** 归一化：只认四档 × title/desc 两个三语字段，其余字段一律丢弃（防止把任意 JSON 塞进库）。 */
 function normalizePrizeConfig(input) {
   const out = emptyPrizeConfig();
   if (!input || typeof input !== 'object') return out;
   for (const tier of PRIZE_TIERS) {
     const src = input[tier];
     if (!src || typeof src !== 'object') continue;
-    out[tier].title = String(src.title == null ? '' : src.title).trim().slice(0, PRIZE_TITLE_MAX);
-    out[tier].desc = String(src.desc == null ? '' : src.desc).trim().slice(0, PRIZE_DESC_MAX);
+    out[tier].title = normalizeLocalizedText(src.title, PRIZE_TITLE_MAX);
+    out[tier].desc = normalizeLocalizedText(src.desc, PRIZE_DESC_MAX);
   }
   return out;
+}
+
+/** 这个三语字段有内容吗（不看具体哪种语言）。 */
+function hasAnyText(field) {
+  return !!field && PRIZE_LOCALES.some((loc) => !!field[loc]);
+}
+
+/**
+ * 三语完整性校验 —— 在 normalize 之后调用（入参已是三语对象）。
+ * 返回 [{ tier, field, locales }]，locales 是缺失/未填的语言；空数组表示通过。
+ *
+ * 规则（每条都对应一次真实的配置事故）：
+ *   - 整档六格全空 → 合法，玩家端不显示该档奖品卡；
+ *   - 档位开始配置后，名称必须三语齐全 —— 玩家端按当前语言取文案，缺语言只能回退，
+ *     那等于让英文玩家拿到中文奖品名；
+ *   - 说明要么三语都填、要么都不填 —— 避免同一条奖品在三种语言下信息量不同。
+ */
+function validatePrizeConfig(prizes) {
+  const problems = [];
+  for (const tier of PRIZE_TIERS) {
+    const cfg = prizes[tier];
+    if (!hasAnyText(cfg.title) && !hasAnyText(cfg.desc)) continue;
+    const missingTitle = PRIZE_LOCALES.filter((loc) => !cfg.title[loc]);
+    if (missingTitle.length) problems.push({ tier, field: 'title', locales: missingTitle });
+    const descFilled = PRIZE_LOCALES.filter((loc) => cfg.desc[loc]).length;
+    if (descFilled > 0 && descFilled < PRIZE_LOCALES.length) {
+      problems.push({
+        tier,
+        field: 'desc',
+        locales: PRIZE_LOCALES.filter((loc) => !cfg.desc[loc])
+      });
+    }
+  }
+  return problems;
 }
 
 /**
  * 全员额外奖励（命中特殊数字 → 全员加奖）：
  * 开奖数字等于「特殊数字」时，除原有中奖判定外，所有参与者（含未猜中者）额外获得一份指定奖品。
- * 它是规则的一部分（与四档文案同版本保存），字段为 { number: 0-9|null, title, desc }。
+ * 它是规则的一部分（与四档文案同版本保存），字段为
+ * `{ number: 0-9|null, title: {三语}, desc: {三语} }`（三语规则与四档一致）。
  *   - number 为 null 表示未启用（不触发）。**0 是合法特殊数字，不能再用 0 表示「不启用」**
  *   - 触发**不落库**：/api/state 里按「本轮开奖数字是否命中该场次锁定版本的特殊数字」现场重算，
  *     锁定后开奖数字不再变 → 同一轮重算结果恒定；一轮只锁定一次，天然只触发一次；
@@ -790,19 +885,37 @@ function normalizePrizeConfig(input) {
  *     所以「锁定后再改配置把已开奖轮翻成触发」这种情况不再出现
  */
 function emptyBonusConfig() {
-  return { number: null, title: '', desc: '' };
+  return { number: null, title: emptyLocalizedText(), desc: emptyLocalizedText() };
 }
 
 /** 归一化：number 走与开奖数字同一套 0–9 校验（非法/缺失视为未启用），
- *  title/desc 走同样的长度上限。 */
+ *  title/desc 是三语对象，各语言走同样的长度上限。 */
 function normalizeBonusConfig(input) {
   const out = emptyBonusConfig();
   if (!input || typeof input !== 'object') return out;
   const n = parseNumber0to9(input.number);
   if (n !== null) out.number = n;
-  out.title = String(input.title == null ? '' : input.title).trim().slice(0, PRIZE_TITLE_MAX);
-  out.desc = String(input.desc == null ? '' : input.desc).trim().slice(0, PRIZE_DESC_MAX);
+  out.title = normalizeLocalizedText(input.title, PRIZE_TITLE_MAX);
+  out.desc = normalizeLocalizedText(input.desc, PRIZE_DESC_MAX);
   return out;
+}
+
+/** 额外奖励的三语完整性校验（入参已归一化）：文案一旦填就必须三语齐全，规则与四档相同。
+ *  只开特殊数字、不写文案是合法的 —— 玩家端用内置文案。 */
+function validateBonusConfig(bonus) {
+  const problems = [];
+  if (!hasAnyText(bonus.title) && !hasAnyText(bonus.desc)) return problems;
+  const missingTitle = PRIZE_LOCALES.filter((loc) => !bonus.title[loc]);
+  if (missingTitle.length) problems.push({ tier: 'bonus', field: 'title', locales: missingTitle });
+  const descFilled = PRIZE_LOCALES.filter((loc) => bonus.desc[loc]).length;
+  if (descFilled > 0 && descFilled < PRIZE_LOCALES.length) {
+    problems.push({
+      tier: 'bonus',
+      field: 'desc',
+      locales: PRIZE_LOCALES.filter((loc) => !bonus.desc[loc])
+    });
+  }
+  return problems;
 }
 
 /** 空规则：只在「库里连一版都没有」的极端情况下兜底（启动引导保证不会发生）。 */
@@ -1050,28 +1163,27 @@ function readBody(req) {
 }
 
 /** 玩家公共视图：开奖前绝不包含任何人的预测明细与本轮数字。
- *  只反映本场次。status 是「已提交/待确认/未选」的统一口径，但不含具体选项。 */
+ *  只反映本场次、且只含在场玩家（已登出/已离开的不下发）。
+ *  status 是「已提交/待确认/未选」的统一口径，但不含具体选项。 */
 function publicPlayers(session) {
   const locked = session.number != null;
   const drafts = draftStore.get(session.id);
-  return Object.values(session.players)
-    .sort((a, b) => a.registeredAt - b.registeredAt)
-    .map((p) => {
-      // 老玩家判定：在本场次曾完整走完过至少一轮（提交过预测且那一轮最终开奖）
-      const completed = (session.identities[p.id] || {}).completedRounds || 0;
-      const item = {
-        id: p.id,
-        submitted: p.oddEven != null,
-        status: choiceOf(session, p.id),
-        draft: !!(drafts && drafts.has(p.id)) && p.oddEven == null,
-        isVeteran: completed >= 1
-      };
-      if (locked) { // 已开奖：展示每个人的预测与命中
-        item.oddEven = p.oddEven;
-        item.number = p.number;
-      }
-      return item;
-    });
+  return presentPlayers(session).map((p) => {
+    // 老玩家判定：在本场次曾完整走完过至少一轮（提交过预测且那一轮最终开奖）
+    const completed = (session.identities[p.id] || {}).completedRounds || 0;
+    const item = {
+      id: p.id,
+      submitted: p.oddEven != null,
+      status: choiceOf(session, p.id),
+      draft: !!(drafts && drafts.has(p.id)) && p.oddEven == null,
+      isVeteran: completed >= 1
+    };
+    if (locked) { // 已开奖：展示每个人的预测与命中
+      item.oddEven = p.oddEven;
+      item.number = p.number;
+    }
+    return item;
+  });
 }
 
 /**
@@ -1086,35 +1198,34 @@ function publicPlayers(session) {
  *   oe/num  用于显示的「当前值」：已提交取提交值，未提交取草稿值，都没有为 null；
  *   submitted 仅表示「已确认提交」（草稿不算），统计与归档只认它；
  *   draftSeq 草稿的客户端序号（大屏不用，留给排障）；
- *   left 已离开现场；leftAt 离开时间；isVeteran 本场次老玩家。
+ *   isVeteran 本场次老玩家。
+ *
+ * **已登出 / 已离开的玩家不会出现在这个数组里**：大屏看到的是「现在还在场的人」，
+ * 不是本轮登记过的人。客户端据此直接删卡片，不需要再判断 left 状态。
  */
 function bigscreenPlayers(session) {
   const drafts = draftStore.get(session.id);
-  return Object.values(session.players)
-    .sort((a, b) => a.registeredAt - b.registeredAt)
-    .map((p) => {
-      const completed = (session.identities[p.id] || {}).completedRounds || 0;
-      const submitted = p.oddEven != null;
-      const d = submitted ? null : (drafts && drafts.get(p.id)) || null;
-      return {
-        id: p.id,
-        status: submitted ? 'submitted' : (d ? 'draft' : 'none'),
-        oe: submitted ? p.oddEven : (d ? d.oe : null),
-        num: submitted ? p.number : (d ? d.num : null),
-        draftOddEven: d ? d.oe : null,
-        draftNumber: d ? d.num : null,
-        draftSeq: d ? d.seq : null,
-        draftAt: d ? d.at : null,
-        oddEven: p.oddEven,
-        number: p.number,
-        submitted,
-        left: p.leftAt != null,
-        leftAt: p.leftAt != null ? p.leftAt : null,
-        isVeteran: completed >= 1,
-        registeredAt: p.registeredAt,
-        submittedAt: p.submittedAt
-      };
-    });
+  return presentPlayers(session).map((p) => {
+    const completed = (session.identities[p.id] || {}).completedRounds || 0;
+    const submitted = p.oddEven != null;
+    const d = submitted ? null : (drafts && drafts.get(p.id)) || null;
+    return {
+      id: p.id,
+      status: submitted ? 'submitted' : (d ? 'draft' : 'none'),
+      oe: submitted ? p.oddEven : (d ? d.oe : null),
+      num: submitted ? p.number : (d ? d.num : null),
+      draftOddEven: d ? d.oe : null,
+      draftNumber: d ? d.num : null,
+      draftSeq: d ? d.seq : null,
+      draftAt: d ? d.at : null,
+      oddEven: p.oddEven,
+      number: p.number,
+      submitted,
+      isVeteran: completed >= 1,
+      registeredAt: p.registeredAt,
+      submittedAt: p.submittedAt
+    };
+  });
 }
 
 /** 校验场次名称：去空白、限长；返回 null 表示合法。 */
@@ -1528,7 +1639,10 @@ async function handleApi(req, res, url) {
       const existing = s.players[id];
       if (existing) {
         if (s.identities[id]) s.identities[id].lastSeenRound = s.round;
-        existing.leftAt = null; // 重新扫码 = 回到现场，大屏上的「已离开」标记立刻撤销
+        // 重新扫码 = 回到现场，两端名单与统计立刻恢复。
+        // 但本轮已锁定后不再放回：锁定即名单冻结，否则「离开前不算、回来后又有」
+        // 会让结果表与已落库的归档对不上。
+        if (s.number == null) existing.leftAt = null;
         return { result: { pid: id, status: 'known' } };
       }
 
@@ -1557,11 +1671,14 @@ async function handleApi(req, res, url) {
     return json(res, 200, { ok: true, pid: out.result.pid, sid: out.session.id, status: out.result.status });
   }
 
-  /* 玩家离开现场：只打标记、不删数据。
-   *  - 由玩家端在 pagehide 时用 sendBeacon 上报，因此必须是幂等且极轻的写
-   *  - 不删玩家：已提交的预测仍要参与本轮开奖与归档，大屏只是把它标成「已离开」
+  /* 玩家离开现场 / 主动登出：打标记、不删数据。
+   *  - 由玩家端在 pagehide（sendBeacon）与「登出」按钮（fetch keepalive）上报，
+   *    因此必须是幂等且极轻的写
+   *  - 不删玩家行：只是从「在场名单」里移出 —— 所有列表、看板、人数与统计都不再包含他，
+   *    重新扫码或 SSE 重连再放回（本轮未锁定为前提）
    *  - 重复上报（正在离开 / 已离开）不再递增版本号，避免无意义的全量广播
-   *  - 回来有三个信号都会清掉标记：重新扫码、玩家端 SSE 重连（刷新/回前台） */
+   *  - 本轮已锁定：忽略。锁定即名单冻结，结果表与归档已经按锁定那一刻的人算完，
+   *    之后的离开/登出不能反过来改写它们（否则两端会看到两套人数） */
   if (req.method === 'POST' && url.pathname === '/api/leave') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -1570,6 +1687,7 @@ async function handleApi(req, res, url) {
 
     const pidLeave = String(body.pid || '');
     const out = await store.mutate(ctx.session.id, (s) => {
+      if (s.number != null) return { skip: true, result: { ignored: true, locked: true } };
       const p = s.players[pidLeave];
       // 幂等：未登记 / 已离开都不写库，也不递增版本号
       if (!p || p.leftAt != null) return { skip: true, result: { ignored: true } };
@@ -1580,8 +1698,10 @@ async function handleApi(req, res, url) {
     if (out.notFound) return json(res, 404, { ok: false, code: 'session_not_found' });
     if (out.conflict) return json(res, 409, { ok: false, code: 'write_conflict' });
     if (out.failed) return json(res, 500, { ok: false, code: 'write_failed' });
-    if (out.result.ignored) return json(res, 200, { ok: true, ignored: true });
-    return json(res, 200, { ok: true });
+    if (out.result.ignored) {
+      return json(res, 200, { ok: true, ignored: true, locked: !!out.result.locked });
+    }
+    return json(res, 200, { ok: true, ignored: false });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/predict') {
@@ -1604,6 +1724,8 @@ async function handleApi(req, res, url) {
       if (!p) return { abort: { status: 400, body: { ok: false, code: 'predict_not_scanned' } } };
       if (s.number != null) return { abort: { status: 400, body: { ok: false, code: 'predict_closed' } } };
       if (p.oddEven != null) return { abort: { status: 400, body: { ok: false, code: 'predict_duplicate' } } };
+      // 同上：成功的写入视为「回到现场」，避免离开标记把人挡在名单外
+      p.leftAt = null;
       p.oddEven = oddEven;
       p.number = number;
       p.submittedAt = Date.now();
@@ -1768,6 +1890,9 @@ async function handleApi(req, res, url) {
           }
         };
       }
+      // 能提交就说明人在现场：顺手撤销可能残留的离开标记（pagehide 与提交竞态、
+      // 网络抖动导致的误上报），否则会出现「已提交但两端都看不到、锁定也不归档」。
+      p.leftAt = null;
       p.oddEven = oe;
       p.number = num;
       p.submittedAt = Date.now();
@@ -1835,9 +1960,10 @@ async function handleApi(req, res, url) {
       s.number = number;
       s.lockedAt = Date.now();
       s.lockedBy = staff.username;   // 对账要能追到「这一轮是谁锁的」
-      // 开奖即视为本轮完整竞猜结束：凡提交过预测的玩家，本场次的完整竞猜轮次 +1
-      // 只认玩家表里的 odd_even（= 已确认提交），内存草稿不参与任何计数
-      Object.values(s.players).forEach((p) => {
+      // 开奖即视为本轮完整竞猜结束：凡提交过预测且仍在场的玩家，本场次完整竞猜轮次 +1
+      // 只认玩家表里的 odd_even（= 已确认提交），内存草稿不参与任何计数；
+      // 已离开的不算参与本轮，也就不累计老玩家轮次
+      presentPlayers(s).forEach((p) => {
         if (p.oddEven != null) {
           const idt = s.identities[p.id] || (s.identities[p.id] = { lastSeenRound: s.round, completedRounds: 0 });
           idt.completedRounds = (idt.completedRounds || 0) + 1;
@@ -2063,9 +2189,16 @@ async function handleApi(req, res, url) {
     const admin = await requireAdmin(body.token);
     if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
 
+    // 先归一化再校验三语完整性：不完整的配置**不入库**（否则玩家端会拿到缺语言的文案）
+    const normalized = normalizePrizeConfig(body.prizes);
+    const problems = validatePrizeConfig(normalized);
+    if (problems.length) {
+      return json(res, 400, { ok: false, code: 'prize_incomplete', missing: problems });
+    }
+
     let saved;
     try {
-      saved = await saveRule({ prizes: body.prizes }, { source: 'prize', actor: admin.username });
+      saved = await saveRule({ prizes: normalized }, { source: 'prize', actor: admin.username });
     } catch (e) {
       console.error('[rule] 保存奖品配置失败:', e.message);
       return json(res, 500, { ok: false, code: 'prize_save_failed' });
@@ -2109,9 +2242,15 @@ async function handleApi(req, res, url) {
     const admin = await requireAdmin(body.token);
     if (!admin) return json(res, 401, { ok: false, code: 'unauthorized' });
 
+    const normalized = normalizeBonusConfig(body.bonus);
+    const problems = validateBonusConfig(normalized);
+    if (problems.length) {
+      return json(res, 400, { ok: false, code: 'bonus_incomplete', missing: problems });
+    }
+
     let saved;
     try {
-      saved = await saveRule({ bonus: body.bonus }, { source: 'bonus', actor: admin.username });
+      saved = await saveRule({ bonus: normalized }, { source: 'bonus', actor: admin.username });
     } catch (e) {
       console.error('[rule] 保存额外奖品失败:', e.message);
       return json(res, 500, { ok: false, code: 'bonus_save_failed' });
@@ -2371,10 +2510,11 @@ async function handleStream(req, res, url) {
 
   // 玩家端重连即视为「回到现场」：撤销 pagehide 时上报的离开标记。
   // 浏览器刷新 / 从后台切回 / 切场次回来都会走到这里，所以离开状态不会黏住。
+  // 本轮已锁定时不撤销：锁定即名单冻结，重连只能看结果，不能把自己加回本轮名单。
   if (!view && pid) {
     const out = await store.mutate(session.id, (s) => {
       const self = s.players[pid];
-      if (!self || self.leftAt == null) return { skip: true, result: {} };
+      if (!self || self.leftAt == null || s.number != null) return { skip: true, result: {} };
       self.leftAt = null;
       return { result: {} };
     });

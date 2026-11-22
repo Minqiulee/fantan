@@ -20,7 +20,7 @@
   var curRound = null;    // 当前轮次（变化即视为新一轮，整屏清空重来）
   var hasBaseline = false;// 是否已经渲染过首帧（首帧不产生「加入」动态）
 
-  var cards = new Map();  // pid -> { el, refs, sig, submitted, oddEven, number, left }
+  var cards = new Map();  // pid -> { el, refs, sig, submitted, oddEven, number }
   var events = [];        // 最近动态（只保留 8 条，够看就行）
 
   var t = window.I18N.t;
@@ -178,18 +178,23 @@
     }
   }
 
-  function renderStats(list) {
-    var total = list.length, picked = 0, left = 0, draft = 0;
+  /** 统计以服务端 counts 为准（与员工端同一份快照、同一口径：只算在场玩家）；
+   *  counts 缺失时退回当前列表。草稿数由 draft 补丁即时更新，所以从 list 现算。 */
+  function renderStats(list, counts) {
+    var c = counts || {};
+    var total = c.total != null ? c.total : list.length;
+    var picked = c.submitted != null ? c.submitted : 0;
+    var draft = 0;
+    if (c.submitted == null) {
+      list.forEach(function (p) { if (p.submitted) picked += 1; });
+    }
     list.forEach(function (p) {
-      if (p.submitted) picked += 1;
-      else if (p.status === 'draft') draft += 1;
-      if (p.left) left += 1;
+      if (!p.submitted && p.status === 'draft') draft += 1;
     });
     $('nTotal').textContent = total;
     $('nPicked').textContent = picked;
     if ($('nDraft')) $('nDraft').textContent = draft;
-    $('nUnpicked').textContent = total - picked - draft;
-    $('nLeft').textContent = left;
+    $('nUnpicked').textContent = Math.max(0, total - picked - draft);
     $('empty').classList.toggle('on', total === 0);
     if (total === 0) $('empty').textContent = t('bs_waiting');
     applyDensity(total);
@@ -209,13 +214,12 @@
 
   /* ---------- 渲染：玩家卡片（按 pid 增量 diff） ---------- */
   function stateOf(p) {
-    if (p.left) return 'left';
     if (p.submitted) return 'picked';
     return p.status === 'draft' ? 'draft' : 'unpicked';
   }
 
   function sigOf(p) {
-    return [p.status || '', p.oe || '', p.num == null ? '' : p.num, p.left ? 1 : 0].join('|');
+    return [p.status || '', p.oe || '', p.num == null ? '' : p.num].join('|');
   }
 
   function makeCard(p, d) {
@@ -315,8 +319,7 @@
     var foot = card.refs.foot;
     while (foot.children.length > 1) foot.removeChild(foot.lastChild);
     var st = document.createElement('span');
-    st.textContent = t(p.left ? 'bs_stateLeft'
-      : p.submitted ? 'bs_statePicked'
+    st.textContent = t(p.submitted ? 'bs_statePicked'
       : p.status === 'draft' ? 'bs_stateDraft'
       : 'bs_stateUnpicked');
     foot.appendChild(st);
@@ -326,7 +329,6 @@
     card.submitted = p.submitted;
     card.oddEven = p.oddEven;
     card.number = p.number;
-    card.left = p.left;
   }
 
   function flash(el, cls) {
@@ -352,12 +354,10 @@
       // 开奖/撤销开奖不改变选择签名，但要让命中标记重新画一遍，所以单列一个判断
       var lockedChanged = (d && d.locked ? 1 : 0) !== (card.locked ? 1 : 0);
       if (card.sig === next && !lockedChanged) return;
-      var prev = { submitted: card.submitted, oddEven: card.oddEven, number: card.number, left: card.left };
+      var prev = { submitted: card.submitted, oddEven: card.oddEven, number: card.number };
       paintCard(card, p, d);
       if (hasBaseline) {
-        if (p.left && !prev.left) pushEvent('leave', p.id);
-        else if (!p.left && prev.left) pushEvent('join', p.id);
-        else if (p.submitted && !prev.submitted) pushEvent('pick', p.id);
+        if (p.submitted && !prev.submitted) pushEvent('pick', p.id);
         else if (p.submitted && prev.submitted && (p.oddEven !== prev.oddEven || p.number !== prev.number)) pushEvent('change', p.id);
       }
       flash(card.el, 'change');
@@ -438,7 +438,7 @@
     });
     if (!touched) return;
     syncCards(lastPayload.players, lastPayload);
-    renderStats(lastPayload.players);
+    renderStats(lastPayload.players, lastPayload.counts);
   }
 
   /* ---------- 状态应用 ---------- */
@@ -468,7 +468,7 @@
     curRound = d.round;
 
     renderHead(d);
-    renderStats(d.players || []);
+    renderStats(d.players || [], d.counts);
     syncCards(d.players || [], d);
     if (force) {
       // 切语言后重绘（选择没变，diff 不会触发），让「已选择/老玩家/命中」等文案跟上

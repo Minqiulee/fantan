@@ -102,7 +102,6 @@
   .st.pick .n { background:linear-gradient(180deg,#d8ffe8,var(--ok)); -webkit-background-clip:text; background-clip:text; }
   .st.draft .n { background:linear-gradient(180deg,#ffe9bf,#d4a653); -webkit-background-clip:text; background-clip:text; }
   .st.unpick .n { background:linear-gradient(180deg,#f4e4c8,#c9a173); -webkit-background-clip:text; background-clip:text; }
-  .st.left .n { background:linear-gradient(180deg,#c3b3ab,#7d6a62); -webkit-background-clip:text; background-clip:text; }
   .st .t { font-size: clamp(11px,1.45vh,16px); color:var(--muted); letter-spacing:2px; }
 
   .draw {

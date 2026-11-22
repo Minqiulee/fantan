@@ -24,6 +24,9 @@ let adminToken;
 let sid;
 let ut;
 
+/* 版本化之前的旧配置：文案是**单语字符串**。升级时不做数据迁移，
+ * 读取时归一化成「简体中文有值、其余语言留空」，展示端按语言回退 —— 玩家看到的还是这句。
+ * 所以下面断言的是归一化之后的形态，而不是库里那份原始 JSON。 */
 const OLD_PRIZES = {
   both: { title: '旧 · 都中', desc: '' },
   number: { title: '旧 · 只中数字', desc: '' },
@@ -31,6 +34,31 @@ const OLD_PRIZES = {
   miss: { title: '旧 · 都没中', desc: '' }
 };
 const OLD_BONUS = { number: 4, title: '旧 · 四号加奖', desc: '' };
+
+/** 三语字段：只有简体有值（旧单语数据归一化后的样子） */
+function legacyText(v) {
+  return { 'zh-CN': v, 'zh-HK': '', 'en-US': '' };
+}
+function legacyTier(v) {
+  return { title: legacyText(v.title), desc: legacyText(v.desc) };
+}
+function legacyPrizes(prizes) {
+  const out = {};
+  for (const tier of Object.keys(prizes)) out[tier] = legacyTier(prizes[tier]);
+  return out;
+}
+
+/** 空的三语字段 / 空档位 */
+function noText() {
+  return { 'zh-CN': '', 'zh-HK': '', 'en-US': '' };
+}
+function emptyTier() {
+  return { title: noText(), desc: noText() };
+}
+/** 一档三语文案（说明默认整档留空） */
+function tier(zh, hant, en) {
+  return { title: { 'zh-CN': zh, 'zh-HK': hant, 'en-US': en }, desc: noText() };
+}
 
 /** 昨天：给「历史场次」之类的时间断言留位置（当前用例只用今天，这里保持简单）。 */
 function playerState(s = sid, token = ut) {
@@ -75,11 +103,13 @@ test('升级路径：老的 app_config 配置落成 v1，历史场次挂到 v1',
   const p = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.equal(p.status, 200);
   assert.equal(p.body.ruleVersion, 1, '首次升级落成 v1');
-  assert.deepEqual(p.body.prizes, OLD_PRIZES);
+  assert.deepEqual(p.body.prizes, legacyPrizes(OLD_PRIZES), '旧单语文案落位到简体中文');
 
   const b = await api.get('/api/bonus-prize?token=' + encodeURIComponent(adminToken));
   assert.equal(b.body.ruleVersion, 1);
-  assert.deepEqual(b.body.bonus, OLD_BONUS);
+  assert.equal(b.body.bonus.number, OLD_BONUS.number, '特殊数字原样保留');
+  assert.deepEqual(b.body.bonus.title, legacyText(OLD_BONUS.title));
+  assert.deepEqual(b.body.bonus.desc, legacyText(OLD_BONUS.desc));
 
   // 启动时建出来的第一个场次，以及它读到的规则，都是 v1
   const rows = await withDb(async (c) => {
@@ -90,7 +120,7 @@ test('升级路径：老的 app_config 配置落成 v1，历史场次挂到 v1',
 
   const s = await playerState();
   assert.equal(s.body.ruleVersion, 1);
-  assert.deepEqual(s.body.prizes, OLD_PRIZES);
+  assert.deepEqual(s.body.prizes, legacyPrizes(OLD_PRIZES));
   assert.equal(s.body.bonus.number, 4);
 });
 
@@ -98,10 +128,10 @@ test('保存 = 新增版本：旧版本原样保留，且不可被改写', async
   const v1 = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
 
   const nextPrizes = {
-    both: { title: '新 · 都中', desc: '' },
-    number: { title: '新 · 只中数字', desc: '' },
-    oddeven: { title: '新 · 只中单双', desc: '' },
-    miss: { title: '新 · 都没中', desc: '' }
+    both: tier('新 · 都中', '新 · 都中', 'New · both'),
+    number: tier('新 · 只中数字', '新 · 只中數字', 'New · number'),
+    oddeven: tier('新 · 只中单双', '新 · 只中單雙', 'New · odd/even'),
+    miss: tier('新 · 都没中', '新 · 都沒中', 'New · miss')
   };
   const saved = await api.post('/api/prize-config', { token: adminToken, prizes: nextPrizes });
   assert.equal(saved.status, 200);
@@ -137,7 +167,8 @@ test('保存 = 新增版本：旧版本原样保留，且不可被改写', async
 
 test('四档与特殊数字是同一套规则：改一块不会清空另一块', async () => {
   const b1 = await api.post('/api/bonus-prize', {
-    token: adminToken, bonus: { number: 6, title: '六号加奖', desc: '' }
+    // 只开特殊数字、不写文案：合法（玩家端用内置文案）
+    token: adminToken, bonus: { number: 6 }
   });
   assert.equal(b1.status, 200);
   assert.equal(b1.body.bonus.number, 6);
@@ -145,7 +176,7 @@ test('四档与特殊数字是同一套规则：改一块不会清空另一块',
   const p = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   const saved = await api.post('/api/prize-config', {
     token: adminToken,
-    prizes: { ...p.body.prizes, both: { title: '再改一次', desc: '' } }
+    prizes: { ...p.body.prizes, both: tier('再改一次', '再改一次', 'Changed again') }
   });
   assert.equal(saved.body.ruleVersion, b1.body.ruleVersion + 1);
 
@@ -158,7 +189,8 @@ test('四档与特殊数字是同一套规则：改一块不会清空另一块',
   const b3 = await api.post('/api/bonus-prize', { token: adminToken, bonus: { number: null } });
   const p3 = await api.get('/api/prize-config?token=' + encodeURIComponent(adminToken));
   assert.equal(b3.body.ruleVersion, saved.body.ruleVersion + 1);
-  assert.equal(p3.body.prizes.both.title, '再改一次', '四档文案应沿用上一版');
+  assert.equal(p3.body.prizes.both.title['zh-CN'], '再改一次', '四档文案应沿用上一版');
+  assert.equal(p3.body.prizes.both.title['en-US'], 'Changed again');
 });
 
 test('对账 CSV 的「规则版本」列记录每轮所用的版本（跨场次、跨轮次都不串）', async () => {
@@ -225,12 +257,16 @@ test('规则直查库：另一台实例写入的新版本（没有任何通知�
   // 绕开接口直接写库 = 模拟「另一台实例保存了规则，但 PUB/SUB 通知没到」。
   // 规则若走进程内缓存，这里会读到旧的一版；直查库则必须立刻是新版。
   const manualPrizes = {
-    both: { title: '外部实例 · 都中', desc: '' },
-    number: { title: '外部实例 · 只中数字', desc: '' },
-    oddeven: { title: '外部实例 · 只中单双', desc: '' },
-    miss: { title: '外部实例 · 都没中', desc: '' }
+    both: tier('外部实例 · 都中', '外部實例 · 都中', 'Other instance · both'),
+    number: tier('外部实例 · 只中数字', '外部實例 · 只中數字', 'Other instance · number'),
+    oddeven: tier('外部实例 · 只中单双', '外部實例 · 只中單雙', 'Other instance · odd/even'),
+    miss: tier('外部实例 · 都没中', '外部實例 · 都沒中', 'Other instance · miss')
   };
-  const manualBonus = { number: 3, title: '外部实例 · 三号加奖', desc: '' };
+  const manualBonus = {
+    number: 3,
+    title: { 'zh-CN': '外部实例 · 三号加奖', 'zh-HK': '外部實例 · 三號加獎', 'en-US': 'Other instance · lucky three' },
+    desc: noText()
+  };
   await withDb(async (c) => {
     const cur = await c.query('SELECT max(version)::int AS v FROM rule_version');
     await c.query(

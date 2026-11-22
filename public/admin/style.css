@@ -171,6 +171,28 @@
   .bonus-block { border-color:rgba(255,190,80,.45); }
   .bonus-block .pb-tier { background:rgba(255,170,40,.20); color:#ffb84d; border-color:rgba(255,190,80,.55); }
 
+  /* 三语字段：一档三列（简体 / 繁体 / English），三种语言各占一栏，颜色区分；
+     窄屏 auto-fit 自动堆成竖排，不横向滚动。 */
+  .prize-tip.prize-lang-tip { color:#a8c6ff; }
+  /* 三列要并排放得下：宽屏时只在奖品页把版心从 640 放宽到 960（见 body[data-view]） */
+  @media (min-width: 980px) {
+    body[data-view="prize"] .wrap { max-width: 960px; }
+  }
+  .prize-block .lang-grid { display:grid; gap:10px; margin-bottom:12px;
+    grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); }
+  .prize-block .lang-col { padding:10px 12px 0; border-radius:12px;
+    background:rgba(255,255,255,.035); border:1px solid var(--card-border); }
+  .prize-block .lang-tag { display:inline-block; margin-bottom:10px; padding:2px 10px; border-radius:99px;
+    font-size:11px; font-weight:800; letter-spacing:.5px;
+    background:rgba(79,140,255,.16); color:#a8c6ff; border:1px solid rgba(79,140,255,.45); }
+  .lang-col[data-lang="zh-HK"] .lang-tag {
+    background:rgba(52,211,153,.15); color:var(--ok); border-color:rgba(52,211,153,.42); }
+  .lang-col[data-lang="en-US"] .lang-tag {
+    background:rgba(255,212,94,.15); color:var(--gold); border-color:rgba(255,212,94,.42); }
+  .lang-col .form-row:last-child { margin-bottom:10px; }
+  /* 提交时被判定为「缺这一种语言」的输入框标红，配合文字提示定位到具体字段 */
+  .lang-col .bad { border-color:#f87171 !important; }
+
   /* 操作日志：卡片列表（窄屏不横向滚动，信息不折成竖排） */
   .log-list { display:flex; flex-direction:column; gap:8px; margin-top:4px; }
   .log-item { padding:10px 12px; border-radius:12px; background:rgba(0,0,0,.22); border:1px solid var(--card-border); }
@@ -208,6 +230,8 @@
   .btn:active { transform:scale(.97); }
   .btn[disabled] { opacity:.4; pointer-events:none; }
   .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:18px; }
+  /* 奖品保存的错误可能有多条（每档每种语言一条），允许换行显示 */
+  #prizeErr { white-space:pre-line; line-height:1.6; }
   .logout-link { display:block; margin:16px auto 0; background:none; border:none; color:var(--muted);
     font-size:13px; cursor:pointer; text-decoration:underline; font-family:inherit; }
 

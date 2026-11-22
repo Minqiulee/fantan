@@ -19,6 +19,7 @@
 
 - **写接口只校验 `ut` 场次绑定，不校验 `pid` 归属**（沿用现有 `/api/predict` 的做法）。上线前若要堵「替别人点选」，需要给 `/api/scan` 加 `ptoken`，见 §9。
 - **状态是二维的**：`choice`（none / draft / submitted）+ `presence`（in / left）。不合并成一个枚举，否则「已提交 + 已离开」这类组合会让状态爆炸。
+- **`presence=left` 是硬门槛**：已登出 / 已离开的玩家不进入任何对外投影（`players[]`、`counts`、场次摘要、归档明细），客户端不需要也不应该自己过滤。锁定后名单冻结，`/api/leave` 被忽略。
 
 ---
 
@@ -62,7 +63,7 @@ submitReceipts Map<`sid|round|pid`, { idemKey, oddEven, number, at }>  // 提交
   "serverTime": 1763800016123,        // ★ 客户端校准时钟
   "round": 12,
   "locked": false,
-  "counts": { "total": 10, "submitted": 6, "draft": 3, "none": 1, "left": 1 },  // ★
+  "counts": { "total": 9, "submitted": 6, "draft": 2, "none": 1 },  // ★ 只算在场玩家
   "players": [
     // 玩家视图：只有状态，没有别人的选项
     { "id": "M1", "submitted": false, "status": "draft", "draft": true, "isVeteran": false },
@@ -70,7 +71,7 @@ submitReceipts Map<`sid|round|pid`, { idemKey, oddEven, number, at }>  // 提交
     { "id": "M1", "status": "draft", "oe": "单", "num": 3,
       "oddEven": null, "number": null, "submitted": false,
       "draftOddEven": "单", "draftNumber": 3, "draftSeq": 7, "draftAt": 1763800010000,
-      "left": false, "leftAt": null, "isVeteran": false,
+      "isVeteran": false,
       "registeredAt": 1763800000000, "submittedAt": null }
   ],
   "me": {                              // 玩家视角，需带 ?pid=
@@ -82,10 +83,11 @@ submitReceipts Map<`sid|round|pid`, { idemKey, oddEven, number, at }>  // 提交
 
 字段语义（写死，别改）：
 
-- `status`：`submitted` > `draft` > `none`。`left` 是独立维度，不参与。
+- `status`：`submitted` > `draft` > `none`。
 - `submitted`：**只表示已确认提交**（库里 `odd_even` 非空）。统计、归档、老玩家计数只认它。
 - `oe` / `num`：**显示值**，已提交取提交值、未提交取草稿值，都没有为 `null`。前端直接画，不自己判断优先级。
-- `counts` 由服务端算，客户端不得自行统计（否则大屏和员工端会显示两个数）。
+- `players[]` 与 `counts` **只含在场玩家**：`presence=left` 由服务端过滤，投影里不再有 `left` / `leftAt` 字段；离开的人就是「不在这份快照里」。
+- `counts` 由服务端算，客户端不得自行统计（否则大屏和员工端会显示两个数）。两端的数字都直接取它。
 
 ---
 
@@ -116,6 +118,9 @@ stateDiagram-v2
 | T8 | none / draft | `POST /api/confirm` 未带 `ackPending` 且有草稿 | — | 不变 | `409 pending_confirm_required` + `counts` + `pending[]` |
 | T9 | none / draft | `POST /api/confirm` 带 `ackPending` | — | 草稿作废 | 清草稿、锁定开奖；归档只计 `odd_even` 非空者 |
 | T10 | 任意 | `POST /api/reset` | 上轮已归档 | none | 清 `players`、清草稿、清回执 |
+| T11 | 任意（未锁定） | `POST /api/leave`（pagehide / 登出） | `presence=in` | left | 写 `left_at`、广播 `state`；从所有投影与统计中移除 |
+| T12 | left | `POST /api/scan` / 玩家端 SSE 重连 / 成功 `submit` | 本轮未锁定 | in | 清 `left_at`、广播 `state`；重新进入名单（成功写入即证明人在现场） |
+| — | left | `POST /api/leave` / 重连 / 扫码 | 本轮已锁定 | 不变 | 忽略：锁定即名单冻结，结果表与归档不再改写 |
 
 **草稿不会产生持久状态**：锁轮即蒸发，不存在「已选未提交」的历史记录。
 
@@ -168,7 +173,7 @@ stateDiagram-v2
 ```jsonc
 // 200 首次
 { "ok": true, "replay": false, "version": 3313,
-  "counts": { "total": 10, "submitted": 7, "draft": 2, "none": 1, "left": 1 },
+  "counts": { "total": 9, "submitted": 7, "draft": 1, "none": 1 },
   "submit": { "oddEven": "单", "number": 3, "submittedAt": 1763800015000 } }
 
 // 200 重放
@@ -187,7 +192,7 @@ stateDiagram-v2
 
 ### 3.4 `GET /api/state` — 全量快照（扩展）
 
-`?sid=&ut=|token=&pid=&view=player|bigscreen`。新增 `serverTime`、`counts`、`players[].status`、`me.draft`。`me` 需要带 `pid`。`view=bigscreen` **默认公开**（开奖前会暴露所有人选项，`BIGSCREEN_PUBLIC=0` 时恢复只认员工 `token`）。
+`?sid=&ut=|token=&pid=&view=player|bigscreen`。新增 `serverTime`、`counts`、`players[].status`、`me.draft`。`me` 需要带 `pid`。`view=bigscreen` **默认公开**（开奖前会暴露所有人选项，`BIGSCREEN_PUBLIC=0` 时恢复只认员工 `token`）。两种视图的 `players[]` 与 `counts` 都只含在场玩家；`me` 仍按 `pid` 返回（锁定后回来的人仍能看自己的结果）。
 
 ### 3.5 `GET /api/stream` — SSE（扩展）
 
@@ -201,12 +206,12 @@ stateDiagram-v2
 
 ### 3.6 `POST /api/confirm` — 员工锁定（扩展）
 
-请求新增 `ackPending: true`，响应新增 `counts`。本轮有草稿且未 ack：
+请求新增 `ackPending: true`，响应新增 `counts`。本轮**在场玩家**有草稿且未 ack（已离开玩家的草稿不算）：
 
 ```jsonc
 // 409
 { "ok": false, "code": "pending_confirm_required",
-  "counts": { "total": 2, "submitted": 1, "draft": 1, "none": 0, "left": 0 },
+  "counts": { "total": 2, "submitted": 1, "draft": 1, "none": 0 },
   "pending": [ { "pid": "M2", "oddEven": "双", "number": 8, "seq": 1, "at": 1763800020000 } ] }
 ```
 
@@ -256,6 +261,7 @@ sequenceDiagram
 - `flushDrafts(sid)`：500ms 到期把脏 pid 攒成一条 `draft` 事件推给该场次在线连接；没人在线直接跳过（内存仍在，首帧 `state` 会带出）。
 - 跨实例：`publishDrafts()` 经 LISTEN/NOTIFY 转发**内容**（本项目唯一携带数据的通知，因为草稿不在库里、收端无从回读）。收端 `ingestRemoteDrafts` 按 seq 合并后走同一套 500ms 广播。
 - 通知丢了不修：该实例暂时看不到草稿，玩家端重连补发即恢复。
+- 离开 / 登出：`POST /api/leave` 走 `store.mutate` 落 `left_at` 并广播 `state`（推进 `version`），两端同时收到；重复上报走 `skip`，不推进版本号。锁定后的上报被忽略。
 
 ---
 
@@ -333,7 +339,10 @@ onState(s):
 | `server.js` | `confirm` 增 `ackPending` + `pending`；锁定/关闭/新一轮清草稿与回执 |
 | `server.js` | pubsub 事件分流：`type=draft` 走内存合并，其余走 `store.applyRemote` |
 | `public/index/app.js` | 点选节流上报、`resumeDraft` 重连补发、提交改 `/api/submit` + 幂等键 |
-| `public/bigscreen/app.js` | 三态卡片（虚线待确认）、`draft` 补丁事件、待确认计数 |
+| `public/bigscreen/app.js` | 三态卡片（虚线待确认）、`draft` 补丁事件、待确认计数；离开即删卡片（不再保留灰卡与「已离开」计数） |
+| `server.js` / `db.js` | `presentPlayers()` 统一在场口径：`players[]`、`counts`、场次摘要、归档明细全部过滤 `left_at`；锁定后冻结名单 |
+| `public/index/app.js` | 「登出」除清本机身份外上报 `/api/leave`，先关旧 SSE 再重连空 pid，避免旧连接把离开标记撤销 |
+| `test/presence.test.mjs` | 在场口径：离开后的两端投影/人数/摘要、草稿不挡开奖、归档同口径、锁定后冻结 |
 | `public/staff/app.js` | 开奖前区分「未提交」与「已选未确认」，`ackPending` 重试 |
 | `public/shared/i18n.js` | 三语各补 4 个 key（306 个，三语对齐） |
 | `test/pick.test.mjs` | 7 组用例：内存语义 / 视图隔离 / seq 单调 / 撤销 / 幂等 / 锁定竞态 / 重启恢复 |

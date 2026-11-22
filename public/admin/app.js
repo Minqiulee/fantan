@@ -289,6 +289,8 @@
     Object.keys(VIEWS).forEach(function (k) {
       $(VIEWS[k]).classList.toggle('hidden', k !== name);
     });
+    // 奖品设置要并排放三语三列，640 的窄栏放不下：宽屏上只在奖品页放宽容器（见 style.css）
+    document.body.setAttribute('data-view', on ? name : '');
     if (name === 'archive') { archiveLoaded = true; refreshArchive(); }
     if (name === 'account') { loadAccounts(); }
     if (name === 'audit') { auditLoaded = true; refreshAudit(); }
@@ -651,15 +653,91 @@
   });
 
   /* ---------- 奖品设置 ---------- */
-  /* 四档文案是全局配置（不按场次），保存后服务端把新快照推给所有在线玩家端。
-   * 档位输入框一一对应，避免用下标猜字段。 */
+  /* 四档文案是全局配置（不按场次），保存后只对之后新建的场次生效。
+   *
+   * 每档的「奖品名称 / 奖品说明」都要按三种语言各存一份：
+   *   prizes[tier].title = { 'zh-CN': '', 'zh-HK': '', 'en-US': '' }
+   *   prizes[tier].desc  = 同上（bonus 区块同构，另加 number）
+   * 玩家端按它当前选的语言取对应的那一键，缺语言时按固定顺序回退。
+   *
+   * 三语完整性：**只要这一档开始配置，名称就必须三语齐全**；说明要么三语都填、要么都不填。
+   * 前端先拦（并把缺的那一栏标红，让人一眼看到缺哪种语言），服务端再拦一次
+   * （400 / prize_incomplete），两边规则必须一致，避免「前端放过、后端 500」。
+   */
+  var PRIZE_LOCALES = ['zh-CN', 'zh-HK', 'en-US'];
+
+  /* 档位 × 语言 → [名称输入框 id, 说明输入框 id]。全部写死，避免用下标拼 id 拼错。 */
   var PRIZE_FIELDS = {
-    both: ['pzBothTitle', 'pzBothDesc'],
-    number: ['pzNumberTitle', 'pzNumberDesc'],
-    oddeven: ['pzOddevenTitle', 'pzOddevenDesc'],
-    miss: ['pzMissTitle', 'pzMissDesc']
+    both: {
+      'zh-CN': ['pzBothTitleZhCN', 'pzBothDescZhCN'],
+      'zh-HK': ['pzBothTitleZhHK', 'pzBothDescZhHK'],
+      'en-US': ['pzBothTitleEnUS', 'pzBothDescEnUS']
+    },
+    number: {
+      'zh-CN': ['pzNumberTitleZhCN', 'pzNumberDescZhCN'],
+      'zh-HK': ['pzNumberTitleZhHK', 'pzNumberDescZhHK'],
+      'en-US': ['pzNumberTitleEnUS', 'pzNumberDescEnUS']
+    },
+    oddeven: {
+      'zh-CN': ['pzOddevenTitleZhCN', 'pzOddevenDescZhCN'],
+      'zh-HK': ['pzOddevenTitleZhHK', 'pzOddevenDescZhHK'],
+      'en-US': ['pzOddevenTitleEnUS', 'pzOddevenDescEnUS']
+    },
+    miss: {
+      'zh-CN': ['pzMissTitleZhCN', 'pzMissDescZhCN'],
+      'zh-HK': ['pzMissTitleZhHK', 'pzMissDescZhHK'],
+      'en-US': ['pzMissTitleEnUS', 'pzMissDescEnUS']
+    }
   };
+  /* 全员额外奖励的三语文案（特殊数字单独一个下拉框） */
+  var BONUS_FIELDS = {
+    'zh-CN': ['bzTitleZhCN', 'bzDescZhCN'],
+    'zh-HK': ['bzTitleZhHK', 'bzDescZhHK'],
+    'en-US': ['bzTitleEnUS', 'bzDescEnUS']
+  };
+  /* 档位 → i18n 键（错误提示里要报「哪一档」） */
+  var PRIZE_TIER_I18N = {
+    both: 'prizeTierBoth',
+    number: 'prizeTierNumber',
+    oddeven: 'prizeTierOddeven',
+    miss: 'prizeTierMiss',
+    bonus: 'bonusTitle'
+  };
+  var PRIZE_LOCALE_I18N = { 'zh-CN': 'pzLangZhCN', 'zh-HK': 'pzLangZhHK', 'en-US': 'pzLangEnUS' };
+
+  /* 三语示例占位符：示例本身就是「那一种语言的内容」，不随界面语言切换，
+   * 所以不挂 data-i18n-placeholder，由这里按栏固定。 */
+  var PRIZE_PLACEHOLDER = {
+    'zh-CN': { title: '例如：羊绒围巾一条', desc: '例如：凭本页面到前台领取，当日有效' },
+    'zh-HK': { title: '例如：羊絨圍巾一條', desc: '例如：憑本頁面到前台領取，當日有效' },
+    'en-US': { title: 'e.g. Wool scarf', desc: 'e.g. Show this page at the counter, valid today' }
+  };
+
+  function applyPrizePlaceholders() {
+    Object.keys(PRIZE_FIELDS).forEach(function (tier) {
+      PRIZE_LOCALES.forEach(function (loc) {
+        var ids = PRIZE_FIELDS[tier][loc];
+        var ph = PRIZE_PLACEHOLDER[loc];
+        $(ids[0]).placeholder = ph.title;
+        $(ids[1]).placeholder = ph.desc;
+      });
+    });
+    PRIZE_LOCALES.forEach(function (loc) {
+      var ids = BONUS_FIELDS[loc];
+      var ph = PRIZE_PLACEHOLDER[loc];
+      $(ids[0]).placeholder = ph.title;
+      $(ids[1]).placeholder = ph.desc;
+    });
+  }
+
   var prizeLoaded = false;
+
+  /** 取三语字段里的某一语言（服务端已归一化成对象；兼容旧版单语字符串，落到简体） */
+  function localizedValue(field, loc) {
+    if (!field) return '';
+    if (typeof field === 'string') return loc === 'zh-CN' ? field : '';
+    return field[loc] || '';
+  }
 
   /* 规则版本：只显示版本号，多解释一句「只对新建场次生效」——
    * 这是运营最容易误解的地方（以为一保存玩家端就变），所以写在保存按钮上方。 */
@@ -670,21 +748,111 @@
 
   function fillPrizeForm(prizes) {
     Object.keys(PRIZE_FIELDS).forEach(function (tier) {
-      var ids = PRIZE_FIELDS[tier];
       var cfg = (prizes && prizes[tier]) || {};
-      $(ids[0]).value = cfg.title || '';
-      $(ids[1]).value = cfg.desc || '';
+      PRIZE_LOCALES.forEach(function (loc) {
+        var ids = PRIZE_FIELDS[tier][loc];
+        $(ids[0]).value = localizedValue(cfg.title, loc);
+        $(ids[1]).value = localizedValue(cfg.desc, loc);
+      });
     });
   }
 
-  /* 额外奖品：特殊数字 + 全员加奖文案，与四档独立。
+  /* 额外奖品：特殊数字 + 全员加奖文案（三语），与四档独立。
    * 「不启用」用空值表达——0 现在是合法特殊数字，不能再用 0 当哨兵。 */
   function fillBonusForm(bonus) {
     var b = bonus || {};
     var n = b.number == null ? null : Number(b.number);
     $('bzNumber').value = (Number.isInteger(n) && n >= 0 && n <= 9) ? String(n) : '';
-    $('bzTitle').value = b.title || '';
-    $('bzDesc').value = b.desc || '';
+    PRIZE_LOCALES.forEach(function (loc) {
+      var ids = BONUS_FIELDS[loc];
+      $(ids[0]).value = localizedValue(b.title, loc);
+      $(ids[1]).value = localizedValue(b.desc, loc);
+    });
+  }
+
+  /* ---- 三语校验 ---- */
+
+  /** 清掉上一轮的标红 */
+  function clearPrizeBad() {
+    $('prizeErr').textContent = '';
+    document.querySelectorAll('#prizeView .bad').forEach(function (el) {
+      el.classList.remove('bad');
+    });
+  }
+
+  /**
+   * 一档的三语判定，缺语言的输入框 id 收进 problems。
+   * 整档六格全空 → 合法（玩家端不显示该档奖品卡）；否则名称三语必须齐，说明要么全填要么全空。
+   */
+  function collectTierProblems(problems, tier, ids, title, desc) {
+    var used = PRIZE_LOCALES.some(function (loc) { return title[loc] || desc[loc]; });
+    if (!used) return;
+    var missTitle = PRIZE_LOCALES.filter(function (loc) { return !title[loc]; });
+    if (missTitle.length) {
+      problems.push({
+        tier: tier, field: 'title', langs: missTitle,
+        ids: missTitle.map(function (loc) { return ids[loc][0]; })
+      });
+    }
+    var descFilled = PRIZE_LOCALES.filter(function (loc) { return desc[loc]; });
+    if (descFilled.length && descFilled.length < PRIZE_LOCALES.length) {
+      var missDesc = PRIZE_LOCALES.filter(function (loc) { return !desc[loc]; });
+      problems.push({
+        tier: tier, field: 'desc', langs: missDesc,
+        ids: missDesc.map(function (loc) { return ids[loc][1]; })
+      });
+    }
+  }
+
+  /**
+   * 收集整张表单 → { prizes, bonus, problems }。
+   * 只做收集，不落库；problems 非空时调用方必须拦截，不许发请求。
+   */
+  function collectPrizeForm() {
+    var prizes = {};
+    var problems = [];
+    Object.keys(PRIZE_FIELDS).forEach(function (tier) {
+      var title = {};
+      var desc = {};
+      PRIZE_LOCALES.forEach(function (loc) {
+        var ids = PRIZE_FIELDS[tier][loc];
+        title[loc] = $(ids[0]).value.trim();
+        desc[loc] = $(ids[1]).value.trim();
+      });
+      prizes[tier] = { title: title, desc: desc };
+      collectTierProblems(problems, tier, PRIZE_FIELDS[tier], title, desc);
+    });
+
+    var bonusTitle = {};
+    var bonusDesc = {};
+    PRIZE_LOCALES.forEach(function (loc) {
+      var ids = BONUS_FIELDS[loc];
+      bonusTitle[loc] = $(ids[0]).value.trim();
+      bonusDesc[loc] = $(ids[1]).value.trim();
+    });
+    collectTierProblems(problems, 'bonus', BONUS_FIELDS, bonusTitle, bonusDesc);
+
+    var bzRaw = $('bzNumber').value;
+    var bonus = {
+      number: bzRaw === '' ? null : Number(bzRaw),
+      title: bonusTitle,
+      desc: bonusDesc
+    };
+    return { prizes: prizes, bonus: bonus, problems: problems };
+  }
+
+  /** 把校验结果翻成「哪一档 · 哪个字段 · 缺哪几种语言」的文字，并标红对应输入框 */
+  function showPrizeProblems(problems) {
+    problems.forEach(function (p) {
+      p.ids.forEach(function (id) { if ($(id)) $(id).classList.add('bad'); });
+    });
+    $('prizeErr').textContent = problems.map(function (p) {
+      return t('prizeNeedAllLangs', {
+        tier: t(PRIZE_TIER_I18N[p.tier]),
+        field: t(p.field === 'title' ? 'prizeNameLab' : 'prizeDescLab'),
+        langs: p.langs.map(function (loc) { return t(PRIZE_LOCALE_I18N[loc]); }).join(' / ')
+      });
+    }).join('\n');
   }
 
   function loadBonus() {
@@ -704,7 +872,7 @@
 
   function loadPrizes() {
     if (!token) return;
-    $('prizeErr').textContent = '';
+    clearPrizeBad();
     fetch('/api/prize-config?token=' + encodeURIComponent(token), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -725,31 +893,29 @@
 
   $('prizeSave').addEventListener('click', function () {
     if (!token) return;
-    var prizes = {};
-    Object.keys(PRIZE_FIELDS).forEach(function (tier) {
-      var ids = PRIZE_FIELDS[tier];
-      prizes[tier] = { title: $(ids[0]).value.trim(), desc: $(ids[1]).value.trim() };
-    });
-    var bzRaw = $('bzNumber').value;
-    var bonus = {
-      number: bzRaw === '' ? null : Number(bzRaw),
-      title: $('bzTitle').value.trim(),
-      desc: $('bzDesc').value.trim()
-    };
+    // 先本地校验三语完整性：缺语言就别发请求，直接把缺的那几栏标红
+    clearPrizeBad();
+    var form = collectPrizeForm();
+    if (form.problems.length) {
+      showPrizeProblems(form.problems);
+      return;
+    }
     var btn = $('prizeSave');
     btn.disabled = true;
-    $('prizeErr').textContent = '';
-    postJson('/api/prize-config', { token: token, prizes: prizes })
+    postJson('/api/prize-config', { token: token, prizes: form.prizes })
       .then(function (d) {
         if (!d || !d.ok) {
           if (d && d.code === 'unauthorized') forceLogout();
-          else $('prizeErr').textContent = t('prizeSaveFail');
+          // 服务端也校验三语（前端被绕过时唯一的防线）：把缺失项照样标红
+          else if (d && d.code === 'prize_incomplete' && Array.isArray(d.missing)) {
+            showPrizeProblems(d.missing.map(withFieldIds('prize')));
+          } else $('prizeErr').textContent = t('prizeSaveFail');
           return;
         }
         fillPrizeForm(d.prizes);
         showRuleVersion(d.ruleVersion);
         // 四档保存成功后，再保存额外奖品（独立接口，失败单独提示）
-        return postJson('/api/bonus-prize', { token: token, bonus: bonus });
+        return postJson('/api/bonus-prize', { token: token, bonus: form.bonus });
       })
       .then(function (d2) {
         if (d2 && d2.ok) {
@@ -758,11 +924,28 @@
           toast(t('prizeSaved'), 'ok');
         }
         else if (d2 && d2.code === 'unauthorized') forceLogout();
+        else if (d2 && d2.code === 'bonus_incomplete' && Array.isArray(d2.missing)) {
+          showPrizeProblems(d2.missing.map(withFieldIds('bonus')));
+        }
         else if (d2) $('prizeErr').textContent = t('bonusSaveFail');
       })
       .catch(function () { $('prizeErr').textContent = t('prizeSaveFail'); })
       .finally(function () { btn.disabled = false; });
   });
+
+  /** 服务端返回的缺失项只有 { tier, field, locales }，补上输入框 id 才能标红 */
+  function withFieldIds(kind) {
+    return function (p) {
+      var map = (kind === 'bonus' || p.tier === 'bonus') ? BONUS_FIELDS : PRIZE_FIELDS[p.tier];
+      var idx = p.field === 'title' ? 0 : 1;
+      return {
+        tier: p.tier,
+        field: p.field,
+        langs: p.locales || [],
+        ids: (p.locales || []).map(function (loc) { return map[loc][idx]; })
+      };
+    };
+  }
 
   /* ---------- 启动 ---------- */
   function boot() {
@@ -794,5 +977,6 @@
 
   updateLangButton();
   applyStaticI18n();
+  applyPrizePlaceholders();
   boot();
 })();

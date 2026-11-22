@@ -359,7 +359,8 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS rule_version (
       version     INTEGER PRIMARY KEY,        -- 规则版本号（单调递增）
       prizes      JSONB   NOT NULL,           -- 四档奖品 { both|number|oddeven|miss: {title, desc} }
-      bonus       JSONB   NOT NULL,           -- 全员额外奖励 { number: 0-9|null, title, desc }
+                                              --   title/desc 是**三语对象** { zh-CN, zh-HK, en-US }
+      bonus       JSONB   NOT NULL,           -- 全员额外奖励 { number: 0-9|null, title, desc }（同样三语）
       config_hash TEXT    NOT NULL,           -- 规范化快照的 sha256（判「这次保存是否真的改了规则」）
       source      TEXT    NOT NULL DEFAULT '',-- 这一版由哪次保存产生：prize | bonus | seed
       created_by  TEXT    NOT NULL DEFAULT '',-- 操作账号（seed 写 bootstrap）
@@ -558,7 +559,8 @@ async function listSessionSummaries() {
     SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
            rv.version AS rule_version,
            st.version, r.round AS round_no, r.number AS round_number, r.locked_at, r.locked_by,
-           (SELECT count(*)::int FROM player p WHERE p.session_id = gs.session_id) AS player_count
+           (SELECT count(*)::int FROM player p
+             WHERE p.session_id = gs.session_id AND p.left_at IS NULL) AS player_count
       FROM game_session gs
       LEFT JOIN session_state st ON st.session_id = gs.session_id
       LEFT JOIN round r ON r.session_id = gs.session_id
@@ -599,7 +601,9 @@ async function listSessionSummaries() {
 async function archiveRoundInTx(client, session) {
   if (session.number == null || session.lockedAt == null) return null;
 
-  const players = Object.values(session.players);
+  // 归档只记录锁定那一刻仍在场的玩家：已登出 / 已离开的人不算本轮参与，
+  // 与实时大屏、员工端使用的是同一口径（见 server.presentPlayers）。
+  const players = Object.values(session.players).filter((pl) => pl.leftAt == null);
   const submitted = players.filter((pl) => pl.oddEven != null).length;
   const oddEven = lineOfNumber(session.number);
   const now = Date.now();

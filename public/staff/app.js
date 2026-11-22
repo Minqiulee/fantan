@@ -282,6 +282,7 @@
     sid = nextSid || '';
     if (list) sessions = list;
     state = null;
+    lastVersion = -1;       // 换场次后版本号重新起算，不能拿上一场的版本比大小
     resetNumberSelection();
     renderSessionBar();
     renderSessionPick();
@@ -336,7 +337,11 @@
     $('cardInput').classList.toggle('hidden', locked);
     $('cardLocked').classList.toggle('hidden', !locked);
 
-    var reg = s.players.length, pred = s.players.filter(function (p) { return p.submitted; }).length;
+    // 人数以服务端 counts 为准：只算在场玩家，与大屏同一份快照、同一口径。
+    var reg = (s.counts && s.counts.total != null) ? s.counts.total : s.players.length;
+    var pred = (s.counts && s.counts.submitted != null)
+      ? s.counts.submitted
+      : s.players.filter(function (p) { return p.submitted; }).length;
     $('cntReg').textContent = reg;
     $('cntPred').textContent = pred;
 
@@ -369,9 +374,10 @@
   /* ---------- 本轮玩家列表（新老区分） ---------- */
   function renderPlayerList(s) {
     var list = $('playerList');
+    var total = (s.counts && s.counts.total != null) ? s.counts.total : s.players.length;
     var vetCount = s.players.filter(function (p) { return p.isVeteran; }).length;
-    var newCount = s.players.length - vetCount;
-    $('plistCount').textContent = t('plistCount', { total: s.players.length, new: newCount, vet: vetCount });
+    var newCount = total - vetCount;
+    $('plistCount').textContent = t('plistCount', { total: total, new: newCount, vet: vetCount });
 
     if (!s.players.length) {
       list.innerHTML = '<div class="empty">' + t('noPlayerYet') + '</div>';
@@ -392,9 +398,16 @@
   /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
   var es = null;           // EventSource 实例
   var streamClosed = false; // 手动关闭标记
+  var lastVersion = -1;    // 已应用的最新场次版本号（旧帧直接丢弃，避免轮询响应盖回新状态）
 
   function applyState(s) {
     if (!s || !s.ok) return;
+    // 断线补拉与 SSE 推送会并发到达：版本更小的帧一律丢弃。否则「离开」先到、
+    // 更早发出的轮询响应后到，会把已经移除的玩家又画回列表里（大屏同样按版本丢弃）。
+    if (s.version != null) {
+      if (lastVersion >= 0 && s.version < lastVersion) return;
+      if (s.version > lastVersion) lastVersion = s.version;
+    }
     $('connLost').classList.add('hidden');
     var wasLocked = state ? state.locked : false;
     state = s;

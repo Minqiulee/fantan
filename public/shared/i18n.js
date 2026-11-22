@@ -107,12 +107,10 @@
       bs_picked: '已确认',
       bs_draft: '待确认',
       bs_unpicked: '未选择',
-      bs_left: '已离开',
       bs_waiting: '等待玩家扫码…',
       bs_statePicked: '已确认',
       bs_stateDraft: '已选待确认',
       bs_stateUnpicked: '未选择',
-      bs_stateLeft: '已离开',
       bs_vet: '老玩家',
       bs_draw: '本轮开奖数字',
       bs_drawing: '待开奖',
@@ -208,7 +206,7 @@
       adminNeedSession: '请先新建场次，或切换到一个进行中的场次',
       adminAccountDesc: '建员工账号、设独立密码、停用与改密',
       adminAuditDesc: '谁登录、谁锁定、谁导出，按天查看与导出',
-      adminPrizeDesc: '按结果配置玩家端奖品文案，保存后即时生效',
+      adminPrizeDesc: '按结果配置玩家端奖品文案（简繁英三语），保存后即时生效',
 
       /* ---- 奖品设置（结果各一份文案） ---- */
       prizeTitle: '奖品设置',
@@ -225,8 +223,13 @@
       prizeTierMissSub: '两项都没中',
       prizeNameLab: '奖品名称',
       prizeNamePh: '例如：羊绒围巾一条',
-      prizeDescLab: '奖品说明（可选）',
+      prizeDescLab: '奖品说明',
       prizeDescPh: '例如：凭本页面到前台领取，当日有效',
+      pzLangZhCN: '简体中文',
+      pzLangZhHK: '繁体中文',
+      pzLangEnUS: 'English',
+      prizeLangHint: '每档奖品都要按简体中文、繁体中文、英文分别填写；玩家端按自己选择的语言显示对应文案，缺哪一种语言就回退到其他语言，所以三种语言都要填。',
+      prizeNeedAllLangs: '「{tier}」的{field}没填 {langs}：同一档的文案三种语言要一起填（说明可以整档留空，但不能只填一部分）',
       prizeSave: '保存配置',
       prizeSaved: '奖品配置已保存',
       prizeLoadFail: '读取奖品配置失败，请重试',
@@ -337,16 +340,12 @@
       p_hitYes: '✓ 命中',
       p_hitNo: '✗ 未中',
 
-      /* 结果奖品（四档，文案由管理界面配置；未配置时用下面的兜底文案） */
+      /* 结果奖品（四档，文案由管理界面配置；未配置时不显示奖品卡） */
       p_prizeLab: '本轮奖品',
       p_prizeTierBoth: '数字和单双都中',
       p_prizeTierNumber: '只中数字',
       p_prizeTierOddeven: '只中单双',
       p_prizeTierMiss: '未猜中',
-      p_prizeDefBoth: '数字和单双全中！请向工作人员出示本页面领取奖品',
-      p_prizeDefNumber: '猜中本轮数字！请向工作人员出示本页面领取奖品',
-      p_prizeDefOddeven: '猜中单双！请向工作人员出示本页面领取奖品',
-      p_prizeDefMiss: '这次没猜中，下一轮再来试试吧',
 
       /* 全员额外奖励（命中特殊数字时触发，独立于个人档位） */
       p_bonusTier: '全员额外奖励',
@@ -503,12 +502,10 @@
       bs_picked: '已確認',
       bs_draft: '待確認',
       bs_unpicked: '未選擇',
-      bs_left: '已離開',
       bs_waiting: '等待玩家掃碼…',
       bs_statePicked: '已確認',
       bs_stateDraft: '已選待確認',
       bs_stateUnpicked: '未選擇',
-      bs_stateLeft: '已離開',
       bs_vet: '老玩家',
       bs_draw: '本輪開獎數字',
       bs_drawing: '待開獎',
@@ -604,7 +601,7 @@
       adminNeedSession: '請先新建場次，或切換到一個進行中的場次',
       adminAccountDesc: '建員工帳號、設獨立密碼、停用與改密',
       adminAuditDesc: '誰登入、誰鎖定、誰導出，按天查看與導出',
-      adminPrizeDesc: '按三類結果配置玩家端獎品文案，儲存後即時生效',
+      adminPrizeDesc: '按結果配置玩家端獎品文案（簡繁英三語），儲存後即時生效',
 
       /* ---- 獎品設置（三類結果各一份文案） ---- */
       prizeTitle: '獎品設置',
@@ -621,8 +618,13 @@
       prizeTierMissSub: '兩項都沒中',
       prizeNameLab: '獎品名稱',
       prizeNamePh: '例如：羊絨圍巾一條',
-      prizeDescLab: '獎品說明（可選）',
+      prizeDescLab: '獎品說明',
       prizeDescPh: '例如：憑本頁面到前台領取，當日有效',
+      pzLangZhCN: '簡體中文',
+      pzLangZhHK: '繁體中文',
+      pzLangEnUS: 'English',
+      prizeLangHint: '每一檔獎品都要按簡體中文、繁體中文、英文分別填寫；玩家端按自己選擇的語言顯示對應文案，缺哪一種語言就會回退到其他語言，所以三種語言都要填。',
+      prizeNeedAllLangs: '「{tier}」的{field}未填 {langs}：同一檔的文案三種語言要一起填（說明可以整檔留空，但不能只填一部分）',
       prizeSave: '儲存配置',
       prizeSaved: '獎品配置已儲存',
       prizeLoadFail: '讀取獎品配置失敗，請重試',
@@ -733,16 +735,12 @@
       p_hitYes: '✓ 命中',
       p_hitNo: '✗ 未中',
 
-      /* 結果獎品（四檔，文案由管理介面配置；未配置時用下面的兜底文案） */
+      /* 結果獎品（四檔，文案由管理介面配置；未配置時不顯示獎品卡） */
       p_prizeLab: '本輪獎品',
       p_prizeTierBoth: '數字和單雙都中',
       p_prizeTierNumber: '只中數字',
       p_prizeTierOddeven: '只中單雙',
       p_prizeTierMiss: '未猜中',
-      p_prizeDefBoth: '數字和單雙全中！請向工作人員出示本頁面領取獎品',
-      p_prizeDefNumber: '猜中本輪數字！請向工作人員出示本頁面領取獎品',
-      p_prizeDefOddeven: '猜中單雙！請向工作人員出示本頁面領取獎品',
-      p_prizeDefMiss: '這次沒猜中，下一輪再來試試吧',
 
       /* 全員額外獎勵（命中特殊數字時觸發，獨立於個人檔位） */
       p_bonusTier: '全員額外獎勵',
@@ -898,12 +896,10 @@
       bs_picked: 'Confirmed',
       bs_draft: 'Pending',
       bs_unpicked: 'No pick',
-      bs_left: 'Left',
       bs_waiting: 'Waiting for players to scan…',
       bs_statePicked: 'Confirmed',
       bs_stateDraft: 'Picked, unconfirmed',
       bs_stateUnpicked: 'No pick',
-      bs_stateLeft: 'Left',
       bs_vet: 'Returning',
       bs_draw: 'Drawn number',
       bs_drawing: 'Not drawn',
@@ -999,7 +995,7 @@
       adminNeedSession: 'Create a session, or switch to one that is live',
       adminAccountDesc: 'Create staff accounts with their own passwords; disable or reset',
       adminAuditDesc: 'Who signed in, locked, or exported — view and export by day',
-      adminPrizeDesc: 'Configure prize copy for the three outcome tiers; live right after saving',
+      adminPrizeDesc: 'Configure prize copy per outcome in three languages; live right after saving',
 
       /* ---- Prize settings (one copy per outcome tier) ---- */
       prizeTitle: 'Prizes',
@@ -1016,8 +1012,13 @@
       prizeTierMissSub: 'Neither correct',
       prizeNameLab: 'Prize name',
       prizeNamePh: 'e.g. Wool scarf',
-      prizeDescLab: 'Prize note (optional)',
+      prizeDescLab: 'Prize note',
       prizeDescPh: 'e.g. Show this page at the counter, valid today',
+      pzLangZhCN: 'Simplified Chinese',
+      pzLangZhHK: 'Traditional Chinese',
+      pzLangEnUS: 'English',
+      prizeLangHint: 'Every prize needs copy in Simplified Chinese, Traditional Chinese and English. The player app shows the copy matching the player\'s language and falls back to another one when it is missing — so fill in all three.',
+      prizeNeedAllLangs: '"{tier}" — {field} is missing {langs}. All three languages must be filled together (a note may be left empty in every language, but not in only some).',
       prizeSave: 'Save',
       prizeSaved: 'Prize settings saved',
       prizeLoadFail: 'Failed to load prize settings',
@@ -1128,16 +1129,12 @@
       p_hitYes: '✓ Hit',
       p_hitNo: '✗ Miss',
 
-      /* Result prize (four tiers, copy configured in admin; fallback used when unset) */
+      /* Result prize (four tiers, copy configured in admin; card hidden when unset) */
       p_prizeLab: 'Prize',
       p_prizeTierBoth: 'Number + Odd/Even hit',
       p_prizeTierNumber: 'Number only',
       p_prizeTierOddeven: 'Odd/Even only',
       p_prizeTierMiss: 'No hit',
-      p_prizeDefBoth: 'Both correct! Show this page to staff to claim your prize',
-      p_prizeDefNumber: 'Number hit! Show this page to staff to claim your prize',
-      p_prizeDefOddeven: 'Odd/Even hit! Show this page to staff to claim your prize',
-      p_prizeDefMiss: 'No luck this round — try again next round',
 
       /* All-participant bonus (triggered on the special number, independent of personal tier) */
       p_bonusTier: 'Bonus for everyone',
