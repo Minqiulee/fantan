@@ -20,7 +20,7 @@
  * 玩家 ID 统一为「二维码内容 / 用户直接提交的原始 ID」（未经 hash）。
  *
  * 表结构由 initDb() 建出，CREATE ... IF NOT EXISTS 保证可反复执行；
- * 本层不做任何结构迁移，以当前定义为准（旧结构库需在升级前自行完成 DDL）。
+ * 结构以这里的定义为准——本层不做任何补列、回填或迁移。
  *
  * 多实例前提（本轮改造）：
  *   - 运行态不在任何进程内存里，Postgres 是唯一事实来源；实例只保留可随时丢弃的读缓存
@@ -104,7 +104,8 @@ async function initArchiveTables(p) {
       locked_at       BIGINT  NOT NULL,   -- 锁定时间戳（毫秒）—— 当日汇总按此列切分
       archived_at     BIGINT  NOT NULL,   -- 归档写入时间戳（毫秒）
       player_count    INTEGER NOT NULL DEFAULT 0, -- 本轮扫码人数
-      submitted_count INTEGER NOT NULL DEFAULT 0  -- 本轮提交预测人数
+      submitted_count INTEGER NOT NULL DEFAULT 0, -- 本轮提交预测人数
+      locked_by       TEXT    NOT NULL DEFAULT '' -- 锁定该轮开奖的账号（审计追溯用）
     );
   `);
   await p.query(`
@@ -156,6 +157,19 @@ async function initArchiveTables(p) {
   }
 }
 
+/** 审计表 append-only：审计要能当证据用，改得了就没意义。 */
+async function initAuditTable(p) {
+  for (const [name, ddl] of [
+    ['trg_audit_log_no_update_delete', 'BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW'],
+    ['trg_audit_log_no_truncate', 'BEFORE TRUNCATE ON audit_log FOR EACH STATEMENT']
+  ]) {
+    await p.query(`DROP TRIGGER IF EXISTS ${name} ON audit_log;`);
+    await p.query(
+      `CREATE TRIGGER ${name} ${ddl} EXECUTE FUNCTION archive_block_mutation();`
+    );
+  }
+}
+
 /**
  * 幂等建表：首次启动时创建全部表、索引与归档触发器，已存在则跳过。
  * 只保证「表结构存在」，不做任何列补齐或数据重写。
@@ -182,7 +196,8 @@ async function initDb() {
       session_id TEXT PRIMARY KEY,          -- 所属场次
       round      INTEGER NOT NULL,          -- 场次内当前轮次序号
       number     INTEGER,                   -- 开奖数字（null 表示未锁定）
-      locked_at  BIGINT                     -- 锁定时间戳（毫秒）
+      locked_at  BIGINT,                    -- 锁定时间戳（毫秒）
+      locked_by  TEXT NOT NULL DEFAULT ''   -- 锁定人账号（null/空 = 未知/历史数据）
     );
   `);
 
@@ -243,13 +258,49 @@ async function initDb() {
       token      TEXT PRIMARY KEY,
       session_id TEXT NOT NULL DEFAULT '',  -- 该员工当前归属的场次
       expires_at BIGINT NOT NULL,           -- 过期时间戳（毫秒）
-      created_at BIGINT NOT NULL
+      created_at BIGINT NOT NULL,
+      username   TEXT NOT NULL              -- 登录账号（鉴权与审计的唯一依据，必填）
     );
   `);
   await p.query('CREATE INDEX IF NOT EXISTS idx_staff_session_expires ON staff_session(expires_at);');
 
-  // 登录 / 场次口令的错误计数：key = 'staff' 或 'player:<ip>'。
-  // 放库里是为了让「连续 5 次错误锁 30 秒」在多实例下仍然是全局口径，
+  // 员工账号：一个账号一份独立密码，角色区分「员工端」与「管理界面」。
+  // 密码只存 scrypt 派生值（scrypt$N$r$p$salt$hash），永不存明文、不进日志、不下发。
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS staff_account (
+      username      TEXT PRIMARY KEY,          -- 登录账号（大小写敏感，建号时归一化校验）
+      display_name  TEXT NOT NULL DEFAULT '',  -- 显示名（对账/日志里给人看）
+      role          TEXT NOT NULL DEFAULT 'staff',  -- staff | admin
+      status        TEXT NOT NULL DEFAULT 'active', -- active | disabled
+      password_hash TEXT NOT NULL,             -- scrypt 派生值
+      created_at    BIGINT NOT NULL,
+      created_by    TEXT NOT NULL DEFAULT '',  -- 建号人账号（首个管理员为 bootstrap）
+      updated_at    BIGINT NOT NULL,
+      last_login_at BIGINT                     -- 最近登录时间（null = 从未登录）
+    );
+  `);
+  await p.query('CREATE INDEX IF NOT EXISTS idx_staff_account_role ON staff_account(role, status);');
+
+  // 操作日志：登录、切场次、锁定开奖、新一轮、关闭场次、账号变更、对账导出全部落这里。
+  // 与归档表一样 append-only（触发器在 initAuditTable 里装），保证「谁做了什么」改不掉。
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id       BIGSERIAL PRIMARY KEY,
+      at       BIGINT NOT NULL,               -- 发生时间（毫秒）
+      actor    TEXT   NOT NULL DEFAULT '',    -- 操作账号（未登录的失败尝试写尝试名）
+      role     TEXT   NOT NULL DEFAULT '',    -- 操作时角色
+      action   TEXT   NOT NULL,               -- login / logout / round_lock / export ...
+      sid      TEXT   NOT NULL DEFAULT '',    -- 相关场次
+      target   TEXT   NOT NULL DEFAULT '',    -- 被操作对象（账号名 / 场次名 / 明细行数）
+      detail   JSONB,                         -- 附加信息（不含任何密码）
+      ip       TEXT   NOT NULL DEFAULT ''
+    );
+  `);
+  await p.query('CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at DESC);');
+  await p.query('CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log (actor, at DESC);');
+
+  // 登录 / 场次口令的错误计数：key = 'login:<账号>' | 'switch:<账号>' | 'player:<ip>'。
+  // 放库里是为了让「连续 N 次错误锁 M 秒」在多实例下仍然是全局口径，
   // 而不是每个实例各算一遍（那样等于把阈值放大 N 倍）。
   await p.query(`
     CREATE TABLE IF NOT EXISTS auth_throttle (
@@ -265,6 +316,7 @@ async function initDb() {
   await p.query('CREATE INDEX IF NOT EXISTS idx_session_status ON game_session(status, seq);');
 
   await initArchiveTables(p);
+  await initAuditTable(p);
 }
 
 /* ============================================================
@@ -290,6 +342,7 @@ function rowToSession(r) {
     round: r.round_no != null ? Number(r.round_no) : 1,
     number: r.round_number != null ? Number(r.round_number) : null,
     lockedAt: r.locked_at != null ? Number(r.locked_at) : null,
+    lockedBy: r.locked_by || '',
     players: {},
     identities: {},
     version: r.version != null ? Number(r.version) : 1
@@ -316,7 +369,7 @@ function rowToSession(r) {
 const SNAPSHOT_SQL = `
   SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
          st.version AS version,
-         r.round AS round_no, r.number AS round_number, r.locked_at,
+         r.round AS round_no, r.number AS round_number, r.locked_at, r.locked_by,
          pl.j AS players, idt.j AS identities
     FROM game_session gs
     LEFT JOIN session_state st ON st.session_id = gs.session_id
@@ -338,7 +391,7 @@ const SNAPSHOT_SQL = `
 
 /**
  * 读取单个场次的完整快照（含版本号）。不存在返回 null。
- * 老库里没有 session_state 行时顺手补一行（版本 1），保证后续 CAS 有行可更。
+ * 若该场次没有 session_state 行（只能是被人工改动过），补一行版本 1，保证后续 CAS 有行可更。
  */
 async function loadSessionSnapshot(sessionId) {
   const p = getPool();
@@ -363,7 +416,7 @@ async function listSessionSummaries() {
   const p = getPool();
   const r = await p.query(`
     SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
-           st.version, r.round AS round_no, r.number AS round_number, r.locked_at,
+           st.version, r.round AS round_no, r.number AS round_number, r.locked_at, r.locked_by,
            (SELECT count(*)::int FROM player p WHERE p.session_id = gs.session_id) AS player_count
       FROM game_session gs
       LEFT JOIN session_state st ON st.session_id = gs.session_id
@@ -380,6 +433,7 @@ async function listSessionSummaries() {
     round: x.round_no != null ? Number(x.round_no) : 1,
     number: x.round_number != null ? Number(x.round_number) : null,
     lockedAt: x.locked_at != null ? Number(x.locked_at) : null,
+    lockedBy: x.locked_by || '',
     playerCount: Number(x.player_count || 0),
     version: x.version != null ? Number(x.version) : 1
   }));
@@ -409,13 +463,14 @@ async function archiveRoundInTx(client, session) {
   const ins = await client.query(
     `INSERT INTO round_archive
        (session_id, session_name, session_seq, round, number, odd_even,
-        locked_at, archived_at, player_count, submitted_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        locked_at, archived_at, player_count, submitted_count, locked_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      ON CONFLICT (session_id, round) DO NOTHING
      RETURNING archive_id`,
     [
       session.id, session.name, Number(session.seq) || 1, session.round,
-      session.number, oddEven, session.lockedAt, now, players.length, submitted
+      session.number, oddEven, session.lockedAt, now, players.length, submitted,
+      session.lockedBy || ''
     ]
   );
 
@@ -549,10 +604,11 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
     );
 
     await client.query(
-      `INSERT INTO round (session_id, round, number, locked_at) VALUES ($1,$2,$3,$4)
+      `INSERT INTO round (session_id, round, number, locked_at, locked_by) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (session_id) DO UPDATE SET
-         round=EXCLUDED.round, number=EXCLUDED.number, locked_at=EXCLUDED.locked_at`,
-      [session.id, session.round, session.number, session.lockedAt]
+         round=EXCLUDED.round, number=EXCLUDED.number, locked_at=EXCLUDED.locked_at,
+         locked_by=EXCLUDED.locked_by`,
+      [session.id, session.round, session.number, session.lockedAt, session.lockedBy || '']
     );
 
     const players = Object.values(session.players).map((pl) => ({
@@ -721,28 +777,127 @@ async function setConfig(key, value) {
 }
 
 /* ============================================================
- * 员工登录会话（跨实例共享）
+ * 员工账号 + 登录会话（跨实例共享）
  * ------------------------------------------------------------
- * 改造前 token 存在进程内存里，多实例部署时「A 登录、B 校验」必然 401。
- * 现在会话落库：任一实例签发的 token 在任意实例都有效，实例重启也不掉登录。
- * 过期行不做定时清理，读取时顺手删（带 expires_at 索引，代价极低）。
+ * 改造前是「一个共享密码 → token」，谁登进来都分不清是谁；
+ * 现在是「账号 + 独立密码 → token」，会话里带账号，审计才追得下去。
+ * token 仍落库：A 实例签发、B 实例认可，实例重启也不掉登录。
  * ============================================================ */
 
-async function createStaffSession(token, sessionId, expiresAt) {
+/** 账号行 → 对外结构（**不含 password_hash**，接口与日志都用它）。 */
+function rowToAccount(r) {
+  return {
+    username: r.username,
+    displayName: r.display_name || '',
+    role: r.role,
+    status: r.status,
+    createdAt: Number(r.created_at),
+    createdBy: r.created_by || '',
+    updatedAt: Number(r.updated_at),
+    lastLoginAt: r.last_login_at != null ? Number(r.last_login_at) : null
+  };
+}
+
+async function listAccounts() {
+  const r = await getPool().query(
+    `SELECT username, display_name, role, status, created_at, created_by, updated_at, last_login_at
+       FROM staff_account ORDER BY role DESC, username ASC`
+  );
+  return r.rows.map(rowToAccount);
+}
+
+/** 取账号（含密码派生值），只给登录校验用；不要把它返回给任何接口。 */
+async function getAccountWithSecret(username) {
+  const r = await getPool().query(
+    `SELECT username, display_name, role, status, password_hash,
+            created_at, created_by, updated_at, last_login_at
+       FROM staff_account WHERE username = $1`,
+    [username]
+  );
+  if (!r.rows.length) return null;
+  return { ...rowToAccount(r.rows[0]), passwordHash: r.rows[0].password_hash };
+}
+
+async function countAccounts(filter = {}) {
+  const params = [];
+  const where = [];
+  if (filter.role) { params.push(filter.role); where.push('role = $' + params.length); }
+  if (filter.status) { params.push(filter.status); where.push('status = $' + params.length); }
+  const r = await getPool().query(
+    'SELECT count(*)::int AS n FROM staff_account' + (where.length ? ' WHERE ' + where.join(' AND ') : ''),
+    params
+  );
+  return r.rows[0].n;
+}
+
+async function createAccount({ username, displayName, role, passwordHash, createdBy }) {
+  const now = Date.now();
   await getPool().query(
-    `INSERT INTO staff_session (token, session_id, expires_at, created_at)
-     VALUES ($1, $2, $3, $4)`,
-    [token, sessionId || '', expiresAt, Date.now()]
+    `INSERT INTO staff_account
+       (username, display_name, role, status, password_hash, created_at, created_by, updated_at)
+     VALUES ($1,$2,$3,'active',$4,$5,$6,$5)`,
+    [username, displayName || '', role, passwordHash, now, createdBy || '']
   );
 }
 
-/** 取有效会话（过期视为不存在，并顺手清掉）。 */
+/** 改显示名 / 角色 / 状态。未传的字段保持原值。 */
+async function updateAccount(username, fields) {
+  const sets = [];
+  const params = [username];
+  const push = (col, val) => { params.push(val); sets.push(col + ' = $' + params.length); };
+  if (fields.displayName !== undefined) push('display_name', fields.displayName);
+  if (fields.role !== undefined) push('role', fields.role);
+  if (fields.status !== undefined) push('status', fields.status);
+  if (!sets.length) return;
+  params.push(Date.now());
+  sets.push('updated_at = $' + params.length);
+  await getPool().query(
+    'UPDATE staff_account SET ' + sets.join(', ') + ' WHERE username = $1',
+    params
+  );
+}
+
+async function setAccountPassword(username, passwordHash) {
+  await getPool().query(
+    'UPDATE staff_account SET password_hash = $2, updated_at = $3 WHERE username = $1',
+    [username, passwordHash, Date.now()]
+  );
+}
+
+async function touchAccountLogin(username) {
+  await getPool().query(
+    'UPDATE staff_account SET last_login_at = $2 WHERE username = $1',
+    [username, Date.now()]
+  );
+}
+
+/**
+ * 签发登录会话。账号必填——会话的有效性与角色一律回查 staff_account，
+ * 因此停用账号或调整角色立即生效，不必等 token 过期。
+ */
+async function createStaffSession(token, sessionId, expiresAt, username) {
+  await getPool().query(
+    `INSERT INTO staff_session (token, session_id, expires_at, created_at, username)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [token, sessionId || '', expiresAt, Date.now(), username]
+  );
+}
+
+/**
+ * 取有效会话（过期 / 账号已停用 一律视为未登录）。
+ * 返回 { token, sessionId, expiresAt, username, role, displayName } 或 null。
+ * 角色以账号表当前值为准，不是签发时的快照——降级立即生效。
+ */
 async function getStaffSession(token) {
   if (!token) return null;
   const p = getPool();
   const now = Date.now();
   const r = await p.query(
-    'SELECT token, session_id, expires_at FROM staff_session WHERE token = $1 AND expires_at > $2',
+    `SELECT s.token, s.session_id, s.expires_at, s.username,
+            a.display_name, a.role, a.status
+       FROM staff_session s
+       JOIN staff_account a ON a.username = s.username
+      WHERE s.token = $1 AND s.expires_at > $2`,
     [token, now]
   );
   if (!r.rows.length) {
@@ -750,11 +905,27 @@ async function getStaffSession(token) {
       .catch(() => { /* 清理失败不影响判定 */ });
     return null;
   }
+  const row = r.rows[0];
+  if (row.status !== 'active') {
+    p.query('DELETE FROM staff_session WHERE token = $1', [token])
+      .catch(() => { /* 清理失败不影响判定 */ });
+    return null;
+  }
   return {
-    token: r.rows[0].token,
-    sessionId: r.rows[0].session_id || '',
-    expiresAt: Number(r.rows[0].expires_at)
+    token: row.token,
+    sessionId: row.session_id || '',
+    expiresAt: Number(row.expires_at),
+    username: row.username,
+    role: row.role,
+    displayName: row.display_name || ''
   };
+}
+
+/** 踢掉某个账号的所有会话（改密码 / 停用 / 降级时用，立即生效）。 */
+async function deleteStaffSessionsByUser(username) {
+  if (!username) return 0;
+  const r = await getPool().query('DELETE FROM staff_session WHERE username = $1', [username]);
+  return r.rowCount || 0;
 }
 
 async function deleteStaffSession(token) {
@@ -828,6 +999,91 @@ async function throttleClear(key) {
   await getPool().query('DELETE FROM auth_throttle WHERE key = $1', [key]);
 }
 
+
+/* ============================================================
+ * 操作日志（append-only）
+ * ------------------------------------------------------------
+ * 只写不改：谁登入、谁切了场次、谁锁定了哪一轮、谁导出了哪份对账。
+ * detail 里绝不放密码、口令、token —— 只放业务字段（数字、场次名、CSV 行数等）。
+ * 写入失败不能拖累主流程：调用方一律 fire-and-forget + 本地 console.error。
+ * ============================================================ */
+
+async function appendAudit(e) {
+  await getPool().query(
+    `INSERT INTO audit_log (at, actor, role, action, sid, target, detail, ip)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      e.at || Date.now(),
+      e.actor || '',
+      e.role || '',
+      e.action,
+      e.sid || '',
+      e.target || '',
+      e.detail == null ? null : JSON.stringify(e.detail),
+      e.ip || ''
+    ]
+  );
+}
+
+/**
+ * 查日志（新的在前）。from/to 为毫秒半开区间；actor 为精确匹配。
+ * limit 默认 200、上限 1000（导出走的是另一个函数，不吃这个上限）。
+ */
+async function listAudit({ from, to, actor, action, limit } = {}) {
+  const params = [];
+  const where = [];
+  if (from != null) { params.push(from); where.push('at >= $' + params.length); }
+  if (to != null) { params.push(to); where.push('at < $' + params.length); }
+  if (actor) { params.push(actor); where.push('actor = $' + params.length); }
+  if (action) { params.push(action); where.push('action = $' + params.length); }
+  const n = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  params.push(n);
+  const r = await getPool().query(
+    `SELECT id, at, actor, role, action, sid, target, detail, ip
+       FROM audit_log` +
+    (where.length ? ' WHERE ' + where.join(' AND ') : '') +
+    ` ORDER BY at DESC, id DESC LIMIT $${params.length}`,
+    params
+  );
+  return r.rows.map((x) => ({
+    id: Number(x.id),
+    at: Number(x.at),
+    actor: x.actor,
+    role: x.role,
+    action: x.action,
+    sid: x.sid || '',
+    target: x.target || '',
+    detail: x.detail || null,
+    ip: x.ip || ''
+  }));
+}
+
+/** 导出用：区间内全量（新的在前），不分页。 */
+async function allAudit({ from, to, actor, action } = {}) {
+  const params = [];
+  const where = [];
+  if (from != null) { params.push(from); where.push('at >= $' + params.length); }
+  if (to != null) { params.push(to); where.push('at < $' + params.length); }
+  if (actor) { params.push(actor); where.push('actor = $' + params.length); }
+  if (action) { params.push(action); where.push('action = $' + params.length); }
+  const r = await getPool().query(
+    `SELECT id, at, actor, role, action, sid, target, detail, ip FROM audit_log` +
+    (where.length ? ' WHERE ' + where.join(' AND ') : '') +
+    ' ORDER BY at DESC, id DESC',
+    params
+  );
+  return r.rows.map((x) => ({
+    id: Number(x.id),
+    at: Number(x.at),
+    actor: x.actor,
+    role: x.role,
+    action: x.action,
+    sid: x.sid || '',
+    target: x.target || '',
+    detail: x.detail || null,
+    ip: x.ip || ''
+  }));
+}
 
 /* ============================================================
  * 归档读取：当日聚合 + 对账导出
@@ -927,7 +1183,7 @@ async function archiveRoundRows(from, to, sessionId) {
   const params = [from, to];
   let sql = `
     SELECT session_id, session_name, session_seq, round, number, odd_even,
-           locked_at, archived_at, player_count, submitted_count
+           locked_at, archived_at, player_count, submitted_count, locked_by
       FROM round_archive
      WHERE locked_at >= $1 AND locked_at < $2`;
   if (sessionId) { params.push(sessionId); sql += ` AND session_id = $${params.length}`; }
@@ -946,7 +1202,7 @@ async function archiveEntryRows(from, to, sessionId) {
   const params = [from, to];
   let sql = `
     SELECT a.session_id, a.session_name, a.session_seq, a.round, a.number AS drawn_number,
-           a.odd_even AS drawn_odd_even, a.locked_at, a.archived_at,
+           a.odd_even AS drawn_odd_even, a.locked_at, a.archived_at, a.locked_by,
            e.member_id, e.odd_even, e.number, e.submitted, e.odd_even_hit, e.number_hit,
            e.registered_at, e.submitted_at
       FROM round_archive a
@@ -970,12 +1226,27 @@ module.exports = {
   createSessionRow,
   archiveSnapshot,
 
-  // 员工会话 / 限频
+  // 员工账号 / 会话
+  listAccounts,
+  getAccountWithSecret,
+  countAccounts,
+  createAccount,
+  updateAccount,
+  setAccountPassword,
+  touchAccountLogin,
   createStaffSession,
   getStaffSession,
+  deleteStaffSessionsByUser,
   deleteStaffSession,
   setStaffSessionScope,
   rebindStaffSessions,
+
+  // 操作日志
+  appendAudit,
+  listAudit,
+  allAudit,
+
+  // 限频
   throttleState,
   throttleFail,
   throttleClear,

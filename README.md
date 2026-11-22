@@ -19,19 +19,22 @@
 |---|---|
 | 玩家登记 | 扫自己手上的会员二维码（默认前置摄像头），或手动输入二维码内容；同一内容重复扫幂等返回同一身份 |
 | 规则介绍 | 玩家登记成功后自动弹出玩法说明，10 秒倒计时（页面最底部细进度条 + 剩余秒数），点击任意处立即关闭；仅玩家端，同一身份每次登录只触发一次 |
-| 预测 | 单/双 + 1–8 数字，一次提交，不可修改；开奖后关闭入口 |
+| 预测 | 点选即上报（500ms 合并、值变才发），大屏实时显示「待确认」；按「确认提交」才落库、不可修改；草稿只存进程内存，不落库、不推进版本号 |
 | 开奖 | 工作人员在员工端点选 1–8 并确认，确认即锁定，不可更改 |
 | 轮次 | 锁定后由工作人员手动开启新一轮，轮次号 +1 |
 | 场次 | 全集群并行 1–4 场；员工登录默认归属一场，可运行时新建 / 切换 / 关闭，状态按场次隔离，SSE 按场次分组推送 |
-| 场次口令 | 多场并行时，玩家选择 / 切换场次必须输入口令；验证后绑定 12 小时，刷新、重开页面、后续操作都固定在该场次，未再次验证不可切换 |
+| 玩家场次口令 | 多场并行时，玩家选择 / 切换场次必须输入口令；验证后绑定 12 小时，刷新、重开页面、后续操作都固定在该场次，未再次验证不可切换 |
+| 员工场次口令 | 员工「切换场次 / 新建场次」需输入独立口令（默认 `7777`，`STAFF_SESSION_PASSWORD` 覆盖）；管理员免校验。与登录密码、玩家口令三者互不复用 |
 | 身份档案 | 跨轮次累计每人完成的竞猜轮次数，用于区分「新玩家 / 老玩家」 |
-| 实时同步 | 所有状态变更经 SSE 广播到全部在线页面，含开奖瞬间；断线重连后全量对齐 |
-| 管理界面 | `/admin` 集中四个管理动作：当日对账、大屏、新建场次、关闭场次；与员工端共用同一份员工登录态 |
-| 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），区分新加入 / 未选择 / 选项变更 / 已离开；与员工端共用同一套 SSE 广播与场次版本号，过期帧直接丢弃 |
+| 实时同步 | 落库变更经 SSE 全量快照广播到全部在线页面，含开奖瞬间；草稿变更按 500ms 合并成 `draft` 补丁；断线重连后全量对齐，玩家端按本地序号补发最后一次选择 |
+| 管理界面 | `/admin` 六个入口：当日对账、大屏、新建场次、关闭场次、员工账号、操作日志；仅 `admin` 角色可进 |
+| 实时大屏 | `/bigscreen` 按场次实时展示每位玩家的当前选项（单/双 + 数字），三态区分「已确认 / 已选待确认 / 未选择」（待确认用虚线边框），另标新加入 / 已离开；与员工端共用 SSE 广播与场次版本号，草稿走独立 `draft` 补丁事件，过期帧直接丢弃 |
 | 多语言 | 简体中文 / 繁体中文 / 英文，切换结果按端独立记忆（localStorage） |
-| 员工鉴权 | 密码登录 → 会话 token（12 小时），5 次失败锁定 30 秒 |
+| 员工账号 | 一人一账号一独立密码，由管理员在管理界面创建 / 改密 / 停用；密码只存 scrypt 派生值，接口不下发 |
+| 员工鉴权 | 账号 + 密码 → 会话 token（12 小时），按账号限频（5 次失败锁 30 秒）；停用或改密立即踢掉该账号所有会话 |
 | 玩家端口令 | 口令只以 scrypt 哈希存在于进程内存，不落库、不下发；验证通过后签发 HMAC 绑定令牌，按来源 IP 限频（5 次错误锁 30 秒） |
-| 持久化 | Postgres，六张表 + 一张配置表，首次启动自动建表，重启后状态保留 |
+| 操作日志 | 登录 / 失败 / 退出、切场次、锁定开奖、新一轮、关闭场次、账号增改密、对账导出、日志导出全部落库；append-only，可按天查看与导出 CSV |
+| 持久化 | Postgres，八张业务表 + 一张配置表，首次启动自动建表，重启后状态保留 |
 
 ---
 
@@ -42,11 +45,11 @@
 ├── server.js              # HTTP 服务：静态文件、API、SSE 广播、员工会话
 ├── store.js               # 共享会话存储：读缓存 + 乐观锁提交 + 变更事件
 ├── pubsub.js              # 跨实例状态通知（Postgres LISTEN/NOTIFY，断线重连）
-├── db.js                  # Postgres 连接池、建表、快照读写、归档、会话与限频
+├── db.js                  # Postgres 连接池、建表、快照读写、归档、账号、审计、会话与限频
 ├── public/
 │   ├── index.html         # 玩家端（扫码 / 预测 / 等待 / 结果）
 │   ├── staff.html         # 工作人员端（登录 / 录入数字 / 结算表 / 开新轮 / 切换场次）
-│   ├── admin.html         # 管理界面（当日对账 / 大屏 / 新建场次 / 关闭场次）
+│   ├── admin.html         # 管理界面（当日对账 / 大屏 / 场次管理 / 员工账号 / 操作日志）
 │   ├── bigscreen.html     # 实时大屏（按场次展示每位玩家的当前选项）
 │   ├── i18n.js            # 三语文案与切换逻辑（两端共用）
 │   └── html5-qrcode.min.js # 本地二维码解码库（无 CDN 依赖）
@@ -90,20 +93,21 @@ docker run -d --name oddeven-pg \
 ```bash
 npm install
 
-export STAFF_PASSWORD='换成你自己的密码'
+export ADMIN_PASSWORD='换成你自己的管理员密码'      # 首次启动创建管理员用
 export DATABASE_URL='postgres://postgres:postgres@localhost:5432/oddeven'
 npm start
 ```
 
-启动日志会打印两个入口：
+启动日志会打印入口：
 
 ```
 单双竞猜已启动: http://localhost:3000/  (玩家端，进入后扫自己的二维码)
-工作人员端入口: http://localhost:3000/staff
+工作人员端入口: http://localhost:3000/staff （账号 + 密码登录）
+管理界面入口: http://localhost:3000/admin
 数据持久化: Postgres（PG_HOST/PG_USER/PG_PASS，端口与库名可用 PG_PORT/PG_DB 覆盖）
 ```
 
-> 未设置 `STAFF_PASSWORD` 时会回退到内置默认密码 `123456`，启动日志会给出警告。**任何对外可访问的环境都必须覆盖它。**
+首次启动会用 `ADMIN_USERNAME`（默认 `admin`）/ `ADMIN_PASSWORD` 建一个管理员账号；**只在库里没有任何管理员时生效**。没设 `ADMIN_PASSWORD` 时用内置默认 `123456`，启动日志会警告——**任何对外可访问的环境都必须覆盖它，并在登录后立刻改掉**。后续员工账号一律在管理界面「员工账号」里创建。
 
 ---
 
@@ -114,7 +118,9 @@ npm start
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `PORT` | HTTP 监听端口 | `3000` |
-| `STAFF_PASSWORD` | 工作人员端登录密码（上线前必须设置） | `123456` |
+| `ADMIN_USERNAME` | 首次启动创建的管理员账号名（仅当库里没有任何管理员时生效） | `admin` |
+| `ADMIN_PASSWORD` | 首次启动创建的管理员密码 | `123456` |
+| `STAFF_SESSION_PASSWORD` | 员工「切换场次 / 新建场次」口令（管理员免校验） | `7777` |
 | `PG_HOST` | Postgres 主机 | 无 |
 | `PG_USER` | Postgres 用户名 | 无 |
 | `PG_PASS` | Postgres 密码 | 无 |
@@ -176,7 +182,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 1. **选择场次（多场并行时）**：打开玩家端 → 若同时进行 ≥2 场，先选择自己所在场次并输入**场次口令**。验证通过后本机绑定该场次（12 小时），刷新 / 重开页面 / 扫码 / 预测都固定在此场次；想换场次必须重新输入口令。只有 1 场进行中时免口令自动进入（无处可选）。
 2. **玩家登记**：扫自己的会员码（或手动输入会员号）→ 服务端以二维码内容本身作为玩家唯一 ID 建档。本轮开奖后新码无法入场。
-3. **提交预测**：选择「单 / 双」与 1–8 中的一个数字 → 一次提交，不可修改或重复提交。
+3. **点选与确认**：点「单 / 双」与 1–8 数字时即刻上报（500ms 合并，值变才发），大屏马上显示「已选待确认」；点「确认提交」才落库，之后不可修改、不可重复提交。只选不确认 = 未参赛，锁定后作废。
 4. **等待开奖**：页面显示已提交的预测，状态条提示等待中；开奖数字在锁定前不会下发给任何客户端。
 5. **工作人员锁定**：员工端登录 → 点选 1–8 → 若仍有玩家未提交会先弹提示 → 二次确认 → 锁定并广播结果。
 6. **查看结果**：员工端展示逐人命中表（单双命中、数字命中）；玩家端展示开奖数字与自己两项预测的命中情况。
@@ -202,18 +208,21 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 只有一件事：把这一场跑完。管理动作不在这一页。
 
+- **登录 = 账号 + 自己的密码**。账号由管理员在管理界面创建，一人一份；顶栏会显示当前账号的显示名
 - 登录态存 `sessionStorage`，关闭标签页即失效；服务端会话 12 小时过期
-- 顶栏右侧只有两个入口：**管理**（跳 `/admin`）与**切换场次**
+- 顶栏右侧：**管理**（只有 `admin` 角色可见，跳 `/admin`）与**切换场次**
 - 「本轮概况」实时显示已扫码人数与已提交人数
 - 玩家列表用颜色区分新玩家（蓝）与老玩家（金）
 - 每个状态变更都会实时刷新，无需手动刷新页面
 - 场次条只展示当前场次名称与状态，页面上没有任何新建 / 关闭 / 对账 / 大屏入口
 
-**「切换场次」与玩家端同一套交互**：点顶栏胶囊按钮 → 页面就地展开「选择场次」卡片，其余内容暂时收起；选项整行可点（名称 + 轮次/状态/人数），当前场次打勾（✓）、其他场次显示 `›`；选中即刻切换并 toast「已切换到「X」」，卡片自动收起。切换期间按钮自身隐藏，卡片底部给出「取消切换」，取消即原样退回原场次。员工已用管理密码登录，因此切换不重复要求场次口令（玩家端要口令是因为玩家侧没有员工身份）。
+**「切换场次」与玩家端同一套交互**：点顶栏胶囊按钮 → 页面就地展开「选择场次」卡片，其余内容暂时收起；选项整行可点（名称 + 轮次/状态/人数），当前场次打勾（✓）、其他场次显示 `›`；选中后弹出**场次口令**输入层，验证通过才切换，并 toast「已切换到「X」」，卡片自动收起。切换期间按钮自身隐藏，卡片底部给出「取消切换」，取消即原样退回原场次。
+
+场次口令是**场景级凭据**，与登录密码、玩家口令互不复用：员工每次切场次（以及新建场次，因为建完会顺带切过去）都要输一次；连续 5 次错误锁 60 秒，按账号计数（跨实例同一口径），错误尝试会写进操作日志。管理员免校验——场景口令约束的是员工操作，管理员登录本身已是最高凭据。
 
 ### 6.5 管理界面（`/admin`）
 
-四个入口，一格一件事，进入后不再叠其他卡片：
+六个入口，一格一件事，进入后不再叠其他卡片：
 
 | 入口 | 行为 | 前置条件 |
 |---|---|---|
@@ -221,16 +230,45 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 大屏 | 新窗口打开 `/bigscreen?token=&sid=`（令牌立即从地址栏抹掉，只存本地） | 需要一个进行中的当前场次 |
 | 新建场次 | 弹窗输入名称（留空自动命名）→ 创建并自动切到新场次，toast 确认 | 进行中场次 < 4 |
 | 关闭场次 | 二次确认（红色危险弹窗）→ 关闭当前归属场次，玩家端立即断开 | 当前场次必须是进行中 |
+| 员工账号 | 建号 / 改显示名 / 调角色 / 停用 / 重置密码；一人一账号一密码 | 无 |
+| 操作日志 | 按天（默认今天）列出所有操作：时间、账号、动作、对象、场次、IP；可导出 CSV | 无 |
 
-- 登录态与员工端共用：从员工端点「管理」是同标签页跳转，直接复用那份 token；独立打开/收藏夹进入则需输一次管理密码，或带 `?token=` 预置（页面立刻 `history.replaceState` 抹掉）。令牌同时写 `sessionStorage`（员工端）与 `localStorage`（独立打开用），员工端「退出登录」会把两份一起清掉
+**只允许 `admin` 角色进入。** 员工账号登录 `/admin` 会被挡回登录页并提示需要管理员账号；管理侧接口（对账、账号、日志）在服务端同样只认 `admin`，前端隐藏不是唯一防线。
+
+**员工账号规则：**
+
+- 账号名 2–32 位，只允许 `a-z 0-9 . _ -`，统一小写（`Mary` 与 `mary` 是同一个账号）；密码 6–64 位，且不能与账号名相同
+- 密码只存 `scrypt$N$r$p$salt$hash` 派生值，任何接口都不返回它，日志里也不会出现
+- 两条硬规则：不能停用自己；不能把最后一个可用管理员降级或停用（否则谁都进不去）
+- 停用账号、重置密码、变更角色都会立刻踢掉该账号的所有会话，不等 token 到期
+- 初始管理员由 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 在**首次启动**时创建；之后改环境变量不会覆盖库里的密码，改密码请走管理界面
+
+- 登录态与员工端共用：从员工端点「管理」是同标签页跳转，直接复用那份 token；独立打开/收藏夹进入则需输一次管理员账号密码，或带 `?token=` 预置（页面立刻 `history.replaceState` 抹掉）。令牌同时写 `sessionStorage`（员工端）与 `localStorage`（独立打开用），员工端「退出登录」会把两份一起清掉
 - 不做实时推送：进页面、切回前台（`visibilitychange`）、每次操作成功后各刷一次场次列表与对账数字
 - 场次相关的能力边界与员工端一致：全集群 4 场上限、只能关自己当前归属的场次、已关闭场次不可再进
+
+### 6.5.1 操作日志（审计）
+
+| 动作 `action` | 触发点 | 关键字段 |
+|---|---|---|
+| `login` / `login_failed` / `logout` | 登录成功、登录失败（含原因：无此账号 / 已停用 / 密码错）、退出 | 账号、角色、IP |
+| `session_create` / `session_select` / `session_close` | 新建 / 切换 / 关闭场次 | 场次名、sid、切换前场次 |
+| `switch_denied` | 场次口令错误 | 账号、IP |
+| `round_lock` | 锁定开奖数字 | 数字、轮次号、是否归档成功 |
+| `round_reset` | 开始新一轮 | 原轮次 → 新轮次、当时是否已锁定 |
+| `export_archive` / `export_audit` | 导出对账 CSV / 导出日志 CSV | 口径 level、日期区间、行数 |
+| `account_create` / `account_update` / `account_password` | 建号 / 改角色状态 / 重置密码 | 目标账号、变更前后 |
+| `archive_sync` | 归档补齐 | 检查轮次数、失败数 |
+
+- 表是 **append-only**：`UPDATE` / `DELETE` / `TRUNCATE` 在数据库层被触发器拒绝（与归档表同一套机制）
+- 每条记录都带操作账号与角色；未登录的失败尝试记「尝试的账号名」，不记任何密码
+- 「锁定人」落在 `round.locked_by` 与 `round_archive.locked_by`，两种对账 CSV 的末列就是它（空值 = 无记录）
 
 ### 6.6 竞猜归档与当日对账
 
 **归档（append-only）。** 工作人员点「确认并锁定」的那一刻，本轮完整明细会写进归档表：
 
-- 表头 `round_archive`：`session_id` + 场次名称/序号快照 + 轮次号 + 开奖数字 + 开奖单双 + 锁定时间 + 归档时间 + 扫码人数 + 提交人数
+- 表头 `round_archive`：`session_id` + 场次名称/序号快照 + 轮次号 + 开奖数字 + 开奖单双 + 锁定时间 + 归档时间 + 扫码人数 + 提交人数 + 锁定人
 - 明细 `round_archive_entry`：会员号 + 预测单双 + 预测数字 + 是否提交 + 单双匹配 + 数字匹配 + 登记/提交时间
 - **不记录任何积分、得分、总分字段**：归档只回答「谁猜了什么、实际开了什么、猜中没猜中」，折算积分是门店侧的事
 - 归档与运行态快照在**同一个事务**里写：要么「已锁定且有归档」，要么整体回滚，不存在只锁不归档的中间态
@@ -259,15 +297,17 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 ### 6.7 实时大屏（`/bigscreen`）
 
-**给现场看的第二块屏**：同一场次里每个人的当前选项（单/双 + 数字），玩家一提交就变。
+**给现场看的第二块屏**：同一场次里每个人的当前选项（单/双 + 数字），玩家一点选就变，不必等确认提交。
 
-- 入口：管理界面（`/admin`）的「大屏」入口（带当前场次与员工令牌新开窗口），或直接访问 `/bigscreen`（需输入员工密码）；支持 `?sid=&token=` 预置，页面会把令牌从地址栏抹掉后只存本地，刷新不用重输
-- 数据来源：`GET /api/stream?sid=&token=&view=bigscreen`，与员工端、玩家端**同一条 SSE 通道、同一个场次版本号**，没有额外轮询
+- 入口：管理界面（`/admin`）的「大屏」入口（带当前场次与员工令牌新开窗口），或直接访问 `/bigscreen`（需员工账号登录）；支持 `?sid=&token=` 预置，页面会把令牌从地址栏抹掉后只存本地，刷新不用重输
+- 数据来源：`GET /api/stream?sid=&token=&view=bigscreen`，与员工端、玩家端**同一条 SSE 通道**；落库变更走 `state`（带版本号），草稿走 `draft` 补丁（500ms 合并），没有额外轮询
 - 权限：`view=bigscreen` 会下发开奖前的选项，因此**只认有效员工 token**，否则 403 `bigscreen_unauthorized`；玩家端仍走 `publicPlayers()`，开奖前拿不到任何人的选项
 - 状态识别：
   - **加入** — 出现新的 `pid`（本轮首次扫码）
-  - **未选择** — 已扫码但 `oddEven` 为空，虚线卡片
-  - **选项变更** — 同一 `pid` 的选项由空变有（或数值变化），卡片闪一次金色描边；业务上「一次提交不可修改」不变，所以这只覆盖「未选择 → 已选择」
+  - **未选择** — 已扫码但既没草稿也没提交，灰色占位卡片
+  - **已选待确认** — 有草稿未提交：虚线金边框 + 阻尼金文字，状态行写「已选待确认」；这是现场最容易吵的一态（「我选了为什么不算」），视觉上必须和「已确认」明显不同
+  - **选项变更** — 同一 `pid` 的选项变化（含草稿来回改），卡片闪一次金色描边；草稿走独立的 `draft` 补丁事件，不动 `version`
+  - **已确认** — 点了「确认提交」：实心金边框 + 勾选态
   - **离开** — 玩家页面 `pagehide` 时用 `sendBeacon` 上报 `POST /api/leave`，卡片变灰并保留其已提交的选项；重新扫码或 SSE 重连即撤销标记（刷新、回前台都算回来）
   - **新一轮** — `round` 变化时整屏清空，只留一条「新一轮」动态，不会把上一轮的人当成离场逐个播报
 - 一致性：客户端按 `version` 丢弃过期帧（重连补发、并发请求乱序都不会把旧选项盖回去），按 `pid` 增量 diff，DOM 上不会出现重复卡片；卡片数量少时自动放大、多了自动收窄
@@ -281,23 +321,32 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 | 方法 | 路径 | 鉴权 | 请求体 / 参数 | 说明 |
 |---|---|---|---|---|
-| POST | `/api/staff-login` | — | `{password}` | 成功返回 `{ok, token, sid, sessions}`，`sid` 为登录后默认归属的场次 |
-| POST | `/api/staff-logout` | token | `{token}` | 注销会话 |
-| GET | `/api/staff-check` | token | `?token=` | 会话是否仍有效，返回当前绑定的 `sid` 与场次列表 |
+| POST | `/api/staff-login` | — | `{username, password}` | 账号 + 独立密码登录（`username` 必填，缺省返回 400 `username_required`）；成功返回 `{ok, token, sid, sessions, user:{username,role,displayName}}` |
+| POST | `/api/staff-logout` | token | `{token}` | 注销会话（写 `logout` 日志） |
+| GET | `/api/staff-check` | token | `?token=` | 会话是否仍有效，返回绑定的 `sid`、场次列表与 `user` |
 | GET | `/api/sessions` | — | `?token=` | 场次列表；无 token 只返回进行中的场次，带有效 token 返回含已关闭场次的完整列表 |
-| POST | `/api/session-create` | token | `{token, name}` | 新建场次（上限 4），创建者自动切到新场次，`name` 可省略（自动命名），上限 24 字 |
-| POST | `/api/session-select` | token | `{token, sid}` | 切换该员工会话的归属场次，不影响其他员工 |
+| POST | `/api/session-create` | token(+场景口令) | `{token, name, sessionPassword}` | 新建场次（上限 4），创建者自动切到新场次，`name` 可省略（自动命名），上限 24 字。`staff` 角色需 `sessionPassword` |
+| POST | `/api/session-select` | token(+场景口令) | `{token, sid, sessionPassword}` | 切换该员工会话的归属场次，不影响其他员工。`staff` 角色需 `sessionPassword` |
 | POST | `/api/session-close` | token | `{token, sid}` | 关闭场次：通知并断开该场玩家端、从玩家端列表移除、数据保留 |
 | POST | `/api/session-unlock` | — | `{sid, password}` 或 `{sid, auto:true}` | 玩家端选择 / 切换场次：校验口令，成功返回绑定令牌 `ut`（12 小时）。`auto` 仅在唯一进行中场次时可用 |
-| GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项），需员工 token |
+| GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`（含草稿）。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项与草稿），需员工 token |
 | POST | `/api/scan` | — | `{sid, ut, content}` | 登记身份，返回 `{ok, pid, sid, status:"known"}` |
-| POST | `/api/predict` | — | `{sid, ut, pid, oddEven, number}` | `oddEven` 为 `"单"` / `"双"`，`number` 为 1–8 |
+| PUT | `/api/pick` | — | `{sid, ut, pid, oddEven, number, seq}` | **临时选择（草稿）**：只写内存、不落库、不推进 `version`；`seq` 单调，更小的序号返回 `200 {accepted:false, ignored:"stale_seq"}` 而不是报错 |
+| DELETE | `/api/pick` | — | `{sid, ut, pid, seq}` | 撤销草稿，同样按 `seq` 单调判定（删除也吃序号，避免旧请求复活选择） |
+| POST | `/api/submit` | — | 头 `Idempotency-Key`，体 `{sid, ut, pid, oddEven, number}` | **确认提交**：`oddEven` 为 `"单"` / `"双"`，`number` 为 1–8；同 key 重放返回 `200 {replay:true}`，异 key 已提交返回 `409 already_submitted` + 终态。**只有它才落库、才算参赛** |
+| POST | `/api/predict` | — | `{sid, ut, pid, oddEven, number}` | 老接口，保留兼容（重复提交 → `400 predict_duplicate`）；新前端一律用 `/api/submit` |
 | POST | `/api/leave` | — | `{sid, ut, pid}` | 玩家离开现场：只给大屏打 `left` 标记，不删登记与预测；幂等，重复上报不递增版本号 |
-| POST | `/api/confirm` | token | `{token, sid, number}` | 锁定该场次本轮数字（唯一写入点，写后不可改） |
+| POST | `/api/confirm` | token | `{token, sid, number, ackPending?}` | 锁定该场次本轮数字（唯一写入点，写后不可改）。本轮存在「已选但未确认」的草稿时必须带 `ackPending:true`，否则 `409 pending_confirm_required` + `counts` + `pending[]`；锁定后草稿全部作废 |
 | POST | `/api/reset` | token | `{token, sid}` | 该场次轮次 +1 并清空本场本轮玩家（已锁定轮次必须先归档成功，否则返回 409 `archive_write_failed`） |
-| GET | `/api/archive/summary` | token | `?token=&date=` 或 `?token=&from=&to=` | 当日聚合：场次数、轮次数、去重参与人数、分场次明细。默认今天 |
-| GET | `/api/archive/export.csv` | token | `?token=&level=detail\|round&date=或 from=&to=&sid=` | 对账 CSV（`text/csv`，带 BOM，列头固定见 7.3） |
+| GET | `/api/archive/summary` | **admin** | `?token=&date=` 或 `?token=&from=&to=` | 当日聚合：场次数、轮次数、去重参与人数、分场次明细。默认今天 |
+| GET | `/api/archive/export.csv` | **admin** | `?token=&level=detail\|round&date=或 from=&to=&sid=` | 对账 CSV（`text/csv`，带 BOM，列头固定见 7.3）；导出动作记 `export_archive` 日志 |
 | POST | `/api/archive-sync` | token | `{token}` | 把内存里所有「已锁定但未落归档」的轮次重新写一遍（幂等，正常情况用不到） |
+| GET | `/api/accounts` | **admin** | `?token=` | 账号列表（不含密码派升值），附 `me`（当前账号名） |
+| POST | `/api/account-create` | **admin** | `{token, username, password, displayName?, role?}` | 建账号；`role` 为 `staff`（默认）/ `admin`。校验账号格式、密码强度、重名 |
+| POST | `/api/account-update` | **admin** | `{token, username, displayName?, role?, status?}` | 改显示名 / 角色 / 状态；不能停用自己、不能停用或降级最后一个管理员 |
+| POST | `/api/account-password` | **admin** | `{token, username, password}` | 重置密码；该账号所有会话立即失效 |
+| GET | `/api/audit` | **admin** | `?token=&date=` 或 `from=&to=`，可选 `&actor=&action=&limit=` | 操作日志，新的在前，`limit` 默认 200、上限 1000 |
+| GET | `/api/audit/export.csv` | **admin** | 同上（不分页） | 操作日志 CSV（`时间,账号,角色,操作,场次ID,对象,明细,IP`）；导出动作记 `export_audit` 日志 |
 | GET | `/api/stream` | — | `?sid=&ut=&pid=`；大屏加 `&token=&view=bigscreen` | SSE 长连接，只推送该场次的事件 |
 
 **玩家侧准入（`/api/state`、`/api/scan`、`/api/predict`、`/api/stream` 共用一套判定）**：
@@ -315,11 +364,17 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   "ok": true,
   "session": { "id": "efca97c6", "name": "A 场", "status": "open" },
   "version": 12,
+  "serverTime": 1795206301123,
   "round": 3,
   "locked": false,
   "number": null,
-  "players": [{ "id": "M00123", "submitted": true, "isVeteran": true }],
-  "me": { "id": "M00123", "oddEven": "单", "number": 5 }
+  "counts": { "total": 3, "submitted": 1, "draft": 1, "none": 1, "left": 0 },
+  "players": [
+    { "id": "M00123", "submitted": true,  "status": "submitted", "draft": false, "isVeteran": true },
+    { "id": "M00124", "submitted": false, "status": "draft",     "draft": true,  "isVeteran": false }
+  ],
+  "me": { "id": "M00124", "oddEven": null, "number": null,
+          "draft": { "oe": "双", "num": 6, "seq": 3 } }
 }
 ```
 
@@ -340,13 +395,14 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 开奖后 `players[]` 才会补上每人的 `oddEven` 与 `number`；开奖前任何人都拿不到他人的预测内容。`version` 与 `round`、`players` 一样都是**该场次**的，各场次互不影响。
 
-`view=bigscreen`（需员工 token）换成大屏视图，差别只有两处：多了 `"view": "bigscreen"`，且 `players[]` 在开奖前就带 `oddEven` / `number`（外加 `left`、`leftAt`、`registeredAt`、`submittedAt`）。
+`view=bigscreen`（需员工 token）换成大屏视图：多了 `"view": "bigscreen"`，`players[]` 在开奖前就带选项 —— `oe`/`num` 是**当前显示值**（已确认取提交值，未确认取草稿值），另有 `status`（`submitted`/`draft`/`none`）与 `draftOddEven`/`draftNumber`/`draftSeq`、`left`/`leftAt`/`registeredAt`/`submittedAt`。`submitted` 只表示**已确认提交**，统计与归档只认它。
 
 ### 7.1 SSE 事件
 
 - 连接按 `session_id` 分组，广播只发往该场次的连接，不同场次的客户端互不可见
 - 连接建立后立即下发一次 `state` 事件（全量快照），事件 `id` 为场次状态版本号
-- 之后每次状态变更广播 `state`；`Last-Event-ID` 仅作版本对照，服务端广播始终是全量快照，重连天然对齐
+- 之后每次**落库**变更广播 `state`；`Last-Event-ID` 仅作版本对照，服务端广播始终是全量快照，重连天然对齐
+- 草稿变更走单独的 `draft` 事件：`{sid, items:[{pid, draft:{oe,num,seq,at}|null}]}`，按场次 500ms 合并，**不带事件 id**（草稿不落库、不推进版本号，靠首帧 `state` 带全量对齐）
 - 场次被关闭时向该场连接下发一次 `session_closed`（带最新场次列表），随后断开；客户端据此退回场次选择
 - 每 15 秒发送一次 `ping` 心跳，防止代理/浏览器超时断连
 - 服务端下发 `retry: 2000`，客户端断线 2 秒后重连
@@ -364,10 +420,27 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `predict_duplicate` | 400 | 已提交过，不可重复或修改 |
 | `predict_invalid_oe` | 400 | 单双取值非「单 / 双」 |
 | `predict_invalid` | 400 | 数字不是 1–8 的整数 |
-| `unauthorized` | 401 | 员工 token 缺失或过期 |
-| `wrong_password` | 401 | 员工密码错误 |
-| `too_many_attempts` | 429 | 连续 5 次密码错误，锁 30 秒（返回 `retryAfter` 秒数） |
+| `unauthorized` | 401 | 员工 token 缺失、过期，或账号已被停用 |
+| `wrong_password` | 401 | 账号或密码错误（不区分「账号不存在」与「密码错」，避免枚举账号） |
+| `account_disabled` | 401 | 账号已停用 |
+| `too_many_attempts` | 429 | 同一账号连续 5 次密码错误，锁 30 秒（返回 `retryAfter` 秒数） |
+| `staff_session_password_required` | 403 | 员工切场次 / 新建场次未带场景口令 |
+| `staff_wrong_password` | 401 | 员工场次口令错误（连续 5 次后返回 429 `staff_too_many_attempts`，锁 60 秒） |
+| `staff_too_many_attempts` | 429 | 该账号场次口令错误次数超限（返回 `retryAfter`） |
+| `username_invalid` | 400 | 账号名不合法（2–32 位 `a-z 0-9 . _ -`） |
+| `username_taken` | 409 | 账号已存在 |
+| `account_not_found` | 404 | 目标账号不存在 |
+| `password_too_short` / `password_too_long` / `password_too_weak` | 400 | 密码过短（<6）/ 过长（>64）/ 与账号名相同 |
+| `role_invalid` / `status_invalid` | 400 | 角色不是 `staff`/`admin`，状态不是 `active`/`disabled` |
+| `cannot_disable_self` | 409 | 不能停用当前登录的账号 |
+| `last_admin` | 409 | 不能停用或降级最后一个可用管理员 |
+| `nothing_to_update` | 400 | `account-update` 没有携带任何可改字段 |
 | `invalid_number` | 400 | 锁定数字不是 1–8 的整数 |
+| `pending_confirm_required` | 409 | 本轮存在「已选但未确认」的草稿，员工开奖未带 `ackPending`（返回 `counts` 与 `pending[]` 名单） |
+| `pick_invalid` / `pick_invalid_oe` / `seq_invalid` / `pick_not_scanned` | 400 | 草稿参数不合法：数字不是 1–8、单双不是「单/双」、序号非正整数、该 pid 未在本场次登记 |
+| `already_submitted` | 409 | 该玩家已确认提交，再次提交或改草稿被拒（返回 `submit` 终态，前端据此展示成功态） |
+| `round_locked` | 409 | 本轮已锁定，草稿与提交都关闭（返回 `number`） |
+| `idempotency_key_required` | 422 | `POST /api/submit` 缺 `Idempotency-Key` 或格式不合规（8–64 位 `A-Za-z0-9_-`） |
 | `already_locked` | 400 | 本轮已锁定（返回已锁定的 `number`） |
 | `session_not_found` | 404 | `sid` 不存在，或多个场次并行时未指定 `sid`（返回可用场次列表） |
 | `session_closed` | 409 | 目标场次已关闭，拒绝入场 / 锁定 |
@@ -397,19 +470,20 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 ```
 场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,
-会员号,预测单双,预测数字,是否提交,单双命中,数字命中,登记时间,提交时间
+会员号,预测单双,预测数字,是否提交,单双命中,数字命中,登记时间,提交时间,锁定人
 ```
 
 `level=round`（一轮一行，含 0 人轮次）：
 
 ```
-场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,扫码人数,提交人数
+场次ID,场次名称,场次序号,轮次号,开奖数字,开奖单双,锁定时间,归档时间,扫码人数,提交人数,锁定人
 ```
 
 格式约定：
 
 - 时间列一律为运营时区（`ARCHIVE_TZ_OFFSET_MIN`）下的 `YYYY-MM-DD HH:mm:ss`，**不带偏移后缀**，跨时区使用请自行按列头口径换算
 - `是否提交`：`是` / `否`；`单双命中` / `数字命中`：`命中` / `未中` / `未提交`
+- `锁定人`：该轮点「确认并锁定」的账号；两种口径都有此列，空值表示该行没有记录（历史数据）
 - **没有任何积分、总分、命中率列**：明细只给逐次匹配结果，跨场不做合并；某会员当天参与几场就看他有几行
 - 含逗号 / 引号 / 换行的字段会被标准 CSV 双引号包裹（会员号来自二维码原文，可能出现任意字符）
 - ⚠️ 会员号是**原文**，不做公式转义：若某个 ID 以 `=` `+` `-` `@` 开头，Excel 可能当成公式。对账请按文本导入，或用 `level=round` 做人数交叉校验
@@ -441,22 +515,26 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 ## 8. 数据模型
 
-启动时 `initDb()` 幂等建表（`CREATE TABLE IF NOT EXISTS`），**只负责建出缺失的表，不做任何结构迁移**：表结构以本文档与 `db.js` 的定义为唯一基准，库结构与代码不一致时需先手工对齐 DDL 再启动。
+启动时 `initDb()` 幂等建表（`CREATE TABLE IF NOT EXISTS`），**只负责建出缺失的表**：表结构以本文档与 `db.js` 的定义为唯一基准。
+
+`initDb()` **不补列、不回填、不改约束**：表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表。库结构与之不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建。
 
 | 表 | 内容 | 写入策略 |
 |---|---|---|
 | `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间 | 随快照提交 upsert |
 | `session_state` | 每个场次一行：**状态版本号** + 最近提交时间（多实例乐观锁凭据） | 提交事务里 `version + 1`（CAS） |
-| `round` | 每个场次一行：当前轮次、开奖数字、锁定时间（**主键 `session_id`**） | 按场次 upsert |
+| `round` | 每个场次一行：当前轮次、开奖数字、锁定时间、锁定人账号 `locked_by`（**主键 `session_id`**） | 按场次 upsert |
 | `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为大屏用的离开标记，null = 在场 | 批量 `unnest` upsert + 删除快照里不存在的行 |
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | 批量 `UPSERT`，不删除，跨轮保留 |
-| `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
+| `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by`（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
 | `round_archive_entry` | 归档明细：一人一行，会员号 + 预测内容 + 命中结果（主键 `(archive_id, member_id)`） | 只 `INSERT`，重复行跳过 |
 | `app_config` | 键值配置，目前只存 `player_bind_secret`（绑定令牌签名密钥） | 首次启动生成后 upsert |
-| `staff_session` | 员工登录会话：token、当前归属场次、过期时间（**跨实例共享**） | 登录插入，过期按需清理 |
-| `auth_throttle` | 登录 / 场次口令错误计数：`key` = `staff` 或 `player:<ip>` | 原子 upsert，验证通过即删 |
+| `staff_session` | 员工登录会话：token、当前归属场次、过期时间、**登录账号 `username`**（角色回查账号表，不存快照）（**跨实例共享**） | 登录插入；过期 / 账号停用 / 改密时按需清理 |
+| `staff_account` | 员工账号：账号名、显示名、角色（`staff`/`admin`）、状态、**scrypt 密码派生值**、建号人、最近登录时间 | 管理界面建号 / 改角色状态 / 改密 |
+| `audit_log` | 操作日志：时间、账号、角色、动作、场次、对象、明细 JSON、IP（**append-only**） | 只 `INSERT`，`UPDATE` / `DELETE` / `TRUNCATE` 被触发器拒绝 |
+| `auth_throttle` | 登录 / 场次口令错误计数：`key` = `login:<账号>`、`switch:<账号>` 或 `player:<ip>` | 原子 upsert，验证通过即删 |
 
-**口令不在任何表里**：玩家端口令只在进程内存保留 `scrypt(口令, 随机盐)`，启动时由 `PLAYER_SESSION_PASSWORD` 重新计算；数据库、日志、接口响应都没有它，签名密钥则是另一回事（随机、不可反推口令）。
+**口令不在任何表里明文出现**：玩家场次口令与员工场次口令只在进程内存保留 `scrypt(口令, 随机盐)`，启动时由 `PLAYER_SESSION_PASSWORD` / `STAFF_SESSION_PASSWORD` 重新计算；员工登录密码在 `staff_account.password_hash` 里是 `scrypt$N$r$p$salt$hash`，无法反推。签名密钥是另一回事（随机、不可反推口令）。
 
 时间戳统一为毫秒级 `BIGINT`，与代码里的 `Date.now()` 语义一致。`identity.completed_rounds` 在每次开奖时对已提交预测的玩家 +1，这是「老玩家」判定的唯一依据。
 
@@ -481,13 +559,23 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 ```bash
 docker build -t oddeven .
 docker run -d --name oddeven -p 3000:3000 \
-  -e STAFF_PASSWORD='your-password' \
+  -e ADMIN_USERNAME='admin' \
+  -e ADMIN_PASSWORD='your-admin-password' \
+  -e STAFF_SESSION_PASSWORD='your-switch-passcode' \
   -e PLAYER_SESSION_PASSWORD='your-session-passcode' \
   -e DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=require' \
   oddeven
 ```
 
-`PLAYER_SESSION_PASSWORD` 是玩家选择 / 切换场次用的口令（不设置则回退到默认值 `8888`，启动日志会提示）。它只在内存里以 scrypt 哈希存在，改口令 = 改环境变量 + 重启，无需迁移数据。
+三个口令各管一件事，互不复用：
+
+| 变量 | 管的动作 | 默认值 |
+|---|---|---|
+| `PLAYER_SESSION_PASSWORD` | 玩家选择 / 切换场次 | `8888` |
+| `STAFF_SESSION_PASSWORD` | 员工切换 / 新建场次（管理员免校验） | `7777` |
+| `ADMIN_PASSWORD` | 仅用于首次创建管理员账号 | `123456` |
+
+两个场景口令只在内存里以 scrypt 哈希存在，改口令 = 改环境变量 + 重启所有实例，无需迁移数据；管理员密码建号后就在库里，改它请走管理界面（重置密码）。
 
 镜像为多阶段构建，`.dockerignore` 已排除 `node_modules`、`.git`、`.env`、`test`。
 
@@ -495,7 +583,9 @@ docker run -d --name oddeven -p 3000:3000 \
 
 ```bash
 fly secrets set \
-  STAFF_PASSWORD='your-password' \
+  ADMIN_USERNAME='admin' \
+  ADMIN_PASSWORD='your-admin-password' \
+  STAFF_SESSION_PASSWORD='your-switch-passcode' \
   PLAYER_SESSION_PASSWORD='your-session-passcode' \
   PG_HOST=your-db-host \
   PG_USER=your-db-user \
@@ -589,12 +679,12 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 **部署形态**
 
 - **场次维度已就绪，跨场汇总已落地。** `game_session` + 三张运行态表的 `session_id` 与归档表的 `session_id` 一致，1–4 场可在同一集群内隔离运行并动态开闭；当日聚合、对账导出都按 `session_id` 自动分账。
-- **场次口令是「一个」而不是「一场一个」。** 所有场次共用 `PLAYER_SESSION_PASSWORD`；它拦的是「随便乱换场次」，不构成场次机密（知道口令的人可以进任何一场）。要按场发不同口令，需要给 `game_session` 加口令哈希列，见「12. 待办」。
+- **场次口令是「一个场景一个」，不是「一场一个」。** 玩家侧所有场次共用 `PLAYER_SESSION_PASSWORD`，员工侧所有场次共用 `STAFF_SESSION_PASSWORD`；它们拦的是「随便乱换场次」，不构成场次机密（知道该场景口令的人可以进任何一场）。员工侧的口令按账号计数、连续 5 次错误锁 60 秒，且管理员免校验——它是给员工设的操作边界，不是身份认证（身份认证靠登录）。要按场发不同口令，需要给 `game_session` 加口令哈希列，见「12. 待办」。
 - **玩家绑定是「防误换」而非强身份认证。** 令牌绑定场次、不可跨场，但任何人拿到这台设备即可沿用其绑定继续玩（与扫码身份同一台设备的既有模型一致）；令牌 12 小时过期，口令本身从不落地，所以清掉 localStorage 只会退回选择界面，仍需口令才能重新进场。
 - **令牌走查询参数。** SSE（EventSource）无法自定义请求头，所以员工 token 与玩家绑定令牌都以 `?token=` / `?ut=` 传递，会进访问日志。反向代理层建议关闭查询串记录，或改走 Cookie。令牌都不含口令，泄露影响是「可读该场次状态」，不能改口令、不能跨场。
 - **没有人数上限校验。** 单场 6–12 位是运营约定，服务端不拦；人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
 - **支持多实例（水平扩容）。** 会话、员工登录态、限频全部在 Postgres，跨实例变更走 `LISTEN/NOTIFY`，写入用 `session_state.version` 乐观锁 + 全局 advisory lock 串行化（详见 9.5）。仍有的边界：`LISTEN` 不能走事务级连接池；SSE 连接是每实例各自的（不需要粘性会话）；进程内读缓存 TTL 5 秒，通知全丢时最坏有 5 秒延迟；同时进行的场次上限 4 是**全集群**口径。
-- **员工会话重启不再丢失（行为变化）。** 会话落在 `staff_session`，有效期 12 小时；这是多实例的硬要求（A 签发的 token 必须能被 B 认）。要立刻下线某人只能等过期或清表；如需「踢人」能力，应补一个管理接口删会话行。
+- **员工会话重启不再丢失（行为变化）。** 会话落在 `staff_session`，有效期 12 小时；这是多实例的硬要求（A 签发的 token 必须能被 B 认）。要立刻下线某人：在管理界面**停用该账号或重置密码**，会立即删掉它所有会话行（不会等 12 小时）。登录会话的鉴权以账号表当前状态为准，所以降级角色同样立即生效。
 - 托管库强制 TLS 时只能通过 `DATABASE_URL` 加 `sslmode`；`PG_*` 分支无法附加 TLS 参数。
 
 **数据**
@@ -606,12 +696,15 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - 玩家 ID 未做加密或哈希，直接以会员号明文入库并与 `identity` 关联。
 - 写库是「抢版本号 + 快照重写」（`db.commitSnapshot`），多实例安全；但同一场次的写入仍是**整场快照**语义，玩家数很多时单次提交成本随人数上升（已从「一人一条 SQL」优化为批量 `unnest`）。
 - 写失败不再静默：`store.mutate` 会丢弃脏缓存并让接口返回 `write_failed`（锁定路径还会区分为「已锁定但未归档」），不会出现「页面显示成功、库里没有」。
-- 员工登录态现在落库（`staff_session`），过期由读取时顺手清理，没有后台定时任务；要立即使某人失效只能删表行或等 12 小时过期。
-- 密码错误计数虽已按 `staff` / `player:<ip>` 分开，但员工侧仍是**全局计数**：任何人连错 5 次都会把所有人锁在门外 30 秒。
+- 员工登录态现在落库（`staff_session`），过期由读取时顺手清理，没有后台定时任务；要立即使某人失效用「停用账号 / 重置密码」。
+- 登录失败计数按**账号**（`login:<账号>`），场次口令计数也按**账号**（`switch:<账号>`），玩家口令按来源 IP（`player:<ip>`）：一个人连错不会把全店锁在门外。副作用是攻击者可以轮换账号名刷失败次数，但账号不存在时同样计入该名字，不会泄露账号是否存在。
+- **操作日志只增不删，没有清理策略。** 按门店一天几百条的量级，长期运行后建议按月导出并分区（与归档表同一条待办）。
+- **两个场景口令来自环境变量，必须全实例一致。** 口令只以 scrypt 哈希存在进程内存，多实例部署时每个实例都按同一份 `PLAYER_SESSION_PASSWORD` / `STAFF_SESSION_PASSWORD` 重算；改了变量要重启所有实例才生效。
 **安全**
 
-- 默认口令只适合本地演示（见 5.1 环境变量），上线前必须用 `STAFF_PASSWORD` / `PLAYER_SESSION_PASSWORD` 覆盖。
-- 员工权限只有"能登录/不能登录"，无角色与操作审计。
+- 默认口令只适合本地演示（见 5.1 环境变量）。上线前必须做三件事：用 `ADMIN_PASSWORD` 指定初始管理员密码（或登录后立刻在管理界面改掉默认 `123456`）、用 `PLAYER_SESSION_PASSWORD` / `STAFF_SESSION_PASSWORD` 覆盖两个场景口令、给每位员工单独建号而不是共用 `staff`。
+- 权限只有两档：`staff` 能操作场次 / 锁定 / 新一轮，`admin` 另有对账与账号管理。没有更细的颗粒度（例如「只能锁定不能关闭」）。
+- 初始管理员密码由环境变量引导，只在**库里没有任何 admin 时**生效；之后改 `ADMIN_PASSWORD` 不会改库里的密码。忘记管理员密码时，只能手工把一条已知 scrypt 派生值写进 `staff_account.password_hash`，或临时删掉全部 admin 行重启让它重新引导。
 - 玩家身份没有任何校验：任意字符串（≤512 字符）都能注册成身份，知道别人会员号即可抢先占用。
 - 静态资源与 API 响应均为 `Cache-Control: no-store`。
 
@@ -619,16 +712,14 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 
 ## 12. 待办
 
-以下是已确认需要做、但当前代码尚未实现的事项（原第 1 项「结算归档与跨场次汇总对账」已完成，见 6.6 / 7.3 / 第 8 节）：
+以下是已确认需要做、但当前代码尚未实现的事项：
 
 1. **测试补齐与 CI 接入**：`test/` 已覆盖归档与对账主流程、故障路径、聚合口径、append-only，以及多实例共享存储 / 跨实例 SSE / 并发写（见 10.1），仍缺：SSE 重连时的 `Last-Event-ID` 对齐、身份跨轮累计的独立用例；`.github/workflows/` 目前只有部署，尚未在部署前跑 `npm test`。
 2. **玩家 ID 入库前加密**：引入密钥对（公钥加密 / 私钥解密，密钥经环境变量注入），对 `player.id`、`identity.id`、归档表的 `member_id` 及展示用的会员号做加密处理，并配套密钥轮换方案；同时评估现有数据的迁移与清理。注意这与对账口径有冲突，需先定“对账按什么标识”再落加密（归档表是 append-only，加密后历史行不会回写，只能在导出层解密）。
 3. **数据库 TLS 配置化**：在 `Pool` 配置里支持显式 ssl 选项，使 `PG_*` 分支也能启用 TLS，不依赖连接串参数。
-4. **多实例支持**：遗留项：归档表读多写多之后可考虑读副本；`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
+4. **多实例支持**：遗留项：`store` 读缓存目前是进程内 LRU-less Map，场次数长期增长后需要加容量上限。
 5. **直播大屏**：更改美化格式。
 6. **中奖动画**：开奖后在玩家端显示中奖内容。
-7. **独立密码**：为切换员工场次、切换玩家场次、员工登入、管理登入等不同场景提供独立密码。在管理界面中为员工创建账号，并为每个账号设置独立密码，员工登入时使用自己的账号和密码进行身份验证。汇出对账时，员工账号也会被记录在日志中，以便追踪操作记录。
-8.  **归档表分区与冷备**：按 `locked_at` 做月分区或定期导出后归档到对象存储，避免长期运行后单表无限增长。
 
 ---
 

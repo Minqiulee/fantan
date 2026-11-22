@@ -15,7 +15,8 @@ import { Client } from 'pg';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export const STAFF_PASSWORD = 'test-staff-pw';
+export const ADMIN_USERNAME = 'admin';
+export const ADMIN_PASSWORD = 'test-admin-pw';
 export const PLAYER_PASSWORD = 'test-player-pw';
 
 /**
@@ -78,7 +79,8 @@ export async function startServer({ port, databaseUrl: dbUrl = databaseUrl(), en
       ...process.env,
       DATABASE_URL: dbUrl,
       PORT: String(listenPort),
-      STAFF_PASSWORD,
+      ADMIN_USERNAME,
+      ADMIN_PASSWORD,
       PLAYER_SESSION_PASSWORD: PLAYER_PASSWORD,
       ARCHIVE_TZ_OFFSET_MIN: '480',
       ...env
@@ -149,16 +151,19 @@ export function makeClient(base) {
 
   return {
     get: (p) => call('GET', p),
-    post: (p, body = {}) => call('POST', p, body)
+    post: (p, body = {}) => call('POST', p, body),
+    put: (p, body = {}) => call('PUT', p, body),
+    del: (p, body = {}) => call('DELETE', p, body)
   };
 }
 
 /* ---------- 领域动作：与前端调用的是同一批接口 ---------- */
 
-export async function login(api) {
-  const r = await api.post('/api/staff-login', { password: STAFF_PASSWORD });
+/** 用启动时引导创建的管理员账号登录（管理员免场次口令，操作类用例都走它）。 */
+export async function login(api, username = ADMIN_USERNAME, password = ADMIN_PASSWORD) {
+  const r = await api.post('/api/staff-login', { username, password });
   if (!r.body || !r.body.token) throw new Error('登录失败：' + JSON.stringify(r.body));
-  return r.body; // { token, sid, sessions }
+  return r.body; // { token, sid, sessions, user }
 }
 
 export async function unlock(api, sid, password = PLAYER_PASSWORD) {

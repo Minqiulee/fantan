@@ -494,6 +494,9 @@
      口令本身从不落地（不写 localStorage、不进 URL、不回显）。 */
   var BIND_KEY = 'oe_bind';
   var PID_PREFIX = 'oe_pid:';    // 每个场次独立记住自己的身份：oe_pid:<sid>
+  /* 连点合并窗口：停手 250ms 后才上报，只发最后一次。
+     注意与服务端 server.js 的 DRAFT_BCAST_MS（广播合并窗口）是两回事，不要合并成一个值。 */
+  var DRAFT_DEBOUNCE_MS = 250;
 
   /** 读取本地绑定，过期或结构不对一律视为无绑定 */
   function loadBind() {
@@ -515,6 +518,60 @@
   var state = null;
   var picking = false;           // 是否正在展开场次选择（切换时不打断当前场次）
   var selOE = null, selNum = null, submitting = false;
+
+  /* ---------- 临时选择（草稿）的本地状态 ----------
+   * 点选即上报给服务端（大屏实时看到），但「点选」不等于参赛，必须按按钮确认提交。
+   * 草稿服务端只存内存，所以本地必须留一份：刷新/断线/换网后靠它把最后的选择补发上去，
+   * 保证「最终一致」而不是「每次点击都必达」。
+   */
+  var draftTimer = 0;          // 500ms 合并窗口
+  var draftConfirmed = null;   // 服务端已确认收到的 { oe, num }
+  var draftSending = false;    // 串行化，避免两个请求在途互相覆盖
+
+  function draftStoreKey() { return 'oe_draft:' + sid; }
+  function seqStoreKey() { return 'oe_seq:' + sid; }
+  function idemStoreKey() { return 'oe_idem:' + sid; }
+
+  function readLocalDraft() {
+    try {
+      var raw = localStorage.getItem(draftStoreKey());
+      if (!raw) return null;
+      var d = JSON.parse(raw);
+      if (!d || !d.oe || d.num == null) return null;
+      return { oe: d.oe, num: Number(d.num), seq: Number(d.seq) || 0, round: Number(d.round) || 0 };
+    } catch (e) { return null; }
+  }
+
+  function writeLocalDraft(d) {
+    try { localStorage.setItem(draftStoreKey(), JSON.stringify(d)); } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  function dropLocalDraft() {
+    draftConfirmed = null;
+    try { localStorage.removeItem(draftStoreKey()); } catch (e) { /* 忽略 */ }
+  }
+
+  /** 单调序号：跨刷新只增不减，服务端据此丢弃乱序/重发的旧值 */
+  function nextDraftSeq() {
+    var n = 0;
+    try { n = parseInt(localStorage.getItem(seqStoreKey()), 10) || 0; } catch (e) { n = 0; }
+    n += 1;
+    try { localStorage.setItem(seqStoreKey(), String(n)); } catch (e) { /* 忽略 */ }
+    return n;
+  }
+
+  function ensureIdemKey() {
+    var k = '';
+    try { k = localStorage.getItem(idemStoreKey()) || ''; } catch (e) { k = ''; }
+    if (k) return k;
+    k = 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    try { localStorage.setItem(idemStoreKey(), k); } catch (e) { /* 忽略 */ }
+    return k;
+  }
+
+  function clearIdemKey() {
+    try { localStorage.removeItem(idemStoreKey()); } catch (e) { /* 忽略 */ }
+  }
 
   /** 某场次下本机保存的玩家身份 key */
   function pidKey(s) { return PID_PREFIX + (s || ''); }
@@ -715,8 +772,9 @@
 
     // 身份有效性判定：唯一权威信号是服务端 players 里是否还有这个 pid（s.me 是否非空）。
     // 服务端 /api/reset 开始新一轮时会清空 players，此时 s.me 变 null，即为「身份失效，需重新扫码」。
-    // 不再用本地轮次比对（该机制在提交预测/确认数字后可能因轮次残留误判而误清 pid）。
-    if (sid && pid && (!s || !s.me)) { pid = ''; localStorage.removeItem(pidKey(sid)); }
+    // 注意必须是 `s && !s.me`：首帧还没到时 s 是 null，那不是「身份失效」，清掉 pid 会让
+    // 刷新页面 = 被登出（草稿也一起丢）。等服务端明确说「本轮没这个人」再清。
+    if (sid && pid && s && !s.me) { pid = ''; localStorage.removeItem(pidKey(sid)); }
 
     var ph = phase(s);
     var meta = PHASE_META[ph];
@@ -786,6 +844,7 @@
     var prevPh = state ? phase(state) : null;
     state = s;
     render();
+    resumeDraft(s);
     if (prevPh === 'wait' && phase(s) === 'done') toast(t('p_resultLab') + ' 🎉', 'ok');
   }
 
@@ -1386,24 +1445,123 @@
     handleScannedContent(v);
   });
 
+  /* ---------- 临时选择上报 ---------- */
+
+  /** 把选择写回界面（服务端回传或本地恢复时用），不触发上报 */
+  function applyPickToUI(oe, num) {
+    selOE = oe;
+    selNum = num == null ? null : Number(num);
+    Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (x) {
+      x.classList.toggle('sel', x.getAttribute('data-oe') === selOE);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) {
+      x.classList.toggle('sel', parseInt(x.getAttribute('data-n'), 10) === selNum);
+    });
+  }
+
+  /** 值真的变了才发：与「服务端已确认的值」比较，而不是与「上次发送的值」比较。
+   *  这样 单→双→单 能正确发回单，重复点同一个选项则一个请求都不发。 */
+  function flushDraft(force) {
+    draftTimer = 0;
+    if (!sid || !ut || !pid) return Promise.resolve(null);
+    var d = readLocalDraft();
+    if (!d) return Promise.resolve(null);
+    if (!force && draftConfirmed && draftConfirmed.oe === d.oe && draftConfirmed.num === d.num) {
+      return Promise.resolve(null);
+    }
+    if (draftSending) { draftTimer = setTimeout(flushDraft, DRAFT_DEBOUNCE_MS); return Promise.resolve(null); }
+
+    draftSending = true;
+    return fetch('/api/pick', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid: pid, sid: sid, ut: ut, oddEven: d.oe, number: d.num, seq: d.seq })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      draftSending = false;
+      if (!res || !res.ok) {
+        // 已提交 / 已锁定：草稿没意义了，清本地，交给 state 渲染
+        if (res && (res.code === 'already_submitted' || res.code === 'round_locked')) {
+          dropLocalDraft();
+          poll();
+        }
+        return res;
+      }
+      if (res.accepted) {
+        draftConfirmed = { oe: d.oe, num: d.num };
+        $('predErr').textContent = '';
+      } else if (res.draft) {
+        // 服务端更新（乱序/重发被拒）→ 以服务端为准
+        draftConfirmed = { oe: res.draft.oe, num: res.draft.num };
+        applyPickToUI(res.draft.oe, res.draft.num);
+        writeLocalDraft({ oe: res.draft.oe, num: res.draft.num, seq: res.draft.seq, round: d.round });
+      }
+      return res;
+    }).catch(function () {
+      draftSending = false;
+      // 网络失败：本地草稿留着，重连时 resumeDraft 会补发
+      return null;
+    });
+  }
+
+  /** 玩家改了一次选项：本地立刻记下，停手 DRAFT_DEBOUNCE_MS（250ms）后统一上报（连点只发最后一次）。
+   *  必须立刻写本地 —— 这段时间里若来了别人的 state，resumeDraft 会拿本地和服务端比，
+   *  本地不更新就会被服务端的旧草稿盖回去（手快的人会看到选项跳回去）。 */
+  function scheduleDraft() {
+    if (!sid || !pid || !selOE || selNum == null) return;
+    writeLocalDraft({
+      oe: selOE, num: selNum, seq: nextDraftSeq(), round: state ? state.round : 0
+    });
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(flushDraft, DRAFT_DEBOUNCE_MS);
+  }
+
+  /** 每次拿到全量快照后对齐草稿：
+   *  服务端没有 / 比本地旧 → 把本地最后的选择补发一次（断线期间编辑只要求最终一致）；
+   *  服务端更新 → 以服务端为准恢复界面。 */
+  function resumeDraft(s) {
+    if (!s || !s.me) return;
+    if (s.me.oddEven != null) { dropLocalDraft(); return; }   // 已提交，草稿作废
+    if (s.locked) return;
+    var srv = s.me.draft || null;
+    var loc = readLocalDraft();
+    if (loc && state && loc.round && loc.round !== state.round) { dropLocalDraft(); loc = null; }
+
+    if (srv) draftConfirmed = { oe: srv.oe, num: srv.num };
+    else draftConfirmed = null;
+
+    if (loc && (!srv || loc.seq > srv.seq)) {
+      applyPickToUI(loc.oe, loc.num);
+      flushDraft(true);          // 立即补发，不等 debounce
+      return;
+    }
+    if (srv && (!loc || loc.seq <= srv.seq)) {
+      applyPickToUI(srv.oe, srv.num);
+    }
+  }
+
   /* ---------- 预测 ---------- */
   Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (b) {
     b.addEventListener('click', function () {
-      selOE = b.getAttribute('data-oe');
+      var next = b.getAttribute('data-oe');
+      if (next === selOE) return;            // 值没变：不重发，也不闪一下
+      selOE = next;
       Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (x) {
         x.classList.toggle('sel', x === b);
       });
       $('predErr').textContent = '';
+      if (selNum != null) scheduleDraft();
     });
   });
 
   Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (b) {
     b.addEventListener('click', function () {
-      selNum = parseInt(b.getAttribute('data-n'), 10);
+      var next = parseInt(b.getAttribute('data-n'), 10);
+      if (next === selNum) return;
+      selNum = next;
       Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) {
         x.classList.toggle('sel', x === b);
       });
       $('predErr').textContent = '';
+      if (selOE) scheduleDraft();
     });
   });
 
@@ -1412,22 +1570,40 @@
     $('predErr').textContent = '';
     if (!selOE) { $('predErr').textContent = t('p_selOddEven'); return; }
     if (selNum == null) { $('predErr').textContent = t('p_selNum'); return; }
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = 0; }
     submitting = true; $('predBtn').disabled = true;
-    fetch('/api/predict', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // 提交体直接带上最终选择：即使草稿请求还在路上/失败了，确认提交也不会丢值
+    fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': ensureIdemKey() },
       body: JSON.stringify({ pid: pid, sid: sid, ut: ut, oddEven: selOE, number: selNum })
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.ok) {
+        dropLocalDraft();
+        clearIdemKey();
         toast(t('p_predSubmitting'), 'ok');
         poll();
-      } else {
-        if (handleAuthFail(d)) { $('predBtn').disabled = false; return; }
-        $('predErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_predSubmitFail');
-        $('predBtn').disabled = false;
-        // 已提交过预测（可能多端/刷新后重复点击）→ 同步状态
-        if (d.code === 'predict_duplicate') poll();
+        return;
       }
+      if (handleAuthFail(d)) { $('predBtn').disabled = false; return; }
+      // 换设备/超时重试：服务端已有提交 → 按成功处理，直接把状态拉齐
+      if (d.code === 'already_submitted') {
+        dropLocalDraft();
+        clearIdemKey();
+        poll();
+        return;
+      }
+      if (d.code === 'round_locked') {
+        dropLocalDraft();
+        poll();
+        $('predErr').textContent = t('p_predClosed');
+        $('predBtn').disabled = false;
+        return;
+      }
+      $('predErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_predSubmitFail');
+      $('predBtn').disabled = false;
     }).catch(function () {
+      // 结果未知（网络断了）：保留 idemKey，重试/重连时同 key 重放，不会重复落库
       $('predErr').textContent = t('p_scanNetErr');
       $('predBtn').disabled = false;
     }).finally(function () { submitting = false; });

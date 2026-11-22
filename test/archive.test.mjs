@@ -13,18 +13,18 @@ import assert from 'node:assert/strict';
 
 import {
   resetSchema, startServer, makeClient, withDb, freePort,
-  login, unlock, scan, predict, confirm, resetRound, summary, exportCsv,
+  ADMIN_USERNAME, login, unlock, scan, predict, confirm, resetRound, summary, exportCsv,
   toTable, rowOf
 } from './helpers.mjs';
 
 const CSV_DETAIL_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
   '锁定时间', '归档时间', '会员号', '预测单双', '预测数字', '是否提交',
-  '单双命中', '数字命中', '登记时间', '提交时间'
+  '单双命中', '数字命中', '登记时间', '提交时间', '锁定人'
 ];
 const CSV_ROUND_HEADER = [
   '场次ID', '场次名称', '场次序号', '轮次号', '开奖数字', '开奖单双',
-  '锁定时间', '归档时间', '扫码人数', '提交人数'
+  '锁定时间', '归档时间', '扫码人数', '提交人数', '锁定人'
 ];
 
 describe('竞猜归档与对账', () => {
@@ -58,9 +58,13 @@ describe('竞猜归档与对账', () => {
     assert.match(token, /\S+/);
     assert.ok(sidA, '登录应返回默认场次 id');
 
-    const bad = await api.post('/api/staff-login', { password: 'definitely-wrong' });
+    const bad = await api.post('/api/staff-login', { username: ADMIN_USERNAME, password: 'definitely-wrong' });
     assert.equal(bad.status, 401);
     assert.equal(bad.body.code, 'wrong_password');
+
+    const noUser = await api.post('/api/staff-login', { password: 'definitely-wrong' });
+    assert.equal(noUser.status, 400, '账号必填，没有默认账号');
+    assert.equal(noUser.body.code, 'username_required');
   });
 
   it('玩家场次口令：错口令 401，正确口令换到绑定令牌', async () => {
@@ -188,6 +192,10 @@ describe('竞猜归档与对账', () => {
     assert.equal(m3['预测单双'], '');
     assert.equal(m3['单双命中'], '未提交');
     assert.equal(m3['数字命中'], '未提交');
+
+    for (const r of table.records) {
+      assert.equal(r['锁定人'], ADMIN_USERNAME, '每行都记录该轮锁定人');
+    }
   });
 
   it('只有逐人逐轮明细与轮次核对两种口径，会员汇总口径已移除', async () => {
@@ -214,6 +222,7 @@ describe('竞猜归档与对账', () => {
     assert.equal(row['开奖数字'], '4');
     assert.equal(row['扫码人数'], '3');
     assert.equal(row['提交人数'], '2');
+    assert.equal(row['锁定人'], ADMIN_USERNAME, '轮次导出的末列是锁定人');
     assert.match(row['锁定时间'], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 

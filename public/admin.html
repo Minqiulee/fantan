@@ -46,6 +46,12 @@
     font-weight:600; transition:all .12s ease;
   }
   .sess-btn:active { transform:scale(.96); }
+  .user-chip {
+    font-size:12.5px; padding:6px 12px; border-radius:99px; color:var(--muted);
+    background:rgba(0,0,0,.22); border:1px solid var(--card-border); font-weight:600;
+    max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .user-chip b { color:var(--text); font-weight:700; }
 
   header { text-align:center; margin:10px 0 6px; }
   header h1 { font-size:28px; letter-spacing:2px; }
@@ -111,18 +117,66 @@
   .arch-actions button:active { transform:scale(.97); }
   .arch-hint { font-size:12px; color:var(--muted); margin-top:10px; text-align:center; }
 
+  /* 账号列表 / 日志列表 */
+  .rows { display:flex; flex-direction:column; gap:10px; margin-top:4px; }
+  .row-item { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px;
+    background:rgba(0,0,0,.22); border:1px solid var(--card-border); }
+  .row-item .ri-main { flex:1; min-width:0; }
+  .row-item .ri-name { font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .row-item .ri-sub { font-size:12px; color:var(--muted); margin-top:3px; line-height:1.5; }
+  .row-item .ri-acts { display:flex; gap:6px; flex:none; flex-wrap:wrap; justify-content:flex-end; }
+  .mini-btn { font-size:12px; padding:7px 10px; border-radius:9px; cursor:pointer; font-family:inherit;
+    background:rgba(255,255,255,.08); color:var(--text); border:1px solid var(--card-border); white-space:nowrap; }
+  .mini-btn:active { transform:scale(.96); }
+  .mini-btn.warn { color:#f8b4b4; border-color:rgba(248,113,113,.45); }
+  .mini-btn.good { color:#8be9c0; border-color:rgba(52,211,153,.45); }
+  .pill { font-size:11px; font-weight:700; padding:2px 8px; border-radius:99px;
+    background:rgba(79,140,255,.16); color:#a8c6ff; border:1px solid rgba(79,140,255,.4); }
+  .pill.off { background:rgba(148,163,184,.14); color:var(--muted); border-color:rgba(148,163,184,.4); }
+  .pill.me { background:rgba(255,212,94,.16); color:var(--gold); border-color:rgba(255,212,94,.45); }
+
+  /* 新建账号表单 */
+  .form-row { margin-bottom:12px; }
+  .form-row label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; letter-spacing:.5px; }
+  .form-row input[type=text], .form-row input[type=password] {
+    width:100%; font-size:16px; padding:12px 14px; border-radius:12px; letter-spacing:0; text-align:left;
+    border:1.5px solid var(--card-border); background:rgba(0,0,0,.28); color:var(--text); outline:none;
+    font-family:inherit;
+  }
+  .form-row input:focus { border-color:var(--accent); }
+  .seg { display:flex; gap:8px; }
+  .seg button { flex:1; padding:10px 0; font-size:14px; font-weight:600; font-family:inherit; cursor:pointer;
+    border-radius:11px; background:rgba(255,255,255,.06); color:var(--muted); border:1px solid var(--card-border); }
+  .seg button.on { background:rgba(79,140,255,.18); color:var(--text); border-color:rgba(79,140,255,.55); }
+
+  /* 操作日志：卡片列表（窄屏不横向滚动，信息不折成竖排） */
+  .log-list { display:flex; flex-direction:column; gap:8px; margin-top:4px; }
+  .log-item { padding:10px 12px; border-radius:12px; background:rgba(0,0,0,.22); border:1px solid var(--card-border); }
+  .li-top { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  .li-time { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .li-who { font-size:14px; font-weight:700; }
+  .li-act { font-size:13px; color:#a8c6ff; }
+  .li-sub { font-size:12px; color:var(--muted); margin-top:4px; line-height:1.5; word-break:break-word; }
+
+  /* 窄屏：账号行的操作按钮换到下一行，别把名字和徽标挤成竖排 */
+  @media (max-width: 460px) {
+    .row-item { flex-wrap:wrap; }
+    .row-item .ri-acts { flex:1 1 100%; justify-content:flex-start; }
+  }
+
   /* 登录锁 */
   .lock { text-align:center; padding:20px 4px 6px; }
   .lock .icon { width:64px; height:64px; margin:0 auto 16px; border-radius:18px; display:flex; align-items:center; justify-content:center;
     background:rgba(79,140,255,.16); border:1px solid rgba(79,140,255,.4); }
   .lock .icon svg { width:30px; height:30px; }
   .lock h2 { font-size:19px; margin-bottom:16px; }
-  input[type=password] {
+  input[type=password], .lock input[type=text] {
     width:100%; font-size:19px; padding:15px 16px; border-radius:14px;
     border:1.5px solid var(--card-border); background:rgba(0,0,0,.25); color:var(--text); outline:none;
     letter-spacing:2px; text-align:center;
   }
-  input[type=password]:focus { border-color:var(--accent); }
+  .lock input[type=text] { letter-spacing:0; font-size:17px; margin-bottom:10px; }
+  input[type=password]:focus, .lock input[type=text]:focus { border-color:var(--accent); }
   .btn {
     width:100%; margin-top:14px; padding:16px; font-size:19px; font-weight:700; letter-spacing:2px;
     border:none; border-radius:14px; color:#fff; cursor:pointer; font-family:inherit;
@@ -204,6 +258,7 @@
       </button>
     </div>
     <div class="top-right">
+      <span class="user-chip hidden" id="userChip"></span>
       <button class="sess-btn hidden" id="toStaffBtn" type="button" data-i18n="adminToStaff">返回工作台</button>
     </div>
   </div>
@@ -222,9 +277,11 @@
           <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
         </svg>
       </div>
-      <h2 data-i18n="loginTitle">工作人员登录</h2>
-      <input type="password" id="pwdInput" placeholder="管理密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
-      <button class="btn" id="loginBtn" data-i18n="unlock">解锁</button>
+      <h2 data-i18n="adminLoginTitle">管理员登录</h2>
+      <input type="text" id="userInput" placeholder="账号" data-i18n-placeholder="userPlaceholder"
+             autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input type="password" id="pwdInput" placeholder="登录密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
+      <button class="btn" id="loginBtn" data-i18n="unlock">登录</button>
       <div class="err" id="loginErr"></div>
     </div>
   </div>
@@ -277,6 +334,24 @@
         <span class="e-title" data-i18n="sessionClose">关闭场次</span>
         <span class="e-desc" data-i18n="adminCloseDesc"></span>
       </button>
+      <button class="entry" type="button" id="entryAccount">
+        <span class="e-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M17 11h5"/><path d="M19.5 8.5v5"/>
+          </svg>
+        </span>
+        <span class="e-title" data-i18n="accountTitle">员工账号</span>
+        <span class="e-desc" data-i18n="adminAccountDesc"></span>
+      </button>
+      <button class="entry" type="button" id="entryAudit">
+        <span class="e-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8"/><path d="M8 13h8"/><path d="M8 17h5"/>
+          </svg>
+        </span>
+        <span class="e-title" data-i18n="auditTitle">操作日志</span>
+        <span class="e-desc" data-i18n="adminAuditDesc"></span>
+      </button>
     </div>
 
     <!-- 当日对账（归档口径，不含积分） -->
@@ -297,6 +372,64 @@
           <button type="button" data-level="round" data-i18n="exportRound">轮次核对 CSV</button>
         </div>
         <div class="arch-hint" data-i18n="archiveTip">按锁定时间统计 · 归档只增不改 · 不含积分</div>
+      </div>
+    </div>
+
+    <!-- 员工账号（建号 / 改密 / 停用；一人一份独立密码） -->
+    <div id="accountView" class="hidden">
+      <button class="back-link" type="button" id="accountBack">← <span data-i18n="adminBack">返回</span></button>
+      <div class="card">
+        <h2 class="row-head">
+          <span data-i18n="accountTitle">员工账号</span>
+          <span class="row-head-meta"><button class="mini-btn" id="accountAddBtn" type="button" data-i18n="accountAdd">新建账号</button></span>
+        </h2>
+        <div class="rows" id="accountList"></div>
+      </div>
+
+      <div class="card hidden" id="accountForm">
+        <h2 data-i18n="accountCreateTitle">新建员工账号</h2>
+        <div class="form-row">
+          <label data-i18n="accountColUser">账号</label>
+          <input type="text" id="acUser" data-i18n-placeholder="accountUserPh" maxlength="32"
+                 autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label data-i18n="accountNamePh">显示名（可选）</label>
+          <input type="text" id="acName" data-i18n-placeholder="accountNamePh" maxlength="32" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label data-i18n="accountPwdPh">登录密码</label>
+          <input type="password" id="acPwd" data-i18n-placeholder="accountPwdPh" maxlength="64" autocomplete="new-password">
+        </div>
+        <div class="form-row">
+          <label data-i18n="accountRoleLabel">角色</label>
+          <div class="seg" id="acRole">
+            <button type="button" data-role="staff" class="on" data-i18n="accountRoleStaff">员工</button>
+            <button type="button" data-role="admin" data-i18n="accountRoleAdmin">管理员</button>
+          </div>
+        </div>
+        <div class="err" id="acErr"></div>
+        <div class="arch-actions">
+          <button type="button" id="acCancel" data-i18n="modalCancelText">取消</button>
+          <button type="button" id="acSave" data-i18n="accountCreateOk">创建</button>
+        </div>
+        <div class="arch-hint" data-i18n="accountCreateHint"></div>
+      </div>
+    </div>
+
+    <!-- 操作日志（谁登录 / 谁锁定 / 谁导出） -->
+    <div id="auditView" class="hidden">
+      <button class="back-link" type="button" id="auditBack">← <span data-i18n="adminBack">返回</span></button>
+      <div class="card">
+        <h2 class="row-head">
+          <span data-i18n="auditTitle">操作日志</span>
+          <span class="row-head-meta"><input type="date" id="auditDate" class="date-input"></span>
+        </h2>
+        <div class="log-list" id="auditList"></div>
+        <div class="arch-actions">
+          <button type="button" id="auditExportBtn" data-i18n="auditExport">导出日志 CSV</button>
+        </div>
+        <div class="arch-hint" id="auditHint"></div>
       </div>
     </div>
   </div>
@@ -335,6 +468,7 @@
   var token = '';
   var sid = '';
   var sessions = [];
+  var me = { username: '', role: '', displayName: '' };   // 当前登录的管理员账号
 
   window.I18N.init({ storageKey: 'oe_staff_locale' });   // 与员工端共用语言偏好
   var t = window.I18N.t;
@@ -408,6 +542,7 @@
     inp.classList.toggle('hidden', !opts.input);
     if (opts.input) {
       inp.value = '';
+      inp.type = opts.password ? 'password' : 'text';   // 重置密码时不回显明文
       inp.setAttribute('placeholder', opts.placeholder || '');
     }
     $('modalMask').classList.add('show');
@@ -452,12 +587,14 @@
 
   function showLogin(keepToken) {
     if (!keepToken) saveToken('');
+    me = { username: '', role: '', displayName: '' };
     $('loginCard').classList.remove('hidden');
     $('mainContent').classList.add('hidden');
     $('logoutBtn').classList.add('hidden');
     $('toStaffBtn').classList.add('hidden');
+    $('userChip').classList.add('hidden');
     $('adminRound').textContent = '—';
-    setTimeout(function () { try { $('pwdInput').focus(); } catch (e) { /* 忽略 */ } }, 120);
+    setTimeout(function () { try { $('userInput').focus(); } catch (e) { /* 忽略 */ } }, 120);
   }
 
   function showMain() {
@@ -465,6 +602,32 @@
     $('mainContent').classList.remove('hidden');
     $('logoutBtn').classList.remove('hidden');
     $('toStaffBtn').classList.remove('hidden');
+    $('userChip').classList.remove('hidden');
+    renderUserChip();
+  }
+
+  /** 顶栏账号徽标：显示名（管理员）——账号本身放 title，避免顶栏过长 */
+  function renderUserChip() {
+    var el = $('userChip');
+    if (!me.username) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    el.innerHTML = esc(me.displayName || me.username) + ' · <b>' + esc(t('roleAdmin')) + '</b>';
+    el.title = me.username;
+  }
+
+  /** 只有管理员能进这个页面：员工账号进来一律退回登录页 */
+  function applyAuth(d) {
+    me = d.user || me;
+    if (me.role !== 'admin') {
+      showLogin();
+      $('loginErr').textContent = t('errAdminOnly');
+      return false;
+    }
+    sid = d.sid || '';
+    sessions = d.sessions || [];
+    showMain();
+    render();
+    return true;
   }
 
   function checkAuth() {
@@ -473,10 +636,7 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (!d || !d.ok) { showLogin(); return; }
-        sid = d.sid || '';
-        sessions = d.sessions || [];
-        showMain();
-        render();
+        applyAuth(d);
       })
       .catch(function () { showLogin(); });
   }
@@ -487,18 +647,17 @@
   }
 
   $('loginBtn').addEventListener('click', function () {
+    var user = $('userInput').value.trim();
     var pw = $('pwdInput').value;
     $('loginErr').textContent = '';
+    if (!user) { $('loginErr').textContent = t('errEmptyUser'); return; }
     if (!pw) { $('loginErr').textContent = t('errEmptyPwd'); return; }
     $('loginBtn').disabled = true;
-    postJson('/api/staff-login', { password: pw }).then(function (d) {
+    postJson('/api/staff-login', { username: user, password: pw }).then(function (d) {
       if (d && d.ok) {
         saveToken(d.token);
         $('pwdInput').value = '';
-        sid = d.sid || '';
-        sessions = d.sessions || [];
-        showMain();
-        render();
+        applyAuth(d);
       } else {
         $('loginErr').textContent = window.I18N.errCode(d && d.code, d) || t('errLoginFailed');
       }
@@ -506,8 +665,10 @@
       .finally(function () { $('loginBtn').disabled = false; });
   });
 
-  $('pwdInput').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') $('loginBtn').click();
+  ['pwdInput', 'userInput'].forEach(function (id) {
+    $(id).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') $('loginBtn').click();
+    });
   });
 
   $('logoutBtn').addEventListener('click', function () {
@@ -574,10 +735,19 @@
   var archiveDate = '';
   var archiveLoaded = false;
 
-  function showArchive(on) {
+  /** 四个二级视图共用一个切换函数：把入口区与各视图的显隐收在一处，避免互相打架 */
+  var VIEWS = { archive: 'archiveView', account: 'accountView', audit: 'auditView' };
+
+  function showView(name) {
+    var on = !!VIEWS[name];
     $('entries').classList.toggle('hidden', on);
-    $('archiveView').classList.toggle('hidden', !on);
-    if (on) { archiveLoaded = true; refreshArchive(); }
+    Object.keys(VIEWS).forEach(function (k) {
+      $(VIEWS[k]).classList.toggle('hidden', k !== name);
+    });
+    if (name === 'archive') { archiveLoaded = true; refreshArchive(); }
+    if (name === 'account') { loadAccounts(); }
+    if (name === 'audit') { auditLoaded = true; refreshAudit(); }
+    if (on) { try { window.scrollTo(0, 0); } catch (e) { /* 忽略 */ } }
   }
 
   function refreshArchive() {
@@ -616,8 +786,8 @@
     toast(t('toastExportStarted'), 'ok');
   }
 
-  $('entryArchive').addEventListener('click', function () { showArchive(true); });
-  $('archiveBack').addEventListener('click', function () { showArchive(false); });
+  $('entryArchive').addEventListener('click', function () { showView('archive'); });
+  $('archiveBack').addEventListener('click', function () { showView(''); });
   $('archiveDate').addEventListener('change', function () {
     archiveDate = this.value || '';
     refreshArchive();
@@ -682,6 +852,258 @@
     }).catch(function () { toast(t('errNetRetry'), 'err'); });
   });
 
+  /* ---------- ⑤ 员工账号（一人一账号一密码） ---------- */
+  var accounts = [];
+  var acRole = 'staff';
+
+  function fmtTime(ms) {
+    if (!ms) return '—';
+    var d = new Date(ms);
+    var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+      p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function loadAccounts() {
+    if (!token) return Promise.resolve();
+    return fetch('/api/accounts?token=' + encodeURIComponent(token), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { if (d && d.code === 'unauthorized') forceLogout(); return; }
+        accounts = d.accounts || [];
+        if (d.me) { me.username = d.me; renderUserChip(); }
+        renderAccounts();
+      })
+      .catch(function () {});
+  }
+
+  function renderAccounts() {
+    var box = $('accountList');
+    if (!accounts.length) {
+      box.innerHTML = '<div class="empty">' + esc(t('accountEmpty')) + '</div>';
+      return;
+    }
+    box.innerHTML = accounts.map(function (a) {
+      var isMe = a.username === me.username;
+      var rolePill = '<span class="pill">' +
+        esc(t(a.role === 'admin' ? 'accountRoleAdmin' : 'accountRoleStaff')) + '</span>';
+      var stPill = '<span class="pill' + (a.status === 'active' ? '' : ' off') + '">' +
+        esc(t(a.status === 'active' ? 'accountStatusActive' : 'accountStatusDisabled')) + '</span>';
+      var mePill = isMe ? '<span class="pill me">' + esc(t('accountSelf')) + '</span>' : '';
+      var acts = '<button class="mini-btn" type="button" data-act="pwd" data-user="' + esc(a.username) + '">' +
+        esc(t('accountSetPwd')) + '</button>';
+      if (a.status === 'active') {
+        // 不允许在界面上停用自己（服务端同样拒绝，这里只是少一次报错）
+        if (!isMe) {
+          acts += '<button class="mini-btn warn" type="button" data-act="disable" data-user="' +
+            esc(a.username) + '">' + esc(t('accountDisable')) + '</button>';
+        }
+      } else {
+        acts += '<button class="mini-btn good" type="button" data-act="enable" data-user="' +
+          esc(a.username) + '">' + esc(t('accountEnable')) + '</button>';
+      }
+      return '<div class="row-item">' +
+        '<div class="ri-main">' +
+          '<div class="ri-name">' + esc(a.displayName || a.username) + rolePill + stPill + mePill + '</div>' +
+          '<div class="ri-sub">' + esc(a.username) + '</div>' +
+          '<div class="ri-sub">' + esc(t('accountColLast')) + ' ' +
+            esc(a.lastLoginAt ? fmtTime(a.lastLoginAt) : t('accountNever')) + '</div>' +
+        '</div>' +
+        '<div class="ri-acts">' + acts + '</div>' +
+      '</div>';
+    }).join('');
+
+    Array.prototype.forEach.call(box.querySelectorAll('button[data-act]'), function (b) {
+      b.addEventListener('click', function () {
+        var user = b.getAttribute('data-user');
+        var act = b.getAttribute('data-act');
+        if (act === 'pwd') resetPassword(user);
+        else if (act === 'disable') disableAccount(user);
+        else doUpdateAccount(user, { status: 'active' });
+      });
+    });
+  }
+
+  function openAccountForm() {
+    $('accountForm').classList.remove('hidden');
+    $('acUser').value = '';
+    $('acName').value = '';
+    $('acPwd').value = '';
+    $('acErr').textContent = '';
+    acRole = 'staff';
+    Array.prototype.forEach.call($('acRole').querySelectorAll('button'), function (x) {
+      x.classList.toggle('on', x.getAttribute('data-role') === 'staff');
+    });
+    setTimeout(function () { try { $('acUser').focus(); } catch (e) { /* 忽略 */ } }, 120);
+  }
+
+  function closeAccountForm() {
+    $('accountForm').classList.add('hidden');
+  }
+
+  $('entryAccount').addEventListener('click', function () { showView('account'); });
+  $('accountBack').addEventListener('click', function () { closeAccountForm(); showView(''); });
+  $('accountAddBtn').addEventListener('click', openAccountForm);
+  $('acCancel').addEventListener('click', closeAccountForm);
+
+  Array.prototype.forEach.call($('acRole').querySelectorAll('button'), function (b) {
+    b.addEventListener('click', function () {
+      acRole = b.getAttribute('data-role');
+      Array.prototype.forEach.call($('acRole').querySelectorAll('button'), function (x) {
+        x.classList.toggle('on', x === b);
+      });
+    });
+  });
+
+  $('acSave').addEventListener('click', function () {
+    var user = $('acUser').value.trim().toLowerCase();
+    var name = $('acName').value.trim();
+    var pwd = $('acPwd').value;
+    $('acErr').textContent = '';
+    if (!user) { $('acErr').textContent = t('errEmptyUser'); return; }
+    if (!pwd) { $('acErr').textContent = t('errEmptyPwd'); return; }
+    $('acSave').disabled = true;
+    postJson('/api/account-create', {
+      token: token, username: user, displayName: name, password: pwd, role: acRole
+    }).then(function (d) {
+      if (d && d.ok) {
+        accounts = d.accounts || accounts;
+        renderAccounts();
+        closeAccountForm();
+        toast(t('toastAccountCreated', { name: user }), 'ok');
+      } else if (d && d.code === 'unauthorized') { forceLogout(); }
+      else { $('acErr').textContent = window.I18N.errCode(d && d.code, d) || t('errOpFailed'); }
+    }).catch(function () { $('acErr').textContent = t('errNetRetry'); })
+      .finally(function () { $('acSave').disabled = false; });
+  });
+
+  function doUpdateAccount(user, fields) {
+    var body = { token: token, username: user };
+    Object.keys(fields).forEach(function (k) { body[k] = fields[k]; });
+    return postJson('/api/account-update', body).then(function (d) {
+      if (d && d.ok) {
+        accounts = d.accounts || accounts;
+        renderAccounts();
+        toast(t('toastAccountUpdated'), 'ok');
+        if (d.self) forceLogout();
+      } else if (d && d.code === 'unauthorized') { forceLogout(); }
+      else { toast(window.I18N.errCode(d && d.code, d) || t('errOpFailed'), 'err'); }
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  }
+
+  function disableAccount(user) {
+    confirmModal({
+      type: 'warn',
+      title: t('accountDisable'),
+      body: esc(user),
+      okText: t('accountDisable'),
+      cancelText: t('modalCancelText')
+    }).then(function (sure) {
+      if (!sure) return;
+      doUpdateAccount(user, { status: 'disabled' });
+    });
+  }
+
+  function resetPassword(user) {
+    confirmModal({
+      type: 'plain',
+      title: t('accountSetPwdTitle'),
+      body: t('accountSetPwdHint'),
+      input: true,
+      password: true,
+      placeholder: t('accountPwdPh'),
+      okText: t('accountSetPwd'),
+      cancelText: t('modalCancelText')
+    }).then(function (pwd) {
+      if (pwd === false) return;
+      if (!pwd) { toast(t('errEmptyPwd'), 'err'); return; }
+      return postJson('/api/account-password', { token: token, username: user, password: pwd })
+        .then(function (d) {
+          if (d && d.ok) {
+            toast(t('toastPwdReset'), 'ok');
+            if (d.self) forceLogout();
+            else loadAccounts();
+          } else if (d && d.code === 'unauthorized') { forceLogout(); }
+          else { toast(window.I18N.errCode(d && d.code, d) || t('errOpFailed'), 'err'); }
+        });
+    });
+  }
+
+  /* ---------- ⑥ 操作日志 ---------- */
+  var auditDate = '';
+  var auditLoaded = false;
+
+  function actionLabel(code) {
+    var key = 'action_' + code;
+    var v = t(key);
+    return v === key ? code : v;    // 未知动作直接显示 code，不吞信息
+  }
+
+  function refreshAudit() {
+    if (!token) return;
+    var q = '/api/audit?token=' + encodeURIComponent(token) +
+      (auditDate ? '&date=' + encodeURIComponent(auditDate) : '') + '&limit=300';
+    fetch(q, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { if (d && d.code === 'unauthorized') forceLogout(); return; }
+        if (!auditDate && d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date)) $('auditDate').value = d.date;
+        renderAudit(d.rows || []);
+      })
+      .catch(function () {});
+  }
+
+  function fmtClock(ms) {
+    var d = new Date(ms);
+    var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function renderAudit(rows) {
+    var box = $('auditList');
+    $('auditHint').textContent = t('auditCount', { n: rows.length });
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">' + esc(t('auditEmpty')) + '</div>';
+      return;
+    }
+    box.innerHTML = rows.map(function (r) {
+      var sub = [];
+      if (r.target) sub.push(esc(r.target));
+      if (r.sid) sub.push('sid ' + esc(r.sid));
+      if (r.ip) sub.push(esc(r.ip));
+      var extra = r.detail
+        ? ' <span title="' + esc(JSON.stringify(r.detail)) + '" style="color:var(--muted)">ⓘ</span>' : '';
+      return '<div class="log-item">' +
+        '<div class="li-top">' +
+          '<span class="li-time" title="' + esc(fmtTime(r.at)) + '">' + esc(fmtClock(r.at)) + '</span>' +
+          '<span class="li-who">' + esc(r.actor || '—') + '</span>' +
+          '<span class="li-act">' + esc(actionLabel(r.action)) + '</span>' + extra +
+        '</div>' +
+        (sub.length ? '<div class="li-sub">' + sub.join(' · ') + '</div>' : '') +
+      '</div>';
+    }).join('');
+  }
+
+  $('entryAudit').addEventListener('click', function () { showView('audit'); });
+  $('auditBack').addEventListener('click', function () { showView(''); });
+  $('auditDate').addEventListener('change', function () {
+    auditDate = this.value || '';
+    refreshAudit();
+  });
+  $('auditExportBtn').addEventListener('click', function () {
+    if (!token) return;
+    var q = '/api/audit/export.csv?token=' + encodeURIComponent(token) +
+      (auditDate ? '&date=' + encodeURIComponent(auditDate) : '');
+    var a = document.createElement('a');
+    a.href = q;
+    a.download = '';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast(t('toastAuditExported'), 'ok');
+  });
+
   /* ---------- 启动 ---------- */
   function boot() {
     var urlToken = '';
@@ -705,6 +1127,7 @@
     if (!document.hidden && token) {
       refreshSessions();
       if (archiveLoaded) refreshArchive();
+      if (auditLoaded) refreshAudit();
     }
   });
 

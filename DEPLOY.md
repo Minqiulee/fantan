@@ -15,25 +15,29 @@ Postgresql：
 | 表 | 说明 | 时间戳字段 |
 |---|---|---|
 | `game_session` | 场次实体（ID、名称、开关状态、显示序号） | `created_at`、`closed_at` |
-| `round` | 每个场次一行：轮次与开奖数字 | `locked_at` |
+| `round` | 每个场次一行：轮次、开奖数字、锁定人账号 | `locked_at` |
 | `player` | 每轮玩家登记与预测（主键 `(session_id, id)`） | `registered_at`、`submitted_at` |
 | `identity` | 场次内跨轮次玩家身份档案（主键 `(session_id, id)`） | `created_at`、`updated_at` |
-| `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
+| `round_archive` | 竞猜归档表头：一轮一行，含场次快照、轮次号、开奖数字、锁定时间、人数、锁定人（唯一键 `(session_id, round)`） | `locked_at`、`archived_at` |
 | `round_archive_entry` | 归档明细：一人一行，含会员号、预测内容、命中结果（主键 `(archive_id, member_id)`） | `registered_at`、`submitted_at`、`archived_at` |
 | `app_config` | 键值配置，只存 `player_bind_secret`（玩家绑定令牌签名密钥） | `updated_at` |
 | `session_state` | 每个场次一行：状态版本号（多实例乐观锁凭据） | `updated_at` |
-| `staff_session` | 员工登录会话（token、归属场次、过期时间），跨实例共享 | `expires_at`、`created_at` |
-| `auth_throttle` | 登录 / 场次口令错误计数（`staff` 或 `player:<ip>`），跨实例共享 | `updated_at` |
+| `staff_session` | 员工登录会话（token、归属场次、过期时间、登录账号；角色回查账号表），跨实例共享 | `expires_at`、`created_at` |
+| `staff_account` | 员工账号：账号名（主键）、显示名、角色（`staff`/`admin`）、状态、scrypt 密码派生值、建号人 | `created_at`、`updated_at`、`last_login_at` |
+| `audit_log` | 操作日志：时间、账号、角色、动作、场次、对象、明细 JSON、IP（append-only） | `at` |
+| `auth_throttle` | 登录 / 场次口令错误计数（`login:<账号>`、`switch:<账号>` 或 `player:<ip>`），跨实例共享 | `updated_at` |
 
 **归档表是 append-only 的**：`round_archive` / `round_archive_entry` 由触发器 `archive_block_mutation()` 守着，任何 `UPDATE` / `DELETE` / `TRUNCATE` 都会抛异常。要修正历史只能追加新记录（或走导出层处理），不要直连数据库改这两张表。`reset` 只清 `round` / `player`，不影响归档。
 
 玩家 ID 统一为「二维码内容 / 原始 ID」（未经 hash），`player.id` 与 `identity.id` 一致；同一 ID 可同时存在于多个场次，因此主键带 `session_id`。
 
-**玩家端口令不入库**：只在进程内存保存 scrypt 哈希 + 随机盐，启动时由 `PLAYER_SESSION_PASSWORD` 重算；玩家绑定令牌用 `app_config` 里的随机密钥做 HMAC 签名，因此重启后玩家的场次绑定仍然有效。
+**两个场景口令不入库**：玩家场次口令与员工场次口令只在进程内存保存 scrypt 哈希 + 随机盐，启动时由 `PLAYER_SESSION_PASSWORD` / `STAFF_SESSION_PASSWORD` 重算（多实例必须配同一份值）；玩家绑定令牌用 `app_config` 里的随机密钥做 HMAC 签名，因此重启后玩家的场次绑定仍然有效。员工登录密码是另一套：`staff_account.password_hash` 存 `scrypt$N$r$p$salt$hash`，任何接口都不返回。
+
+**审计表也是 append-only**：`audit_log` 与归档表共用 `archive_block_mutation()` 触发器，`UPDATE` / `DELETE` / `TRUNCATE` 都会被拒。
 
 表会在应用首次启动时自动创建（幂等，`CREATE TABLE IF NOT EXISTS`），无需手动建表。
 
-> 应用**不做结构迁移**：不会补列、不会改主键、不会回填历史行。升级前请确认目标库的表结构已与本文件一致（例如从早期的单场次结构升级，需要在库里先手工完成 `session_id` 列与复合主键的 DDL）；结构不一致时启动会在第一条读写上报错。
+> 应用**不做结构迁移**：不补列、不回填历史行、不改主键、不改既有列类型。表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表；库结构与代码不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建库。
 
 ## 多实例部署
 
@@ -132,7 +136,9 @@ docker run -d --name oddeven-pg \
 | `PG_DB` | 数据库名（Fly secret，可选） | `postgres` |
 | `DATABASE_URL` | 完整连接串，`PG_*` 主机/用户/密码不全时才生效 | 无 |
 | `PORT` | 服务端口 | `3000` |
-| `STAFF_PASSWORD` | 员工端密码 | `123456` |
+| `ADMIN_USERNAME` | 首次启动创建的管理员账号 | `admin` |
+| `ADMIN_PASSWORD` | 首次启动创建的管理员密码（**只在库里没有任何管理员时生效**） | `123456` |
+| `STAFF_SESSION_PASSWORD` | 员工切换 / 新建场次的场景口令（管理员免校验） | `7777` |
 | `PLAYER_SESSION_PASSWORD` | 玩家端场次口令：多场并行时玩家选择 / 切换场次需要它 | `8888` |
 | `ARCHIVE_TZ_OFFSET_MIN` | 归档对账的「当日」时区偏移（分钟）；东八区 `480` | `480` |
 
@@ -142,6 +148,6 @@ docker run -d --name oddeven-pg \
 
 ## 说明
 
-- 员工端会话（`sessions`）仍是**内存态**，服务重启后需要重新登录，这是有意设计，不影响游戏数据持久化。
+- 员工登录会话落在 `staff_session`，服务重启**不掉登录**（多实例的硬要求）。要立即下线某人：在管理界面停用该账号或重置其密码，该账号所有会话会被立刻删除。
 - 玩家端场次绑定（`oe_bind`：sid + 签名令牌 + 过期时间）**不受重启影响**，因为签名密钥持久化在 `app_config`；改 `PLAYER_SESSION_PASSWORD` 只会让后续选择场次需要新口令，已发出的令牌仍有效到 12 小时过期。
 - 玩家 ID 不再做 hash，直接以二维码内容/原始 ID 作为主键。

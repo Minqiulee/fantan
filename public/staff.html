@@ -137,12 +137,23 @@
     background:rgba(79,140,255,.16); border:1px solid rgba(79,140,255,.4); }
   .lock .icon svg { width:30px; height:30px; }
   .lock h2 { font-size:19px; margin-bottom:6px; }
-  input[type=password] {
+  input[type=password], input[type=text] {
     width:100%; font-size:19px; padding:15px 16px; border-radius:14px;
     border:1.5px solid var(--card-border); background:rgba(0,0,0,.25); color:var(--text); outline:none;
     letter-spacing:2px; text-align:center;
   }
-  input[type=password]:focus { border-color:var(--accent); }
+  input[type=password]:focus, input[type=text]:focus { border-color:var(--accent); }
+  /* 账号输入不做字距，且与密码框留出间隔 */
+  input[type=text] { letter-spacing:0; font-size:17px; }
+  .lock input + input { margin-top:10px; }
+  /* 账号徽标（顶栏显示当前登录人） */
+  .user-chip {
+    font-size:12.5px; padding:6px 12px; border-radius:99px; color:var(--muted);
+    background:rgba(0,0,0,.22); border:1px solid var(--card-border); font-weight:600;
+    max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .user-chip b { color:var(--text); font-weight:700; }
+  .modal input[type=password] { margin-bottom:16px; font-size:17px; }
   .logout-link { display:block; margin:16px auto 0; background:none; border:none; color:var(--muted);
     font-size:13px; cursor:pointer; text-decoration:underline; }
 
@@ -249,6 +260,7 @@
       </button>
     </div>
     <div class="top-right">
+      <span class="user-chip hidden" id="userChip"></span>
       <button class="sess-btn hidden" id="adminBtn" type="button" data-i18n="adminEntry">管理</button>
       <button class="sess-btn hidden" id="switchSessBtn" type="button" data-i18n="sessionSwitch">切换场次</button>
     </div>
@@ -269,8 +281,10 @@
         </svg>
       </div>
       <h2 data-i18n="loginTitle">工作人员登录</h2>
-      <input type="password" id="pwdInput" placeholder="管理密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
-      <button class="btn" id="loginBtn" data-i18n="unlock">解锁</button>
+      <input type="text" id="userInput" placeholder="账号" data-i18n-placeholder="userPlaceholder"
+             autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input type="password" id="pwdInput" placeholder="登录密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
+      <button class="btn" id="loginBtn" data-i18n="unlock">登录</button>
       <div class="err" id="loginErr"></div>
     </div>
   </div>
@@ -361,6 +375,24 @@
     </div>
   </div>
 </div>
+<!-- 切换场次口令（场景级口令，与登录密码、玩家口令互不复用） -->
+<div class="modal-mask" id="switchPwdMask">
+  <div class="modal plain">
+    <div class="m-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+    </div>
+    <div class="m-title" data-i18n="switchPwdTitle">切换场次</div>
+    <div class="m-body" data-i18n="switchPwdBody">请输入「切换场次」口令</div>
+    <input type="password" id="switchPwdInput" autocomplete="off" inputmode="numeric">
+    <div class="err" id="switchPwdErr"></div>
+    <div class="m-actions">
+      <button class="m-btn-cancel" id="switchPwdCancel" type="button" data-i18n="modalCancelText">取消</button>
+      <button class="m-btn-ok" id="switchPwdOk" type="button" data-i18n="switchPwdOk">确认切换</button>
+    </div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -372,6 +404,8 @@
   var state = null, selNum = null, confirming = false;
   var picking = false;          // 是否展开「选择场次」（与玩家端同一套交互）
   var loggedIn = false;         // 是否已通过员工登录（控制顶栏入口显隐）
+  var me = { username: '', role: 'staff', displayName: '' }; // 当前登录账号（决定管理入口可见）
+  var pwdTargetSid = '';        // 待切换的目标场次（口令弹层的上下文）
   window.I18N.init({ storageKey: 'oe_staff_locale' });
   var t = window.I18N.t;
 
@@ -506,10 +540,22 @@
     renderLayout();
   }
 
+  /** 顶栏账号徽标：显示显示名（管理员额外标角色），鼠标悬停看账号 */
+  function renderUserChip() {
+    var el = $('userChip');
+    if (!me.username) { el.innerHTML = ''; el.classList.add('hidden'); return; }
+    var label = me.displayName || me.username;
+    el.innerHTML = esc(label) + (me.role === 'admin' ? ' · <b>' + esc(t('roleAdmin')) + '</b>' : '');
+    el.title = me.username + (me.role === 'admin' ? ' (' + t('roleAdmin') + ')' : '');
+  }
+
   /** 顶栏 / 卡片显隐：展开选择时只留选择卡（与玩家端 picking 表现一致） */
   function renderLayout() {
     var cur = currentSession();
-    $('adminBtn').classList.toggle('hidden', !loggedIn);
+    renderUserChip();
+    // 「管理」只给管理员：员工有自己的一套场次操作，不该看到对账与账号管理
+    $('adminBtn').classList.toggle('hidden', !loggedIn || me.role !== 'admin');
+    $('userChip').classList.toggle('hidden', !loggedIn || !me.username);
     $('switchSessBtn').classList.toggle('hidden', !loggedIn || picking || !openSessions().length);
     $('cardSession').classList.toggle('hidden', !loggedIn || !picking);
     $('sessCancel').classList.toggle('hidden', !loggedIn || !picking || !cur);
@@ -565,25 +611,67 @@
     }).then(function (r) { return r.json(); });
   }
 
-  /** 点选场次：已在本场则直接收起，否则切过去 */
+  /** 点选场次：已在本场则直接收起；否则切换（员工需先过「切换场次」口令） */
   function chooseSession(id) {
     if (!id) return;
     if (id === sid) { picking = false; renderLayout(); return; }
-    doSelectSession(id);
+    if (me.role === 'admin') { doSelectSession(id, null); return; } // 管理员免口令（服务端同口径）
+    openSwitchPwd(id);
   }
 
   /** 切换场次：只改自己的绑定，重建 SSE 连接并拉取该场次状态 */
-  function doSelectSession(id) {
-    postJson('/api/session-select', { token: token, sid: id }).then(function (d) {
+  function doSelectSession(id, sessionPassword) {
+    var body = { token: token, sid: id };
+    if (sessionPassword != null) body.sessionPassword = sessionPassword;
+    postJson('/api/session-select', body).then(function (d) {
       if (d.ok) {
+        closeSwitchPwd();
         picking = false;
         applySessionSwitch(d.sid, d.sessions);
         var cur = currentSession();
         toast(t('toastSessionSwitched', { name: cur ? cur.name : '' }), 'ok');
       } else if (d.code === 'unauthorized') { forceLogout(); }
-      else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
+      else if (d.code === 'staff_session_password_required' || d.code === 'staff_wrong_password' ||
+               d.code === 'staff_too_many_attempts') {
+        // 口令缺失 / 错误 / 限频：留在口令弹层里提示，不要静默失败
+        openSwitchPwd(id);
+        $('switchPwdErr').textContent = window.I18N.errCode(d.code, d) || t('errLoginFailed');
+      } else { toast(window.I18N.errCode(d.code, d) || t('errOpFailed'), 'err'); }
     }).catch(function () { toast(t('errNetRetry'), 'err'); });
   }
+
+  /* ---------- 切换场次口令弹层 ---------- */
+  function openSwitchPwd(id) {
+    pwdTargetSid = id;
+    $('switchPwdInput').value = '';
+    $('switchPwdErr').textContent = '';
+    $('switchPwdMask').classList.add('show');
+    setTimeout(function () { try { $('switchPwdInput').focus(); } catch (e) { /* 忽略 */ } }, 120);
+  }
+
+  function closeSwitchPwd() {
+    $('switchPwdMask').classList.remove('show');
+    $('switchPwdInput').value = '';
+    $('switchPwdErr').textContent = '';
+    pwdTargetSid = '';
+  }
+
+  function submitSwitchPwd() {
+    if (!pwdTargetSid) { closeSwitchPwd(); return; }
+    var pw = $('switchPwdInput').value;
+    if (!pw) { $('switchPwdErr').textContent = t('errEmptyPwd'); return; }
+    doSelectSession(pwdTargetSid, pw);
+  }
+
+  $('switchPwdOk').addEventListener('click', submitSwitchPwd);
+  $('switchPwdCancel').addEventListener('click', closeSwitchPwd);
+  $('switchPwdMask').addEventListener('click', function (e) {
+    if (e.target === $('switchPwdMask')) closeSwitchPwd();
+  });
+  $('switchPwdInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitSwitchPwd(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeSwitchPwd(); }
+  });
 
   /** 场次切换后的本地复位：清空选择、重建连接、重新拉状态 */
   function applySessionSwitch(nextSid, list) {
@@ -795,17 +883,26 @@
       $('inputErr').textContent = t('errPickNumber');
       return;
     }
-    // 结算前检查：仍有玩家未提交预测 → 弹额外提示，要求确认是否继续，避免遗漏玩家数据
+    // 开奖前检查：分两类提示，语义完全不同
+    //   未提交 = 没按确认提交（含「选了没确认」），锁定即作废，不算参赛
+    //   待确认 = 已点选但没按确认提交，人数最多的一类争议来源，必须让员工看见
     var unpredicted = state.players.filter(function (p) { return !p.submitted; }).length;
+    // 兼容两种投影：玩家视图带 draft 布尔，大屏视图只有 status（将来员工端切视图也不会漏算）
+    var drafting = state.players.filter(function (p) {
+      return p.draft === true || p.status === 'draft';
+    }).length;
+    var ack = false;
     if (unpredicted > 0) {
       var proceed = await confirmModal({
         type: 'warn',
         title: t('modalUnpredictedTitle'),
-        body: t('modalUnpredictedBody', { count: unpredicted }),
+        body: t('modalUnpredictedBody', { count: unpredicted })
+          + (drafting > 0 ? '<br><b>' + t('modalDraftNote', { count: drafting }) + '</b>' : ''),
         okText: t('modalUnpredictedOk'),
         cancelText: t('modalCancelText')
       });
       if (!proceed) return;
+      ack = true;
     }
     var sure = await confirmModal({
       type: 'plain',
@@ -815,19 +912,45 @@
       cancelText: t('modalCancelText')
     });
     if (!sure) return;
+
     confirming = true; $('confirmBtn').disabled = true;
-    postJson('/api/confirm', { number: selNum, token: token, sid: sid }).then(function (d) {
-      if (d.ok) {
-        if (d.archived === false) toast(t('toastArchiveFailed'), 'err');
-        else toast(t('toastLocked', { number: d.number }), 'ok');
+    try {
+      // 最多两轮：服务端若报「还有草稿未确认」（其他实例刚收到新草稿），再确认一次即带上 ackPending
+      for (var attempt = 0; attempt < 2; attempt += 1) {
+        var d = await postJson('/api/confirm', {
+          number: selNum, token: token, sid: sid, ackPending: ack
+        });
+        if (d && d.ok) {
+          if (d.archived === false) toast(t('toastArchiveFailed'), 'err');
+          else toast(t('toastLocked', { number: d.number }), 'ok');
+          poll();
+          break;
+        }
+        if (d && d.code === 'pending_confirm_required' && !ack) {
+          var n = (d.pending || []).length;
+          var go = await confirmModal({
+            type: 'warn',
+            title: t('modalUnpredictedTitle'),
+            body: t('modalDraftNote', { count: n }),
+            okText: t('modalUnpredictedOk'),
+            cancelText: t('modalCancelText')
+          });
+          if (!go) { $('confirmBtn').disabled = false; break; }
+          ack = true;
+          continue;
+        }
+        if (d && d.code === 'unauthorized') { forceLogout(); break; }
+        $('inputErr').textContent = window.I18N.errCode(d && d.code, d) || t('errConfirmFailed');
+        $('confirmBtn').disabled = false;
         poll();
+        break;
       }
-      else if (d.code === 'unauthorized') { forceLogout(); }
-      else { $('inputErr').textContent = window.I18N.errCode(d.code, d) || t('errConfirmFailed'); $('confirmBtn').disabled = false; poll(); }
-    }).catch(function () {
+    } catch (e) {
       $('inputErr').textContent = t('errNetRetry');
       $('confirmBtn').disabled = false;
-    }).finally(function () { confirming = false; });
+    } finally {
+      confirming = false;
+    }
   });
 
   $('resetBtn').addEventListener('click', async function () {
@@ -853,20 +976,25 @@
   /* ---------- 登录 / 退出 ---------- */
   function forceLogout() {
     closeStream();
+    closeSwitchPwd();
     setAuth('');
+    me = { username: '', role: 'staff', displayName: '' };
     sessions = []; sid = ''; state = null;
     showLogin();
     toast(t('errSessionExpired'), 'err');
   }
 
   $('loginBtn').addEventListener('click', function () {
+    var user = $('userInput').value.trim();
     var pw = $('pwdInput').value;
     $('loginErr').textContent = '';
+    if (!user) { $('loginErr').textContent = t('errEmptyUser'); return; }
     if (!pw) { $('loginErr').textContent = t('errEmptyPwd'); return; }
     $('loginBtn').disabled = true;
-    postJson('/api/staff-login', { password: pw }).then(function (d) {
+    postJson('/api/staff-login', { username: user, password: pw }).then(function (d) {
       if (d.ok) {
         setAuth(d.token);
+        me = d.user || { username: user, role: 'staff', displayName: '' };
         $('pwdInput').value = '';
         sessions = d.sessions || [];
         showMain();
@@ -876,21 +1004,25 @@
       .finally(function () { $('loginBtn').disabled = false; });
   });
 
-  $('pwdInput').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') $('loginBtn').click();
+  ['pwdInput', 'userInput'].forEach(function (id) {
+    $(id).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') $('loginBtn').click();
+    });
   });
 
   $('logoutBtn').addEventListener('click', function () {
     closeStream();
     postJson('/api/staff-logout', { token: token });
     setAuth('');
+    me = { username: '', role: 'staff', displayName: '' };
     sessions = []; sid = ''; state = null;
     showLogin();
   });
 
-  /* 启动时校验会话有效性，并取回绑定的场次 */
+  /* 启动时校验会话有效性，并取回绑定的场次与账号 */
   fetch('/api/staff-check?token=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (d) {
     if (d.ok) {
+      me = d.user || me;
       sessions = d.sessions || [];
       showMain();
       applySessionSwitch(d.sid || '', sessions);
