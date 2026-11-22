@@ -141,8 +141,9 @@
 
   /* 固定卡片宽度：不随每行剩余空间伸缩，避免末行卡片被撑大、整屏宽度参差 */
   .pc {
-    flex: 0 0 clamp(148px, 10vw, 220px);
-    min-height: clamp(96px, 12.5vh, 150px);
+    --cgap: clamp(3px, .35vw, 6px);
+    flex: 0 0 clamp(158px, 10.6vw, 232px);
+    min-height: clamp(116px, 15vh, 176px);
     display:flex; flex-direction:column; gap:4px;
     padding: clamp(8px,1vh,14px) clamp(10px,1vw,16px);
     border-radius: clamp(10px,1vw,16px);
@@ -160,8 +161,6 @@
   /* 草稿：选了但没按「确认提交」。虚线金边 + 金色文字降饱和，避免和「已确认」混淆 */
   .pc[data-state="draft"] { border-style:dashed; border-color:rgba(255,212,94,.42); background:linear-gradient(180deg, rgba(74,18,22,.5), rgba(36,8,11,.6)); }
   .pc[data-state="draft"]::before { background:rgba(212,166,83,.5); }
-  .pc[data-state="draft"] .pc-oe,
-  .pc[data-state="draft"] .pc-num { color:rgba(255,226,160,.72); font-weight:800; }
   .pc[data-state="unpicked"] { border-style:dashed; border-color:rgba(200,170,130,.28); }
   .pc[data-state="unpicked"]::before { background:#6b5548; }
   .pc[data-state="left"] { opacity:.42; }
@@ -176,19 +175,62 @@
     flex:none; font-size: clamp(9px,1.1vh,12px); font-weight:700; padding:2px 7px; border-radius:99px;
     color:var(--gold); background:rgba(255,212,94,.16); border:1px solid rgba(255,212,94,.35);
   }
-  .pc-body { flex:1; display:flex; align-items:center; gap: clamp(8px,1vw,16px); }
-  .pc-oe {
-    font-size: clamp(22px,3.6vh,44px); font-weight:900; line-height:1;
-    color:var(--gold);
+  /* ---------- 选择结果：沿用玩家端同一套 .numgrid 语汇 ----------
+     卡片不再写「单 / 7」这类文字，而是把玩家看到的整块选项原样搬过来：
+     上面是单双两枚（对应玩家端 .pair .opt），下面是 0–9 十格（对应玩家端 #numGrid）。
+     只把被选中的那一格点亮，其余压暗作背景板——远看认金色块，近看认位置。 */
+  .pc-body {
+    flex:1; min-height:0; display:flex; flex-direction:column;
+    justify-content:center; gap: clamp(3px,.5vh,8px);
   }
-  .pc-num {
-    font-size: clamp(20px,3.2vh,40px); font-weight:900; line-height:1;
-    font-variant-numeric: tabular-nums; color:var(--text);
+  .numgrid { display:grid; grid-template-columns:repeat(5, 1fr); }
+  .pc-oe { display:grid; grid-template-columns:1fr 1fr; gap: var(--cgap); }
+  .pc-numgrid { flex:1; min-height:0; grid-template-rows:1fr 1fr; gap: var(--cgap); }
+
+  .pc-oe span, .pc-numgrid span {
+    position:relative; display:flex; align-items:center; justify-content:center;
+    border-radius: clamp(4px,.45vw,7px); line-height:1;
+    font-weight:900; font-variant-numeric: tabular-nums;
+    color: rgba(224,194,148,.46);
+    background: rgba(0,0,0,.26);
+    border:1px solid rgba(212,166,83,.16);
+    transition: color .18s ease, background .18s ease, border-color .18s ease,
+                box-shadow .18s ease, transform .18s ease;
   }
-  .pc[data-state="unpicked"] .pc-oe,
-  .pc[data-state="unpicked"] .pc-num { color:var(--dim); font-weight:700; }
-  .pc[data-state="left"] .pc-oe,
-  .pc[data-state="left"] .pc-num { color:#b9a49a; }
+  .pc-oe span { padding: clamp(1px,.3vh,5px) 0; font-size: clamp(10px,1.35vh,17px); letter-spacing:1px; }
+  .pc-numgrid span { padding: clamp(2px,.4vh,6px) 0; font-size: clamp(11px,1.5vh,19px); }
+
+  /* 选中格 = 玩家端 .numgrid button.sel 的同一套金色，两端口径一致 */
+  .pc-oe span.sel, .pc-numgrid span.sel {
+    color:#3a1500; border-color:#fff0c2; z-index:2; transform:scale(1.05);
+    background:linear-gradient(180deg,#ffd76b 0%,#f0a71c 55%,#d9860c 100%);
+    box-shadow:0 0 12px rgba(255,200,80,.45), inset 0 1px 0 rgba(255,255,255,.6);
+  }
+  /* 待确认（草稿）：同样点亮但降饱和，别和「已确认」混 */
+  .pc[data-state="draft"] .pc-oe span.sel,
+  .pc[data-state="draft"] .pc-numgrid span.sel {
+    color:rgba(58,21,0,.78); border-color:rgba(255,240,194,.5);
+    background:linear-gradient(180deg, rgba(255,215,107,.68), rgba(217,134,12,.62));
+    box-shadow:0 0 8px rgba(255,200,80,.20);
+  }
+  /* 未选择 / 已离开：格子继续压暗，一眼看出「这块是空的」；
+     但已选中的那格保留金色（:not(.sel)），别把玩家自己的选项也压没了 */
+  .pc[data-state="unpicked"] .pc-oe span:not(.sel),
+  .pc[data-state="unpicked"] .pc-numgrid span:not(.sel) { color:rgba(141,113,96,.40); border-color:rgba(200,170,130,.10); }
+  .pc[data-state="left"] .pc-oe span:not(.sel),
+  .pc[data-state="left"] .pc-numgrid span:not(.sel) { color:rgba(185,164,154,.38); border-color:rgba(200,170,130,.10); }
+
+  /* 开奖后：判定直接长在选项上——命中的格描绿边、未中描红边（红绿沿用页面既有结果语义）。
+     只用描边不用角标：格子小、密度高，角标会互相顶到一起，描边在远处反而更好认。 */
+  .pc-oe span.sel.hit, .pc-numgrid span.sel.hit {
+    border-color:var(--ok);
+    box-shadow:0 0 0 2px rgba(74,222,128,.92), 0 0 14px rgba(74,222,128,.5), inset 0 1px 0 rgba(255,255,255,.5);
+  }
+  .pc-oe span.sel.miss, .pc-numgrid span.sel.miss {
+    border-color:rgba(255,123,123,.95);
+    box-shadow:0 0 0 2px rgba(255,123,123,.88), 0 0 14px rgba(255,123,123,.45), inset 0 1px 0 rgba(255,255,255,.35);
+  }
+
   .pc-foot {
     display:flex; align-items:center; gap:6px;
     font-size: clamp(10px,1.25vh,14px); color:var(--muted); letter-spacing:1px;
@@ -198,13 +240,6 @@
   .pc[data-state="picked"] .pc-foot .d { background:var(--gold); }
   .pc[data-state="left"] .pc-foot .d { background:#8a7568; }
 
-  /* 开奖后：命中/未中直接标在卡片底部状态行（红绿沿用页面既有的结果语义） */
-  .pc-hit { display:flex; gap:5px; margin-left:auto; flex:none; }
-  .pc-foot.nodot .d { display:none; }
-  .pc-hit span { padding:2px 8px; border-radius:99px; font-size: clamp(11px,1.5vh,17px); font-weight:800; letter-spacing:.5px; }
-  .pc-hit .h { color:#0d2a17; background:var(--ok); }
-  .pc-hit .m { color:#3a0c0c; background:rgba(255,123,123,.85); }
-
   /* 动效：新加入 / 选项变化 / 离开，各自只用一次短动画，避免大屏持续晃眼 */
   @keyframes cardIn { from { opacity:0; transform:translateY(8px) scale(.96); } to { opacity:1; transform:none; } }
   @keyframes cardChange { 0% { box-shadow:0 0 0 0 rgba(255,212,94,.85); } 100% { box-shadow:0 0 0 14px rgba(255,212,94,0); } }
@@ -212,14 +247,14 @@
   .pc.change { animation: cardChange .9s ease-out 1; }
 
   /* 人少时把卡片放大（远距离也看得清），人多时自动收窄，保证一屏装得下更多人 */
-  .grid[data-density="sparse"] .pc { flex-basis: clamp(210px, 16vw, 360px); min-height: clamp(140px, 20vh, 240px); }
+  .grid[data-density="sparse"] .pc { flex-basis: clamp(230px, 17vw, 380px); min-height: clamp(160px, 22vh, 260px); }
   .grid[data-density="sparse"] .pc-id { font-size: clamp(16px, 2.2vh, 28px); }
-  .grid[data-density="sparse"] .pc-oe { font-size: clamp(34px, 5.4vh, 66px); }
-  .grid[data-density="sparse"] .pc-num { font-size: clamp(30px, 4.8vh, 60px); }
-  .grid[data-density="dense"] .pc { flex-basis: clamp(120px, 8.2vw, 176px); min-height: clamp(80px, 10vh, 122px); }
+  .grid[data-density="sparse"] .pc-oe span { font-size: clamp(13px, 1.85vh, 24px); }
+  .grid[data-density="sparse"] .pc-numgrid span { font-size: clamp(15px, 2.35vh, 33px); }
+  .grid[data-density="dense"] .pc { flex-basis: clamp(156px, 9.6vw, 200px); min-height: clamp(108px, 13vh, 150px); }
   .grid[data-density="dense"] .pc-id { font-size: clamp(11px, 1.4vh, 17px); }
-  .grid[data-density="dense"] .pc-oe { font-size: clamp(18px, 2.8vh, 34px); }
-  .grid[data-density="dense"] .pc-num { font-size: clamp(16px, 2.5vh, 30px); }
+  .grid[data-density="dense"] .pc-oe span { font-size: clamp(9px, 1.15vh, 14px); }
+  .grid[data-density="dense"] .pc-numgrid span { font-size: clamp(10px, 1.4vh, 17px); }
 
   .empty {
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
@@ -534,12 +569,33 @@
 
     var body = document.createElement('div');
     body.className = 'pc-body';
-    var oe = document.createElement('span');
-    oe.className = 'pc-oe';
-    var num = document.createElement('span');
-    num.className = 'pc-num';
-    body.appendChild(oe);
-    body.appendChild(num);
+
+    // 单双：与玩家端 .pair .opt 一一对应（两枚都画出来，只把选中的点亮）
+    var oeWrap = document.createElement('div');
+    oeWrap.className = 'pc-oe';
+    var oeRefs = [];
+    ['单', '双'].forEach(function (v) {
+      var b = document.createElement('span');
+      b.setAttribute('data-oe', v);
+      b.textContent = t(v === '单' ? 'odd' : 'even');
+      oeWrap.appendChild(b);
+      oeRefs.push(b);
+    });
+
+    // 数字：与玩家端 #numGrid 同一个 .numgrid（5 列 × 2 行，0–9 顺序一致）
+    var numWrap = document.createElement('div');
+    numWrap.className = 'numgrid pc-numgrid';
+    var cellRefs = [];
+    for (var i = 0; i < 10; i++) {
+      var c = document.createElement('span');
+      c.setAttribute('data-n', String(i));
+      c.textContent = String(i);
+      numWrap.appendChild(c);
+      cellRefs.push(c);
+    }
+
+    body.appendChild(oeWrap);
+    body.appendChild(numWrap);
 
     var foot = document.createElement('div');
     foot.className = 'pc-foot';
@@ -551,46 +607,51 @@
     el.appendChild(body);
     el.appendChild(foot);
 
-    var card = { el: el, refs: { id: idEl, vet: vet, oe: oe, num: num, foot: foot }, sig: '', locked: false };
+    var card = { el: el, refs: { id: idEl, vet: vet, oe: oeRefs, cells: cellRefs, foot: foot }, sig: '', locked: false };
     paintCard(card, p, d);
     return card;
   }
 
-  /** 把一份玩家数据画到卡片上（d = 当前状态负载，含 locked / number 用于命中标记） */
+  /** 把一份玩家数据画到卡片上（d = 当前状态负载，含 locked / number 用于命中标记）
+   *  选择结果全部用图示表达：单双两枚 + 0–9 十格，选中的那格点亮，不做文字拼读。 */
   function paintCard(card, p, d) {
     card.el.setAttribute('data-state', stateOf(p));
     card.refs.vet.style.display = p.isVeteran ? '' : 'none';
-    // oe/num 是「当前显示值」：已确认取提交值，未确认取草稿值（服务端算好，前端不猜）
-    if (p.oe) {
-      card.refs.oe.textContent = t(p.oe === '单' ? 'odd' : 'even');
-      card.refs.num.textContent = p.num == null ? '—' : p.num;
-    } else {
-      card.refs.oe.textContent = '—';
-      card.refs.num.textContent = '';
-    }
 
-    // 状态行：开奖后且已提交 → 直接显示命中/未中，省掉一行文字也不挤；
-    // 其余情况显示「已选择 / 未选择 / 已离开」。
+    // oe/num 是「当前显示值」：已确认取提交值，未确认取草稿值（服务端算好，前端不猜）
+    var oe = (p.oe === '单' || p.oe === '双') ? p.oe : null;
+    var num = (p.num == null || p.num === '') ? null : Number(p.num);
+    var locked = !!(d && d.locked && d.number != null);
+    var judged = locked && !!p.submitted;   // 只有已确认的提交才判命中，草稿不判
+    var oeHit = judged && oe !== null && (oe === '单') === (d.number % 2 === 1);
+
+    // 单双两枚：选中 → .sel；开奖后判中/未中 → .hit/.miss（描边颜色由 CSS 决定）
+    card.refs.oe.forEach(function (el) {
+      var mine = oe !== null && el.getAttribute('data-oe') === oe;
+      el.classList.toggle('sel', mine);
+      el.classList.toggle('hit', mine && oeHit);
+      el.classList.toggle('miss', mine && judged && !oeHit);
+      el.textContent = t(el.getAttribute('data-oe') === '单' ? 'odd' : 'even');
+    });
+
+    // 数字十格：选中格点亮；开奖后同样用描边标出中/未中
+    card.refs.cells.forEach(function (el) {
+      var n = Number(el.getAttribute('data-n'));
+      var mine = num !== null && n === num;
+      el.classList.toggle('sel', mine);
+      el.classList.toggle('hit', mine && judged && d.number === n);
+      el.classList.toggle('miss', mine && judged && d.number !== n);
+    });
+
+    // 状态行只留一句状态（命中与否已经画在选项上，不再重复文字）
     var foot = card.refs.foot;
     while (foot.children.length > 1) foot.removeChild(foot.lastChild);
-    var locked = !!(d && d.locked && d.number != null);
-    if (locked && p.submitted) {
-      var box = document.createElement('div');
-      box.className = 'pc-hit';
-      foot.classList.add('nodot');
-      var n = d.number;
-      box.appendChild(mkHit((p.oddEven === '单') === (n % 2 === 1), t(p.oddEven === '单' ? 'odd' : 'even')));
-      box.appendChild(mkHit(p.number === n, String(p.number)));
-      foot.appendChild(box);
-    } else {
-      foot.classList.remove('nodot');
-      var st = document.createElement('span');
-      st.textContent = t(p.left ? 'bs_stateLeft'
-        : p.submitted ? 'bs_statePicked'
-        : p.status === 'draft' ? 'bs_stateDraft'
-        : 'bs_stateUnpicked');
-      foot.appendChild(st);
-    }
+    var st = document.createElement('span');
+    st.textContent = t(p.left ? 'bs_stateLeft'
+      : p.submitted ? 'bs_statePicked'
+      : p.status === 'draft' ? 'bs_stateDraft'
+      : 'bs_stateUnpicked');
+    foot.appendChild(st);
 
     card.sig = sigOf(p);
     card.locked = !!(d && d.locked);
@@ -598,13 +659,6 @@
     card.oddEven = p.oddEven;
     card.number = p.number;
     card.left = p.left;
-  }
-
-  function mkHit(hit, label) {
-    var s = document.createElement('span');
-    s.className = hit ? 'h' : 'm';
-    s.textContent = label + (hit ? ' ✓' : ' ✗');
-    return s;
   }
 
   function flash(el, cls) {
