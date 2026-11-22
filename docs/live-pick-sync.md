@@ -1,7 +1,7 @@
 # 实时选择同步（草稿 → 确认提交）
 
 > 单双竞猜门店互动版：玩家点选即刻出现在大屏上，但**只有按「确认提交」才算参赛**。
-> 本文描述**已实现**的行为契约。对应代码：`server.js`（`/api/pick`、`/api/submit`、`/api/confirm`、草稿内存表）、`public/index.html`、`public/bigscreen.html`、`test/pick.test.mjs`。
+> 本文描述**已实现**的行为契约。对应代码：`server.js`（`/api/pick`、`/api/submit`、`/api/confirm`、草稿内存表）、`public/index/app.js`、`public/bigscreen/app.js`、`test/pick.test.mjs`。
 
 ---
 
@@ -241,7 +241,7 @@ sequenceDiagram
     S-->>B: state（locked + number）
 ```
 
-### 4.1 客户端（`public/index.html`）
+### 4.1 客户端（`public/index/app.js`）
 
 - **点选**：`selOE`/`selNum` 变化 → `scheduleDraft()`；值没变直接 return（连点同一选项一个请求都不发）。
 - **500ms debounce** → `flushDraft()`：与「服务端已确认的值」比（不是与「上次发送的值」比），所以 `单→双→单` 能正确发回，重复点击不发。
@@ -332,10 +332,10 @@ onState(s):
 | `server.js` | `buildStatePayload` 增 `serverTime/counts/me.draft`；`publicPlayers` 增 `status/draft`；`bigscreenPlayers` 增 `status/oe/num/draft*` |
 | `server.js` | `confirm` 增 `ackPending` + `pending`；锁定/关闭/新一轮清草稿与回执 |
 | `server.js` | pubsub 事件分流：`type=draft` 走内存合并，其余走 `store.applyRemote` |
-| `public/index.html` | 点选节流上报、`resumeDraft` 重连补发、提交改 `/api/submit` + 幂等键 |
-| `public/bigscreen.html` | 三态卡片（虚线待确认）、`draft` 补丁事件、待确认计数 |
-| `public/staff.html` | 开奖前区分「未提交」与「已选未确认」，`ackPending` 重试 |
-| `public/i18n.js` | 三语各补 4 个 key（306 个，三语对齐） |
+| `public/index/app.js` | 点选节流上报、`resumeDraft` 重连补发、提交改 `/api/submit` + 幂等键 |
+| `public/bigscreen/app.js` | 三态卡片（虚线待确认）、`draft` 补丁事件、待确认计数 |
+| `public/staff/app.js` | 开奖前区分「未提交」与「已选未确认」，`ackPending` 重试 |
+| `public/shared/i18n.js` | 三语各补 4 个 key（306 个，三语对齐） |
 | `test/pick.test.mjs` | 7 组用例：内存语义 / 视图隔离 / seq 单调 / 撤销 / 幂等 / 锁定竞态 / 重启恢复 |
 
 ---

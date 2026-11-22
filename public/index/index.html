@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>羊多一點 · 玩家端</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<script src="/shared/i18n.js"></script>
+<script src="/shared/vendor/html5-qrcode.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <!-- 顶栏：语言切换 + 切换场次 + 登出 -->
+  <div class="topbar">
+    <button class="lang-btn" id="langBtn" type="button" aria-label="切换语言">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M2 12h20"/>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      <span class="lang-code" id="langCode">繁體</span>
+    </button>
+    <div class="top-right">
+      <button class="sess-btn hidden" id="switchSessBtn" data-i18n="p_switchSession">切换场次</button>
+      <button class="logout-btn hidden" id="logoutBtn" data-i18n="p_logout">登出</button>
+    </div>
+  </div>
+
+  <header>
+    <h1 data-i18n="p_title">单双竞猜<span class="tag" data-i18n="p_tag">玩家端</span></h1>
+    <div class="round" id="roundInfo"></div>
+  </header>
+
+  <div class="status-pill st-unreg" id="statusPill"><span class="dot"></span><span id="statusText"></span></div>
+
+  <!-- ⓪ 选择场次（未选场次 / 本场已结束 / 主动切换） -->
+  <div class="card hidden" id="cardSession">
+    <h2><span data-i18n="p_pickTitle">选择场次</span></h2>
+    <div class="sess-pick" id="sessPick"></div>
+    <button class="sess-cancel hidden" id="sessCancel" type="button" data-i18n="p_cancelSwitch">取消切换</button>
+    <div class="hint" data-i18n="p_pickHint">选择你所在的场次需输入场次口令；选错场次看不到本场的开奖结果。</div>
+  </div>
+
+  <!-- ① 扫描自己的二维码 -->
+  <div class="card" id="cardScan">
+    <h2><span class="step">1</span><span data-i18n="p_scanTitle">扫描我的二维码</span></h2>
+    <button class="btn" id="camBtn" data-i18n="p_openCam">打开相机扫描</button>
+    <div id="camBox" class="hidden">
+      <div id="camReader"></div>
+      <button id="camSwitchBtn" class="cam-switch hidden" type="button" aria-label="切换摄像头" title="切换摄像头">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7.5h3L8.5 5h7l1.5 2.5h3A1.5 1.5 0 0 1 21.5 9v9A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5z"/>
+          <path d="M9.2 12.4a3.2 3.2 0 0 1 5.3-1.1"/>
+          <path d="M14.8 15.1a3.2 3.2 0 0 1-5.4 1"/>
+          <path d="M15 9.2v2.2h-2.2"/>
+          <path d="M9 17.2V15h2.2"/>
+        </svg>
+      </button>
+      <div class="cam-tip" data-i18n="p_camTip">对准你手中的二维码，自动识别</div>
+    </div>
+    <div class="manual-label" data-i18n="p_manualSummary">相机不可用？手动输入二维码内容</div>
+    <div class="manual-row">
+      <input type="text" id="manualInput" maxlength="64" data-i18n-ph="p_manualPlaceholder" placeholder="输入二维码内容 / 编号" autocomplete="off">
+      <button class="btn plain manual-btn" id="manualBtn" data-i18n="p_manualBtn">提交识别</button>
+    </div>
+    <div class="err" id="scanErr"></div>
+  </div>
+
+  <!-- ② 提交预测 -->
+  <div class="card hidden" id="cardPred">
+    <h2><span class="step">2</span><span data-i18n="p_predTitle">提交预测</span></h2>
+    <div class="pair">
+      <button class="opt" data-oe="单"><span class="oe-main">单</span><small>1 / 3 / 5 / 7 / 9</small></button>
+      <button class="opt" data-oe="双"><span class="oe-main">双</span><small>0 / 2 / 4 / 6 / 8</small></button>
+    </div>
+    <div style="height:14px"></div>
+    <div class="numgrid" id="numGrid">
+      <button data-n="0">0</button><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
+      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button><button data-n="9">9</button>
+    </div>
+    <div class="err" id="predErr"></div>
+    <button class="btn gold" id="predBtn" data-i18n="p_predBtn">提交预测</button>
+    <div class="hint" data-i18n="p_predHint">单双 + 数字各预测一次，一次提交、不可修改。</div>
+  </div>
+
+  <!-- ③ 等待开奖 -->
+  <div class="card hidden" id="cardWait">
+    <div class="waiting">
+      <div class="spinner"></div>
+      <div style="font-size:19px;font-weight:700;letter-spacing:1px" data-i18n="p_waitTitle">已提交 · 等待工作人员开奖</div>
+      <div class="my-pred" id="myPred"></div>
+      <div class="hint" data-i18n="p_waitHint">工作人员确认前不会公布数字，请耐心等待～</div>
+    </div>
+  </div>
+
+  <!-- ④ 结果 -->
+  <div class="card hidden" id="cardResult">
+    <div class="result-num">
+      <div class="lab" data-i18n="p_resultLab">本轮开奖数字</div>
+      <div class="n" id="resultNum">?</div>
+    </div>
+    <div class="verdict">
+      <div class="v" id="vOE"><div class="t" data-i18n="p_oePred">单双预测</div><div class="d" id="vOEd">—</div></div>
+      <div class="v" id="vNum"><div class="t" data-i18n="p_numPred">数字预测</div><div class="d" id="vNumd">—</div></div>
+    </div>
+    <!-- 奖品：四档只显示玩家命中的那一档，文案由管理界面配置 -->
+    <div class="prize hidden" id="prizeBox">
+      <div class="prize-head">
+        <span class="prize-tier" id="prizeTier"></span>
+        <span class="prize-lab" data-i18n="p_prizeLab">奖品</span>
+      </div>
+      <div class="prize-title" id="prizeTitle"></div>
+      <div class="prize-desc" id="prizeDesc"></div>
+    </div>
+    <!-- 额外奖励：开奖命中特殊数字时，全员（含未猜中）额外获得一份，独立于上面的个人档位 -->
+    <div class="bonus hidden" id="bonusBox">
+      <div class="bonus-head">
+        <span class="bonus-tier" data-i18n="p_bonusTier">全员额外奖励</span>
+      </div>
+      <div class="bonus-title" id="bonusTitle"></div>
+      <div class="bonus-desc" id="bonusDesc"></div>
+    </div>
+    <div class="hint" style="text-align:center" data-i18n="p_resultHint">等待工作人员开始新一轮后再扫码即可继续。</div>
+  </div>
+
+  <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
+</div>
+
+<!-- 场次口令弹层：选择 / 切换场次时校验，失败则留在原场次 -->
+<div class="pw-mask" id="pwMask">
+  <div class="pw-box" role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+    <h3 id="pwTitle" data-i18n="p_pwTitle">输入场次口令</h3>
+    <div class="pw-sess" id="pwSess"></div>
+    <input type="password" id="pwInput" inputmode="numeric" autocomplete="off" maxlength="32"
+           data-i18n-ph="p_pwPlaceholder" placeholder="场次口令">
+    <div class="pw-err" id="pwErr"></div>
+    <div class="pw-acts">
+      <button class="pw-cancel" id="pwCancel" type="button" data-i18n="p_cancel">取消</button>
+      <button class="pw-ok" id="pwBtn" type="button" data-i18n="p_pwConfirm">确认</button>
+    </div>
+    <div class="pw-hint" data-i18n="p_pwHint">口令由工作人员提供；验证通过后本机将固定在该场次，刷新或重开页面无需再次输入。</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- 登录后规则介绍：10 秒倒计时，点击任意处立即关闭 -->
+<div class="rules-mask hidden" id="rulesMask" role="dialog" aria-modal="true" aria-labelledby="rulesTitle" aria-describedby="rulesTap">
+  <div class="rules-box">
+    <h3 id="rulesTitle" data-i18n="p_rulesTitle">玩法说明</h3>
+    <ul class="rules-list">
+      <li><span class="no">1</span><span data-i18n="p_rule1"></span></li>
+      <li><span class="no">2</span><span data-i18n="p_rule2"></span></li>
+      <li><span class="no">3</span><span data-i18n="p_rule3"></span></li>
+      <li><span class="no">4</span><span data-i18n="p_rule4"></span></li>
+    </ul>
+    <div class="rules-foot">
+      <div class="rules-tap" id="rulesTap" data-i18n="p_rulesTap">点击任意位置立即开始</div>
+      <div class="rules-time" id="rulesTime" aria-live="off"></div>
+    </div>
+  </div>
+  <div class="rules-bar" aria-hidden="true"><i id="rulesBarFill"></i></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

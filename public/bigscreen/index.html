@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>羊多一點 · 實時大屏</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<script src="/shared/i18n.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="board">
+  <header class="hd">
+    <div class="hd-brand">
+      <span class="brand-name" data-i18n="brand">羊多一点</span>
+      <span class="brand-tag" data-i18n="bs_tag">实时大屏</span>
+    </div>
+    <div class="hd-mid">
+      <div class="hd-sess" id="sessName">—</div>
+      <div class="hd-meta">
+        <span id="sessMeta"></span>
+        <select class="sess-sel hidden" id="sessSel" aria-label="session"></select>
+      </div>
+    </div>
+    <div class="hd-right">
+      <span class="conn" id="connTip" data-i18n="connLost">⚠ 连接中断，正在重试…</span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="stats">
+      <div class="st"><div class="n" id="nTotal">0</div><div class="t" data-i18n="bs_total">参与玩家</div></div>
+      <div class="st pick"><div class="n" id="nPicked">0</div><div class="t" data-i18n="bs_picked">已确认</div></div>
+      <div class="st draft"><div class="n" id="nDraft">0</div><div class="t" data-i18n="bs_draft">待确认</div></div>
+      <div class="st unpick"><div class="n" id="nUnpicked">0</div><div class="t" data-i18n="bs_unpicked">未选择</div></div>
+      <div class="st left"><div class="n" id="nLeft">0</div><div class="t" data-i18n="bs_left">已离开</div></div>
+    </div>
+    <div class="draw idle" id="drawBox">
+      <div class="lab" id="drawLab" data-i18n="bs_draw">本轮开奖数字</div>
+      <div class="num" id="drawNum" data-i18n="bs_drawing">待开奖</div>
+    </div>
+  </section>
+
+  <section class="stage">
+    <div class="grid" id="grid"></div>
+    <div class="empty on" id="empty" data-i18n="bs_waiting">等待玩家扫码…</div>
+  </section>
+
+  <footer class="ticker">
+    <span class="tk-lab" data-i18n="bs_events">最近动态</span>
+    <div class="tk-list" id="tkList"></div>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -47,13 +47,14 @@
 ├── store.js               # 共享会话存储：读缓存 + 乐观锁提交 + 变更事件
 ├── pubsub.js              # 跨实例状态通知（Postgres LISTEN/NOTIFY，断线重连）
 ├── db.js                  # Postgres 连接池、建表、快照读写、归档、账号、审计、会话与限频
-├── public/
-│   ├── index.html         # 玩家端（扫码 / 预测 / 等待 / 结果）
-│   ├── staff.html         # 工作人员端（登录 / 录入数字 / 结算表 / 开新轮 / 切换场次）
-│   ├── admin.html         # 管理界面（当日对账 / 大屏 / 场次管理 / 员工账号 / 操作日志）
-│   ├── bigscreen.html     # 实时大屏（按场次展示每位玩家的当前选项）
-│   ├── i18n.js            # 三语文案与切换逻辑（两端共用）
-│   └── html5-qrcode.min.js # 本地二维码解码库（无 CDN 依赖）
+├── public/                # 前端按页面分目录：每页一个文件夹，内含 index.html / style.css / app.js
+│   ├── index/             # 玩家端（扫码 / 预测 / 等待 / 结果）
+│   ├── staff/             # 工作人员端（登录 / 录入数字 / 结算表 / 开新轮 / 切换场次）
+│   ├── admin/             # 管理界面（当日对账 / 大屏 / 场次管理 / 员工账号 / 操作日志）
+│   ├── bigscreen/         # 实时大屏（按场次展示每位玩家的当前选项）
+│   └── shared/            # 多页共用资源
+│       ├── i18n.js        # 三语文案与切换逻辑（四个页面共用）
+│       └── vendor/html5-qrcode.min.js # 本地二维码解码库（无 CDN 依赖）
 ├── test/
 │   ├── run.mjs            # 测试入口：起临时 Postgres（Docker）→ 串行跑全部用例
 │   ├── helpers.mjs        # 基座：起服务、HTTP 客户端、连库、CSV 解析
@@ -67,7 +68,7 @@
 └── package.json           # 仅一个依赖：pg
 ```
 
-请求分流：`/api/stream` → SSE；`/api/*` → JSON 接口；其余 → `public/` 静态文件（`/staff` → `staff.html`，`/admin` → `admin.html`，`/bigscreen` → `bigscreen.html`，路径穿越被拦）。
+请求分流：`/api/stream` → SSE；`/api/*` → JSON 接口；其余 → `public/` 静态文件。页面入口由 `server.js` 的 `PAGE_ENTRY` 映射（`/` → `index/index.html`，`/staff` → `staff/index.html`，`/admin` → `admin/index.html`，`/bigscreen` → `bigscreen/index.html`；旧的 `/xxx.html` 直链一并保留，路径穿越被拦）。
 
 ---
 

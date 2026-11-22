@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>羊多一點 · 工作人員端</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<script src="/shared/i18n.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <!-- 顶栏：语言在左；管理 / 切换场次在右（与玩家端顶栏同位置、同款胶囊按钮） -->
+  <div class="topbar">
+    <div class="lang-switch" id="langSwitch" aria-label="Language">
+      <button class="lang-btn" id="langBtn" type="button" aria-label="切换语言">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M2 12h20"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        <span class="lang-code" id="langCode">繁體</span>
+      </button>
+    </div>
+    <div class="top-right">
+      <span class="user-chip hidden" id="userChip"></span>
+      <button class="sess-btn hidden" id="adminBtn" type="button" data-i18n="adminEntry">管理</button>
+      <button class="sess-btn hidden" id="switchSessBtn" type="button" data-i18n="sessionSwitch">切换场次</button>
+    </div>
+  </div>
+
+  <header>
+    <h1><span data-i18n="brand">羊多一点</span><span class="tag" data-i18n="staffTag">工作人员端</span></h1>
+    <div class="round" id="roundInfo">—</div>
+  </header>
+
+  <!-- 登录锁 -->
+  <div class="card" id="loginCard">
+    <div class="lock">
+      <div class="icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="11" width="16" height="10" rx="2"/>
+          <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+        </svg>
+      </div>
+      <h2 data-i18n="loginTitle">工作人员登录</h2>
+      <input type="text" id="userInput" placeholder="账号" data-i18n-placeholder="userPlaceholder"
+             autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input type="password" id="pwdInput" placeholder="登录密码" data-i18n-placeholder="pwdPlaceholder" autocomplete="current-password">
+      <button class="btn" id="loginBtn" data-i18n="unlock">登录</button>
+      <div class="err" id="loginErr"></div>
+    </div>
+  </div>
+
+  <!-- 主内容（登录后显示） -->
+  <div id="mainContent" class="hidden">
+
+  <!-- 场次条：只展示当前场次（切换入口在顶栏，与玩家端一致） -->
+  <div class="card sess-bar" id="sessionBar">
+    <div class="sb-left">
+      <div class="sb-lab" data-i18n="sessionLabel">当前场次</div>
+      <div class="sb-name"><span id="sbName">—</span><span class="sb-badge hidden" id="sbBadge"></span></div>
+    </div>
+  </div>
+
+  <!-- 选择场次（与玩家端同构：展开式选项列表，取消即原样退回） -->
+  <div class="card hidden" id="cardSession">
+    <h2 data-i18n="sessionPickTitle">选择场次</h2>
+    <div class="sess-pick" id="sessPick"></div>
+    <button class="sess-cancel hidden" id="sessCancel" type="button" data-i18n="sessionCancelSwitch">取消切换</button>
+    <div class="hint" data-i18n="sessionListHint">切换只影响你自己的员工端，不会打扰其他场次。</div>
+  </div>
+
+  <!-- 无可用场次 -->
+  <div class="card hidden" id="noSessionCard">
+    <div class="empty-session">
+      <p data-i18n="sessionEmpty">当前没有进行中的场次，请到管理界面新建一个。</p>
+      <button class="btn" id="btnGoAdmin" data-i18n="adminGoCreate">前往管理界面</button>
+    </div>
+  </div>
+
+  <div id="sessionBody">
+  <div class="status-pill st-input" id="statusPill"><span class="dot"></span><span id="statusText">待录入</span></div>
+
+  <!-- 本轮玩家统计 -->
+  <div class="card">
+    <h2 data-i18n="overview">本轮概况</h2>
+    <div class="stats">
+      <div class="st"><div class="n" id="cntReg">0</div><div class="t" data-i18n="cntReg">已扫码玩家</div></div>
+      <div class="st"><div class="n" id="cntPred">0</div><div class="t" data-i18n="cntPred">已提交预测</div></div>
+    </div>
+  </div>
+
+  <!-- 本轮玩家列表（新老玩家区分） -->
+  <div class="card">
+    <h2 class="row-head"><span data-i18n="playerListTitle">本轮玩家</span><span class="row-head-meta" id="plistCount"></span></h2>
+    <div class="plist" id="playerList"></div>
+  </div>
+
+  <!-- 待录入：录入并确认数字 -->
+  <div class="card" id="cardInput">
+    <h2 data-i18n="inputTitle">录入本轮数字</h2>
+    <div class="numgrid" id="numGrid">
+      <button data-n="0">0</button><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
+      <button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button><button data-n="9">9</button>
+    </div>
+    <div class="sel-preview"><span data-i18n="selPreview">已选数字</span><b id="selShow">—</b></div>
+    <div class="err" id="inputErr"></div>
+    <button class="btn gold" id="confirmBtn" disabled data-i18n="confirmLock">确认并锁定本轮数字</button>
+  </div>
+
+  <!-- 已确认：结果总览 -->
+  <div class="card hidden" id="cardLocked">
+    <div class="locked-banner">
+      <div class="lab" data-i18n="lockedBanner">✓ 本轮数字已确认并锁定</div>
+      <div class="n" id="lockedNum">?</div>
+    </div>
+    <div class="bonus-banner hidden" id="bonusBanner">
+      <span class="bb-star" aria-hidden="true">★</span>
+      <span data-i18n="staffBonusTriggered">本轮命中特殊数字，全员额外奖励已触发</span>
+    </div>
+    <div id="resultTableWrap"></div>
+    <button class="btn warn" id="resetBtn" data-i18n="resetRound">开始新一轮</button>
+  </div>
+  </div><!-- /sessionBody -->
+
+  <div class="conn-lost hidden" id="connLost" data-i18n="connLost">⚠ 连接中断，正在重试…</div>
+  <button class="logout-link" id="logoutBtn" data-i18n="logout">退出登录</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<!-- 自定义确认弹窗 -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal" id="modalBox">
+    <div class="m-ico" id="modalIco"></div>
+    <div class="m-title" id="modalTitle"></div>
+    <div class="m-body" id="modalBody"></div>
+    <div class="m-actions">
+      <button class="m-btn-cancel" id="modalCancel"></button>
+      <button class="m-btn-ok" id="modalOk"></button>
+    </div>
+  </div>
+</div>
+<!-- 切换场次口令（场景级口令，与登录密码、玩家口令互不复用） -->
+<div class="modal-mask" id="switchPwdMask">
+  <div class="modal plain">
+    <div class="m-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+    </div>
+    <div class="m-title" data-i18n="switchPwdTitle">切换场次</div>
+    <div class="m-body" data-i18n="switchPwdBody">请输入「切换场次」口令</div>
+    <input type="password" id="switchPwdInput" autocomplete="off" inputmode="numeric">
+    <div class="err" id="switchPwdErr"></div>
+    <div class="m-actions">
+      <button class="m-btn-cancel" id="switchPwdCancel" type="button" data-i18n="modalCancelText">取消</button>
+      <button class="m-btn-ok" id="switchPwdOk" type="button" data-i18n="switchPwdOk">确认切换</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -2427,12 +2427,32 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
+/**
+ * 页面入口映射：URL → public/ 下的实际文件。
+ * 目录按页面组织（public/index|staff|admin|bigscreen，各自含 index.html/style.css/app.js），
+ * 共享资源放 public/shared（i18n.js、vendor/html5-qrcode.min.js）。
+ * 除 `/staff` 这类短别名外，旧的 `/staff.html` 直链也一并保留，
+ * 避免已印制的二维码、书签和历史文档里的链接失效。
+ */
+const PAGE_ENTRY = {
+  '/': '/index/index.html',
+  '/index/': '/index/index.html',
+  '/index.html': '/index/index.html',
+  '/staff': '/staff/index.html',
+  '/staff/': '/staff/index.html',
+  '/staff.html': '/staff/index.html',
+  '/admin': '/admin/index.html',
+  '/admin/': '/admin/index.html',
+  '/admin.html': '/admin/index.html',
+  '/bigscreen': '/bigscreen/index.html',
+  '/bigscreen/': '/bigscreen/index.html',
+  '/bigscreen.html': '/bigscreen/index.html'
+};
+
 function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
-  if (rel === '/' || rel === '') rel = '/index.html';          // 玩家端入口
-  if (rel === '/staff') rel = '/staff.html';                    // 工作人员端入口（别名）
-  if (rel === '/admin') rel = '/admin.html';                    // 管理界面入口（别名）
-  if (rel === '/bigscreen') rel = '/bigscreen.html';            // 实时大屏入口（别名）
+  if (rel === '') rel = '/';
+  if (PAGE_ENTRY[rel]) rel = PAGE_ENTRY[rel];
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
   fs.readFile(file, (err, buf) => {
