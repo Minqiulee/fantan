@@ -29,8 +29,9 @@
  * 规则模型（奖品 + 特殊数字的版本化）：
  *   - 「奖品四档 + 命中特殊数字全员加奖」合起来是一整套规则，按整体快照存版本
  *     （表 rule_version，append-only，一次保存 = 一版，内容没变不新增版本）
- *   - **场次在创建时锁定版本**（game_session.rule_version），运行中只读自己那一版：
- *     管理员改规则对正在进行的场次零影响，只有之后新建的场次才用新规则
+ *   - **规则按轮绑定**（round.rule_version 存「当前这一轮」所用版本）：
+ *     场次创建时首轮绑定当时最新版；**新开一轮（reset）时重新绑定当前最新版**，
+ *     所以管理员改规则后，同一场次随后新开的轮次用新规则，已在进行的轮次不受影响
  *   - 归档表记下每轮用的版本（round_archive.rule_version → 对账 CSV「规则版本」列），
  *     事后能回答「这一轮按哪一版规则发的奖」
  *   - 规则**不进进程内存**：读场次快照时一条 SQL 连规则一起取，管理端读配置直接查库。
@@ -164,7 +165,7 @@ function cacheMaxEntries() {
  * {
  *   id, name, seq, status: 'open'|'closed', createdAt, closedAt,
  *   round, number, lockedAt,           // 场次内轮次状态（number 非 null 即已锁定）
- *   ruleVersion,                       // 本场次锁定的规则版本（奖品 + 特殊数字，开场即定死）
+ *   ruleVersion,                       // 当前这一轮绑定的规则版本（奖品 + 特殊数字，reset 时重绑）
  *   players: { [pid]: {...} },         // 本场次本轮的玩家
  *   identities: { [pid]: {...} },      // 本场次跨轮身份档案
  *   version                            // 状态版本号（乐观锁凭据 + SSE 事件 id）
@@ -771,8 +772,9 @@ function verifyBind(token) {
  * 四档文案 + 「命中特殊数字 → 全员加奖」合起来是一整套规则，按**整体快照**存版本
  * （表 rule_version，append-only）：
  *   - 一次保存 = 一版；内容没变不新增版本（反复点保存不该刷出一堆空版本）
- *   - 场次在**创建时**锁定版本（game_session.rule_version），运行中只读自己那一版
- *   - 所以更新规则对正在进行的场次零影响，只有之后新建的场次用新规则
+ *   - 规则**按轮绑定**：场次创建时首轮锁定当时最新版，新开一轮（reset）重新绑定最新版，
+ *     已在进行的轮次仍按自己那一版判定
+ *   - 所以更新规则不影响正在进行的轮次，只对之后新建的场次 / 新开的轮次生效
  *   - 对账归档记录每轮用的是哪一版（round_archive.rule_version → CSV「规则版本」列）
  *   - 每档只有 title / desc 两个字段，**每个字段都是三语对象**
  *     （zh-CN 简体 / zh-HK 繁体 / en-US 英文），空串表示「这一种语言没填」，
@@ -938,8 +940,9 @@ function emptyRule() {
 }
 
 /**
- * 取某个场次该用的规则 —— **按场次锁定的版本**，不是「现在最新的版本」。
+ * 取某个场次当前轮该用的规则 —— **按当前轮绑定的版本**，不是「现在最新的版本」。
  * 规则来自 `session.rule`（读场次快照那条 SQL 一起查出来的），因此这里不发查询、也不读缓存。
+ * 新开一轮（reset）时会把 `session.rule` 重绑成最新版，见 /api/reset。
  */
 function ruleOf(session) {
   const r = session && session.rule;
@@ -2074,6 +2077,12 @@ async function handleApi(req, res, url) {
     const expectRound = current.round;
     const expectLockedAt = current.lockedAt;
 
+    // 新开一轮要重新绑定「当前最新规则」：管理员在上一轮进行中改了奖品/特殊数字，
+    // 这一轮就该按最新版发奖，而不是沿用开场时锁定的旧版。
+    // 已在进行的轮次不受影响——它归档时记的是它自己那轮的版本（round_archive.rule_version）。
+    // 直查库（loadLatestRule），不缓存：另一台实例刚存的版本必须立刻拿得到。
+    const latest = await loadLatestRule();
+
     const out = await store.mutate(sidReset, (s) => {
       if (s.status !== 'open') {
         return { abort: { status: 409, body: { ok: false, code: 'session_closed' } } };
@@ -2087,7 +2096,11 @@ async function handleApi(req, res, url) {
       s.lockedAt = null;
       s.lockedBy = '';
       s.players = {};
-      return { result: { round: s.round } };
+      // 重绑规则：本轮（round 已 +1）改用最新版。rule 字段与快照 SQL JOIN 出来的形态一致
+      // （原始 prizes/bonus，ruleOf 会再做归一化），ruleVersion 写回 round.rule_version（当前轮权威来源）。
+      s.ruleVersion = latest.version;
+      s.rule = { version: latest.version, prizes: latest.prizes, bonus: latest.bonus };
+      return { result: { round: s.round, ruleVersion: latest.version } };
     });
 
     if (out.notFound) return json(res, 404, { ok: false, code: 'session_not_found' });

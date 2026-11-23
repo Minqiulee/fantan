@@ -359,8 +359,9 @@
       var rows = s.players.map(function (p) {
         // 单双命中：基于开奖数字奇偶性判定，与语言无关（「单/單」「双/雙」字形差异不再影响结果）
         var pOE = (p.oddEven === '单') === (n % 2 === 1), pN = p.number === n;
+        var pOEText = p.oddEven === '单' ? t('odd') : (p.oddEven === '双' ? t('even') : (p.oddEven || '—'));
         return '<tr><td>' + esc(p.maskedId || p.id) + '</td>' +
-          '<td>' + esc(p.oddEven || '—') + '</td>' +
+          '<td>' + esc(pOEText) + '</td>' +
           '<td>' + esc(p.number != null ? p.number : '—') + '</td>' +
           '<td class="' + (pOE ? 'hit-txt' : 'miss-txt') + '">' + (pOE ? t('hit') : t('miss')) + '</td>' +
           '<td class="' + (pN ? 'hit-txt' : 'miss-txt') + '">' + (pN ? t('hit') : t('miss')) + '</td></tr>';

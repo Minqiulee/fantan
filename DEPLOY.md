@@ -40,7 +40,7 @@ Postgresql：
 
 > 应用**不做结构迁移**：不回填历史行、不改主键、不改既有列类型。表结构以 `db.js` 的定义为唯一基准，启动只创建缺失的表；库结构与代码不一致时不会自动修正（缺列会在第一条读写上报错），需按当前 DDL 手工对齐或重建库。
 >
-> 例外是**新增列**：`game_session.rule_version`、`round_archive.rule_version` 用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 幂等补齐（老库升级靠这一句拿到新列，不需要手工 DDL）。补列不写数据——老场次由启动流程挂到最早一版规则，老归档行保持 `null`。
+> 例外是**新增列**：`round.rule_version`、`round_archive.rule_version` 用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 幂等补齐（老库升级靠这一句拿到新列，不需要手工 DDL）。补列不写数据——老场次由启动流程把 `round.rule_version` 挂到最早一版规则，老归档行保持 `null`。
 
 ## 多实例部署
 

@@ -4,8 +4,8 @@
  * 要钉死的几件事：
  *   1. 规则按**整体快照**存版本（rule_version，append-only）：一次保存 = 一版，
  *      内容没变不新增版本；历史版本不可改写（UPDATE / DELETE / TRUNCATE 被触发器拒绝）；
- *   2. 场次在**创建时锁定**版本（game_session.rule_version）：改规则不影响进行中的场次，
- *      且同一场次跨轮次始终用同一版（不是每轮重读最新版）；
+ *   2. 场次创建时首轮锁定当时最新版（round.rule_version）；**新开一轮（reset）重新绑定最新版**，
+ *      改规则不影响进行中的轮次，只对之后新建的场次 / 新开的轮次生效；
  *   3. 对账归档记下每轮所用版本（round_archive.rule_version → CSV「规则版本」列），
  *      事后能回答「这一轮按哪一版规则发的奖」；
  *   4. 升级路径：老的 app_config 配置（就地覆盖、无历史）在首次启动时落成 v1，
@@ -113,10 +113,10 @@ test('升级路径：老的 app_config 配置落成 v1，历史场次挂到 v1',
 
   // 启动时建出来的第一个场次，以及它读到的规则，都是 v1
   const rows = await withDb(async (c) => {
-    const r = await c.query('SELECT session_id, rule_version FROM game_session');
+    const r = await c.query('SELECT session_id, rule_version FROM round');
     return r.rows;
   });
-  assert.deepEqual(rows.map((x) => x.rule_version), [1], '历史场次挂到 v1');
+  assert.deepEqual(rows.map((x) => x.rule_version), [1], '历史场次（首轮）挂到 v1');
 
   const s = await playerState();
   assert.equal(s.body.ruleVersion, 1);
@@ -193,23 +193,35 @@ test('四档与特殊数字是同一套规则：改一块不会清空另一块',
   assert.equal(p3.body.prizes.both.title['en-US'], 'Changed again');
 });
 
-test('对账 CSV 的「规则版本」列记录每轮所用的版本（跨场次、跨轮次都不串）', async () => {
-  // 当前场次（main）锁的是 v1；连开两轮都应该是 v1
+test('新开一轮重绑最新规则：同一场次跨轮版本可辨，进行中的轮不受影响', async () => {
+  // 当前场次（main）首轮锁的是 v1（空库启动时建的场次）；此时库里已经有后续若干版。
   const sc = await scan(api, sid, ut, 'RULE-A');
   assert.equal(sc.body.ok, true, '登记失败：' + JSON.stringify(sc.body));
   await predict(api, sid, ut, sc.body.pid || 'RULE-A', '单', 5);
 
+  // 第一轮仍按 v1 判定：v1 的特殊数字是 4，开 5 不该触发
   const c1 = await confirm(api, adminToken, sid, 5);
   assert.equal(c1.status, 200, '锁定失败：' + JSON.stringify(c1.body));
   assert.equal(c1.body.bonusTriggered, false, 'v1 的特殊数字是 4，开 5 不该触发');
 
+  // 管理员在上一轮进行中改了规则：特殊数字改成 6（产生新版本）
+  const changed = await api.post('/api/bonus-prize', { token: adminToken, bonus: { number: 6 } });
+  assert.equal(changed.status, 200, '改规则失败：' + JSON.stringify(changed.body));
+  const newVersion = changed.body.ruleVersion;
+  assert.ok(newVersion > 1, '改规则应产生高于 v1 的新版本');
+
+  // 新开一轮：必须重绑最新版，而不是沿用开场锁定的 v1
   const rs = await resetRound(api, adminToken, sid);
   assert.equal(rs.status, 200);
-  const c2 = await confirm(api, adminToken, sid, 4);
+  const c2 = await confirm(api, adminToken, sid, 6);
   assert.equal(c2.status, 200);
-  assert.equal(c2.body.bonusTriggered, true, 'v1 的特殊数字 4 命中，按锁定的 v1 判定');
+  assert.equal(c2.body.bonusTriggered, true, '新一轮按最新版判定：特殊数字 6 命中');
 
-  // 新建场次：锁定当前最新版
+  // 玩家端状态：当前轮规则版本应已是新版本
+  const s2 = await playerState();
+  assert.equal(s2.body.ruleVersion, newVersion, 'reset 后场次当前轮改用最新版');
+
+  // 新建场次：锁定当前最新版（与新一轮一致）
   const latest = await api.get('/api/bonus-prize?token=' + encodeURIComponent(adminToken));
   const created = await api.post('/api/session-create', { token: adminToken, name: '新版场次' });
   assert.equal(created.status, 200, '建场失败：' + JSON.stringify(created.body));
@@ -223,14 +235,14 @@ test('对账 CSV 的「规则版本」列记录每轮所用的版本（跨场次
   const c3 = await confirm(api, adminToken, sidNew, 2);
   assert.equal(c3.status, 200, '锁定失败：' + JSON.stringify(c3.body));
 
-  // 轮次口径：每轮一行，规则版本逐行可辨
+  // 轮次口径：每轮一行，规则版本逐行可辨 —— main 的两轮应是 v1 与 newVersion（不同）
   const roundTable = toTable((await exportCsv(api, adminToken, { level: 'round' })).text);
   const bySession = new Map();
   for (const r of roundTable.records) {
     if (!bySession.has(r['场次ID'])) bySession.set(r['场次ID'], []);
     bySession.get(r['场次ID']).push(r['规则版本']);
   }
-  assert.deepEqual(bySession.get(sid), ['1', '1'], 'main 的两轮都用 v1');
+  assert.deepEqual(bySession.get(sid), ['1', String(newVersion)], 'main 首轮用 v1，新一轮用最新版');
   assert.deepEqual(bySession.get(sidNew), [String(latest.body.ruleVersion)], '新场次用它自己锁定的版本');
 
   // 明细口径同一列也要有值，且与轮次一致
@@ -251,6 +263,22 @@ test('对账 CSV 的「规则版本」列记录每轮所用的版本（跨场次
   });
   assert.equal(archived.length, 3, '两轮 + 一轮');
   assert.ok(archived.every((x) => x.rule_version != null), '新归档必须带规则版本');
+
+  // 库里直接验证：main 场次两轮的归档版本分别是 v1 与 newVersion（证明「按轮记录、互不串」）
+  const mainRows = archived.filter((x) => x.session_id === sid);
+  assert.deepEqual(
+    mainRows.map((x) => x.rule_version),
+    [1, newVersion],
+    'main 两轮归档的版本应分别是 v1 与最新版'
+  );
+
+  // round 表本身也有 rule_version 列，且 reset 后已重绑为最新版（当前轮的权威来源）
+  const roundRow = await withDb(async (c) => {
+    const r = await c.query('SELECT session_id, round, rule_version FROM round WHERE session_id = $1', [sid]);
+    return r.rows[0];
+  });
+  assert.equal(roundRow.round, 2, 'main 当前应处于第 2 轮');
+  assert.equal(roundRow.rule_version, newVersion, 'round.rule_version 应已重绑为最新版');
 });
 
 test('规则直查库：另一台实例写入的新版本（没有任何通知）本实例立刻可见', async () => {

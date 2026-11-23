@@ -304,23 +304,23 @@ async function initDb() {
       status     TEXT NOT NULL DEFAULT 'open', -- open | closed
       seq        INTEGER NOT NULL DEFAULT 1,   -- 显示顺序
       created_at BIGINT NOT NULL,           -- 创建时间戳（毫秒）
-      closed_at  BIGINT,                    -- 关闭时间戳（毫秒，null 表示未关闭）
-      rule_version INTEGER                  -- 本场次锁定的规则版本（建场次时定死；null = 版本化之前建的场次）
+      closed_at  BIGINT                     -- 关闭时间戳（毫秒，null 表示未关闭）
     );
   `);
-  // 已有库补列：规则版本是后加的，老库里没有这一列
-  await p.query('ALTER TABLE game_session ADD COLUMN IF NOT EXISTS rule_version INTEGER;');
 
-  // 轮次表：一场一行
+  // 轮次表：一场一行（当前轮）
   await p.query(`
     CREATE TABLE IF NOT EXISTS round (
       session_id TEXT PRIMARY KEY,          -- 所属场次
       round      INTEGER NOT NULL,          -- 场次内当前轮次序号
       number     INTEGER,                   -- 开奖数字（null 表示未锁定）
       locked_at  BIGINT,                    -- 锁定时间戳（毫秒）
-      locked_by  TEXT NOT NULL DEFAULT ''   -- 锁定人账号（null/空 = 未知/历史数据）
+      locked_by  TEXT NOT NULL DEFAULT '',  -- 锁定人账号（null/空 = 未知/历史数据）
+      rule_version INTEGER                  -- 本轮所用规则版本（reset 时重绑最新版；null = 版本化之前的历史行）
     );
   `);
+  // 已有库补列：规则版本是后加的，老库里没有这一列
+  await p.query('ALTER TABLE round ADD COLUMN IF NOT EXISTS rule_version INTEGER;');
 
   // 玩家表：一场内一个玩家一行
   //   id        = 会员号的盲索引（ref），不是会员号本身
@@ -368,8 +368,9 @@ async function initDb() {
   `);
 
   // 规则版本：**一次保存 = 一版**，四档奖品与特殊数字作为整体快照存下来，永不改写。
-  // 场次在创建时锁定其中一版（game_session.rule_version），因此改规则不会影响正在进行的场次，
-  // 只有「改完之后新建的场次」才用新规则；对账表记下每轮用的是哪一版。
+  // 规则按轮绑定：场次创建时首轮锁定当时最新版，新开一轮（reset）重新绑定最新版，
+  // 因此改规则不影响正在进行的轮次，只对之后新建的场次 / 新开的轮次生效；
+  // 对账表记下每轮用的是哪一版（round_archive.rule_version）。
   //   - version     人工可读的递增号（1,2,3…），不是在用的版本指针；在用版本 = max(version)
   //   - config_hash 规范化 JSON 的 sha256：内容没变就不新增版本（避免无意义地刷版本号）
   await p.query(`
@@ -525,8 +526,8 @@ function rowToSession(r) {
   return s;
 }
 
-/* 规则跟着快照一起查：`COALESCE(gs.rule_version, max(version))` 让「版本化之前建的场次」
- * 读到最新一版（启动时 pinSessionsWithoutRule 会把它写进列里，这里只是兜底）。
+/* 规则跟着快照一起查：规则版本取 `round.rule_version`（当前这一轮绑定的版本，reset 时重绑），
+ * 兜底 `max(version)`（版本化之前建、round 列为 null 的历史行，读到最新一版）。
  * 这样规则永远是「这一次读库」的结果，不需要进程内缓存，也没有 TTL 可言。 */
 const SNAPSHOT_SQL = `
   SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
@@ -538,7 +539,7 @@ const SNAPSHOT_SQL = `
     LEFT JOIN session_state st ON st.session_id = gs.session_id
     LEFT JOIN round r ON r.session_id = gs.session_id
     LEFT JOIN rule_version rv
-           ON rv.version = COALESCE(gs.rule_version, (SELECT max(version) FROM rule_version))
+           ON rv.version = COALESCE(r.rule_version, (SELECT max(version) FROM rule_version))
     LEFT JOIN LATERAL (
       SELECT json_agg(json_build_object(
                'id', p.id, 'enc', p.member_enc, 'odd_even', p.odd_even, 'number', p.number,
@@ -589,7 +590,7 @@ async function listSessionSummaries() {
       LEFT JOIN session_state st ON st.session_id = gs.session_id
       LEFT JOIN round r ON r.session_id = gs.session_id
       LEFT JOIN rule_version rv
-             ON rv.version = COALESCE(gs.rule_version, (SELECT max(version) FROM rule_version))
+             ON rv.version = COALESCE(r.rule_version, (SELECT max(version) FROM rule_version))
      ORDER BY gs.seq ASC, gs.created_at ASC
   `);
   return r.rows.map((x) => ({
@@ -786,11 +787,13 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
     );
 
     await client.query(
-      `INSERT INTO round (session_id, round, number, locked_at, locked_by) VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO round (session_id, round, number, locked_at, locked_by, rule_version)
+       VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (session_id) DO UPDATE SET
          round=EXCLUDED.round, number=EXCLUDED.number, locked_at=EXCLUDED.locked_at,
-         locked_by=EXCLUDED.locked_by`,
-      [session.id, session.round, session.number, session.lockedAt, session.lockedBy || '']
+         locked_by=EXCLUDED.locked_by, rule_version=EXCLUDED.rule_version`,
+      [session.id, session.round, session.number, session.lockedAt, session.lockedBy || '',
+        session.ruleVersion != null ? Number(session.ruleVersion) : null]
     );
 
     const players = Object.values(session.players).map((pl) => ({
@@ -880,10 +883,11 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
  * 在全局 advisory lock 内「数进行中场次 → 分配序号 → 插入」，因此两台实例同时点「新建」
  * 也不会突破上限、不会撞序号。名称留空时按序号自动命名（与员工端默认名一致）。
  *
- * **规则版本在这一步锁定**：取当时的最新版本写进 game_session.rule_version。
+ * **规则版本在这一步锁定（首轮）**：取当时的最新版本写进 round.rule_version。
  * 由 SQL 里的子查询算 max(version) 而不是由调用方传值——多实例下调用方手里的
  * 「最新版」可能是几毫秒前的旧值，让数据库自己算才是唯一口径。
- * 新规则只对之后新建的场次生效，正在进行的场次不受影响，靠的就是这一句。
+ * 之后新开一轮（reset）会重新绑定最新版（见 server.js /api/reset），
+ * 所以新规则只对之后新建的场次 / 新开的轮次生效，正在进行的轮次不受影响。
  *
  * 返回 { ok:true, session } / { ok:false, code:'session_limit', open } / { ok:false, error }
  */
@@ -907,8 +911,8 @@ async function createSessionRow({ id, name, maxOpen }) {
     const finalName = name || '第 ' + seq + ' 场';
 
     await client.query(
-      `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at, rule_version)
-       VALUES ($1,$2,'open',$3,$4,NULL, (SELECT max(version) FROM rule_version))`,
+      `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
+       VALUES ($1,$2,'open',$3,$4,NULL)`,
       [id, finalName, seq, now]
     );
     await client.query(
@@ -916,7 +920,8 @@ async function createSessionRow({ id, name, maxOpen }) {
       [id, now]
     );
     await client.query(
-      'INSERT INTO round (session_id, round, number, locked_at) VALUES ($1, 1, NULL, NULL)',
+      `INSERT INTO round (session_id, round, number, locked_at, rule_version)
+       VALUES ($1, 1, NULL, NULL, (SELECT max(version) FROM rule_version))`,
       [id]
     );
 
@@ -961,9 +966,9 @@ async function archiveSnapshot(session) {
  * 奖品四档 + 全员额外奖励（特殊数字）合起来才算一套「规则」，因此按整体快照存版本：
  * 改任意一项 → 产生新的一版，旧版本原样留着。
  *
- * 生效时机由**场次**决定：建场次时把当时的最新版本写进 game_session.rule_version，
- * 之后这个场次一直读自己那一版。所以「保存新规则」不影响正在进行的场次，
- * 只有保存之后新建的场次才用新规则；对账表也记下每轮用的是哪一版。
+ * 生效时机由**轮次**决定：建场次时把当时的最新版本写进 round.rule_version（首轮），
+ * 新开一轮（reset）时重新绑定最新版。所以「保存新规则」不影响正在进行的轮次，
+ * 只对保存之后新建的场次 / 新开的轮次生效；对账表也记下每轮用的是哪一版。
  *
  * 为什么不在服务里维护「当前版本指针」：多实例下指针对不上就是对账对不上。
  * 在用版本 = `max(version)`，由数据库算，天然只有一份口径。
@@ -1075,13 +1080,14 @@ async function listRuleVersions() {
 }
 
 /**
- * 把「没有规则版本」的场次挂到最早一版上（只在升级瞬间有意义）。
+ * 把「没有规则版本」的轮次挂到最早一版上（只在升级瞬间有意义）。
  * 版本化之前建的场次用的是当时那份就地覆盖的配置，而那正是升级时落成 v1 的那份，
  * 所以挂到 min(version) 是对历史最接近的还原。已有的值不动，可反复执行。
+ * 规则版本只存在 round 表（game_session 不再有这一列）。
  */
 async function pinSessionsWithoutRule() {
   const r = await getPool().query(`
-    UPDATE game_session
+    UPDATE round
        SET rule_version = (SELECT min(version) FROM rule_version)
      WHERE rule_version IS NULL
        AND EXISTS (SELECT 1 FROM rule_version)
