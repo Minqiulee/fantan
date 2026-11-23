@@ -7,6 +7,8 @@
 <title>羊多一点 · 管理</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='11' cy='11' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='21' r='3' fill='%23fff'/%3E%3C/svg%3E">
 <script src="/shared/i18n.js"></script>
+<!-- 席位默认值与上下界由服务端从 lib/seats.js 生成，前端不再自己写 12 / 64 -->
+<script src="/shared/seat-config.js"></script>
 <link rel="stylesheet" href="/admin/style.css">
 </head>
 <body>
@@ -59,6 +61,7 @@
         <div class="sb-name"><span id="sbName">—</span><span class="sb-badge hidden" id="sbBadge"></span></div>
         <div class="sb-meta" id="sbMeta"></div>
       </div>
+      <button class="sess-btn" id="entrySeats" type="button" data-i18n="sessionSeatsBtn">席位设置</button>
     </div>
 
     <!-- 管理入口（对账 / 大屏 / 场次 / 账号 / 日志 / 奖品） -->

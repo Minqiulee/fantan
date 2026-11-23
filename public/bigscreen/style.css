@@ -166,6 +166,10 @@
     flex:none; font-size: clamp(9px,1.1vh,12px); font-weight:700; padding:2px 7px; border-radius:99px;
     color:var(--gold); background:rgba(255,212,94,.16); border:1px solid rgba(255,212,94,.35);
   }
+  .pc-seat {
+    flex:none; font-size: clamp(10px,1.2vh,14px); font-weight:800; padding:2px 7px; border-radius:8px;
+    color:var(--muted); background:rgba(0,0,0,.28); border:1px solid var(--card-border);
+  }
   /* ---------- 选择结果：沿用玩家端同一套 .numgrid 语汇 ----------
      卡片不再写「单 / 7」这类文字，而是把玩家看到的整块选项原样搬过来：
      上面是单双两枚（对应玩家端 .pair .opt），下面是 0–9 十格（对应玩家端 #numGrid）。

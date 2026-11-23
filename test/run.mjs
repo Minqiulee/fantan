@@ -29,7 +29,8 @@ const FILES = [
   'test/rule-version.test.mjs',
   'test/sse-reconnect.test.mjs',
   'test/identity.test.mjs',
-  'test/presence.test.mjs'
+  'test/presence.test.mjs',
+  'test/seat.test.mjs'
 ];
 
 let url = process.env.TEST_DATABASE_URL || '';

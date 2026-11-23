@@ -10,6 +10,19 @@
   var STAFF_TOKEN_KEY = 'oe_staff_token';
   var MAX_OPEN_SESSIONS = 4;
 
+  /* 席位默认人数与上下界：由 /shared/seat-config.js 注入（服务端 lib/seats.js 生成），
+     页面里不再写死 12 / 1 / 64。脚本没加载时 min/max 为 null，只剩整数校验，
+     真正越界仍由服务端 invalid_seat_count 拒绝——前端校验只是少跑一次网络。 */
+  var SEAT_CFG = window.SEAT_CONFIG || { defaultCount: null, min: null, max: null };
+  var SEAT_DEFAULT_INPUT = SEAT_CFG.defaultCount != null ? String(SEAT_CFG.defaultCount) : '';
+
+  function isSeatCountInput(n) {
+    if (!Number.isInteger(n)) return false;
+    if (SEAT_CFG.min != null && n < SEAT_CFG.min) return false;
+    if (SEAT_CFG.max != null && n > SEAT_CFG.max) return false;
+    return n >= 1;
+  }
+
   var token = '';
   var sid = '';
   var sessions = [];
@@ -86,7 +99,7 @@
     var inp = $('modalInput');
     inp.classList.toggle('hidden', !opts.input);
     if (opts.input) {
-      inp.value = '';
+      inp.value = opts.value != null ? String(opts.value) : '';
       inp.type = opts.password ? 'password' : 'text';   // 重置密码时不回显明文
       inp.setAttribute('placeholder', opts.placeholder || '');
     }
@@ -261,7 +274,8 @@
     $('sbMeta').textContent = cur
       ? t('roundInfo', { round: cur.round }) + ' · ' +
         (cur.locked ? t('roundLocked') : t('roundOngoing')) + ' · ' +
-        t('sessionPlayersCount', { n: cur.players })
+        t('sessionPlayersCount', { n: cur.players }) + ' · ' +
+        t('sessionSeatsMeta', { used: cur.seatOccupied, total: cur.seatCount })
       : t('adminNeedSession');
 
     $('adminRound').textContent = cur
@@ -272,6 +286,7 @@
     $('entryBoard').disabled = !openCur;                                    // 大屏跟着当前场次
     $('entryClose').disabled = !openCur;                                    // 只能关当前场次
     $('entryCreate').disabled = openSessions().length >= MAX_OPEN_SESSIONS;  // 场次上限
+    $('entrySeats').disabled = !openCur;                                     // 只能调进行中场次
   }
 
   /* ---------- 各入口 ---------- */
@@ -352,7 +367,7 @@
       '&sid=' + encodeURIComponent(cur.id), '_blank', 'noopener');
   });
 
-  /* ③ 新建场次 */
+  /* ③ 新建场次：先起名，再定参与人数（席位总数），两者都可之后再改 */
   $('entryCreate').addEventListener('click', function () {
     confirmModal({
       type: 'plain',
@@ -363,12 +378,60 @@
       okText: t('sessionCreateOk'),
       cancelText: t('modalCancelText')
     }).then(function (name) {
-      if (name === false) return;
-      return postJson('/api/session-create', { token: token, name: name }).then(function (d) {
+      if (name === false) return false;
+      return confirmModal({
+        type: 'plain',
+        title: t('seatConfigTitle'),
+        body: t('adminSeatCreateBody'),
+        input: true,
+        value: SEAT_DEFAULT_INPUT,
+        placeholder: t('seatConfigPlaceholder'),
+        okText: t('sessionCreateOk'),
+        cancelText: t('modalCancelText')
+      }).then(function (seats) {
+        if (seats === false) return false;
+        return { name: name, seats: seats };
+      });
+    }).then(function (form) {
+      if (!form) return;
+      var n = Number(form.seats);
+      if (!isSeatCountInput(n)) {
+        toast(t('seatConfigInvalid'), 'err');
+        return;
+      }
+      return postJson('/api/session-create', { token: token, name: form.name, seats: n }).then(function (d) {
         if (d && d.ok) {
           sessions = d.sessions || [];
           sid = d.sid || '';
           toast(t('toastSessionCreated', { name: (d.session && d.session.name) || '' }), 'ok');
+          render();
+        } else if (d && d.code === 'unauthorized') { forceLogout(); }
+        else { toast(window.I18N.errCode(d && d.code, d) || t('errOpFailed'), 'err'); }
+      });
+    }).catch(function () { toast(t('errNetRetry'), 'err'); });
+  });
+
+  /* ③-2 席位设置：调整当前场次参与人数（不能少于已占用的最大席位号） */
+  $('entrySeats').addEventListener('click', function () {
+    var cur = currentSession();
+    if (!cur || cur.status !== 'open') { toast(t('adminNeedSession'), 'err'); return; }
+    confirmModal({
+      type: 'plain',
+      title: t('seatConfigTitle'),
+      body: t('seatConfigBody', { seatCount: cur.seatCount, occupied: cur.seatOccupied }),
+      input: true,
+      value: String(cur.seatCount),
+      placeholder: t('seatConfigPlaceholder'),
+      okText: t('seatConfigOk'),
+      cancelText: t('modalCancelText')
+    }).then(function (val) {
+      if (val === false) return;
+      var n = Number(val);
+      if (!isSeatCountInput(n)) { toast(t('seatConfigInvalid'), 'err'); return; }
+      return postJson('/api/session-seats', { token: token, sid: cur.id, seats: n }).then(function (d) {
+        if (d && d.ok) {
+          sessions = d.sessions || sessions;
+          toast(t('seatConfigSaved', { n: d.seatCount }), 'ok');
           render();
         } else if (d && d.code === 'unauthorized') { forceLogout(); }
         else { toast(window.I18N.errCode(d && d.code, d) || t('errOpFailed'), 'err'); }

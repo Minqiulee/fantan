@@ -192,6 +192,25 @@
   .numgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
   .numgrid button { padding:18px 0; font-size:24px; }
 
+  /* 席位选择（4 列数字块；占用态置灰不可点） */
+  .seat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .seat-opt {
+    padding:16px 0; font-size:20px; font-weight:800; border-radius:14px;
+    background:linear-gradient(180deg, rgba(140,24,32,.85), rgba(90,10,16,.9));
+    color:var(--text); border:2px solid var(--card-border); cursor:pointer;
+    transition:all .12s ease; box-shadow:0 4px 12px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,210,120,.15);
+  }
+  .seat-opt:active { transform:scale(.97); }
+  .seat-opt.taken {
+    opacity:.38; cursor:not-allowed; border-style:dashed; box-shadow:none;
+    background:rgba(40,6,10,.55); color:var(--muted);
+  }
+  .seat-opt.mine {
+    background:linear-gradient(180deg,#ffd76b 0%,#f0a71c 55%,#d9860c 100%);
+    border-color:#fff0c2; color:#3a1500;
+  }
+  .seat-opt small { display:block; font-size:11px; font-weight:600; margin-top:3px; letter-spacing:1px; }
+
   .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:18px; }
 
   /* 等待开奖 */

@@ -141,6 +141,9 @@
     } else {
       badge.classList.add('hidden');
     }
+    $('sbMeta').textContent = cur
+      ? t('sessionSeatsMeta', { used: cur.seatOccupied, total: cur.seatCount })
+      : '';
     renderLayout();
   }
 
@@ -388,7 +391,7 @@
       var cls = p.isVeteran ? 'is-vet' : 'is-new';
       var tag = p.isVeteran ? t('tagVet') : t('tagNew');
       return '<div class="p ' + cls + '">' +
-        '<span class="nm">' + esc(p.maskedId || p.id) + '</span>' +
+        '<span class="nm">' + (p.seatNo ? '#' + p.seatNo + ' ' : '') + esc(p.maskedId || p.id) + '</span>' +
         '<span class="tag-n">' + tag + '</span>' +
         '</div>';
     }).join('');

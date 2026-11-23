@@ -61,6 +61,18 @@ const PLAYER_BIND_TTL = 12 * 60 * 60 * 1000; // 玩家场次绑定有效期：12
 const UNLOCK_MAX_FAILS = 5;              // 连续口令错误次数上限
 const UNLOCK_LOCK_MS = 30 * 1000;        // 超限后锁定时长
 
+/* 席位（seat）：场次的参与人数 = 席位总数，一个设备占一个席位。
+ *   - 设备首次加入场次必须选一个具体席位，绑定关系跟场次走、跨轮次保留
+ *   - 席位记录本身（1…seatCount）由场次创建时物化，扩缩容只增删空席位
+ *   - 占用校验与人数上限都在 store.mutate 的同一把版本锁内完成，
+ *     所以「两人同时抢同一个席位」只会有一个成功，不存在超卖
+ *   - 默认值与上下界只在 lib/seats.js 定义一次：db 层兜底、前端弹窗预填
+ *     （见 /shared/seat-config.js）都引用同一份，避免默认值漂移 */
+const {
+  DEFAULT_SEAT_COUNT, MIN_SEAT_COUNT, MAX_SEAT_COUNT, parseSeatCount
+} = require('./lib/seats');
+const SEAT_DEVICE_RE = /^[A-Za-z0-9_-]{8,64}$/; // 设备标识：浏览器本地随机串
+
 /* 可猜数字范围：0–9，含两端。0 既是合法开奖数字，也在「双」的判定里（0 % 2 === 0）。
  * 所有入口（predict / pick / submit / confirm / bonus-prize）都走 parseNumber0to9()，
  * 不用 falsy 判断——否则 0 会被当成「没填」。 */
@@ -188,7 +200,9 @@ function publicSessionList(list) {
     id: s.id,
     name: s.name,
     round: s.round,
-    locked: s.number != null
+    locked: s.number != null,
+    seatCount: s.seatCount,
+    seatOccupied: s.seatOccupied
   }));
 }
 
@@ -202,6 +216,8 @@ function staffSessionList(list) {
     round: s.round,
     locked: s.number != null,
     players: s.playerCount,
+    seatCount: s.seatCount,
+    seatOccupied: s.seatOccupied,
     ruleVersion: s.ruleVersion,
     createdAt: s.createdAt,
     closedAt: s.closedAt
@@ -498,6 +514,11 @@ function buildStatePayload(session, pid, view) {
     round: session.round,
     locked: session.number != null,
     number: session.number != null ? session.number : undefined,
+    // 席位：seatCount 是配置的容纳人数，seats 是占用情况（选座界面依赖它实时刷新），
+    // mySeat 只对本机已登记玩家有意义（未登记 / 新一轮开局前为 null）
+    seatCount: session.seatCount,
+    seats: seatList(session),
+    mySeat: me && me.seatNo != null ? me.seatNo : null,
     ruleVersion: rule.version,
     prizes: rule.prizes,
     // 额外奖励：触发结果不落库，由「本轮开奖数字是否命中该版本的特殊数字」现场重算
@@ -760,6 +781,56 @@ function verifyBind(token) {
   const b = Buffer.from(expect, 'utf8');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   return { sid, exp };
+}
+
+/**
+ * 席位绑定凭据就是设备标识本身：浏览器首次生成一段随机串存在本地，加入场次时写到
+ * session_seat.device_id。服务端只认「这一行绑的是不是这个设备」，不额外签发令牌 ——
+ * 席位是现场物理座位，绑定范围仅限单场，没必要再引入一层可过期的签名（反而多一个
+ * 「令牌过期但席位还在」的状态要对齐）。
+ */
+
+/* ---------------- 席位：快照上的纯函数工具 ---------------- */
+
+/** 设备标识合法化：去空白后必须符合固定字符集；非法返回空串。 */
+function normalizeDeviceId(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  return SEAT_DEVICE_RE.test(v) ? v : '';
+}
+
+/** 解析席位号：只接受 1…MAX_SEAT_COUNT 的整数（字符串数字也接受）。 */
+function parseSeatNo(v) {
+  return parseSeatCount(v);
+}
+
+/** 设备在当前场次已占的席位；没有返回 null。设备与席位是一对一。 */
+function seatOfDevice(session, deviceId) {
+  if (!deviceId) return null;
+  for (const seat of Object.values(session.seats || {})) {
+    if (seat.deviceId && seat.deviceId === deviceId) return seat;
+  }
+  return null;
+}
+
+/** 已占用席位数（= 已加入的设备数，不是本轮登记人数）。 */
+function occupiedSeatCount(session) {
+  return Object.values(session.seats || {}).filter((s) => !!s.deviceId).length;
+}
+
+/** 已占用席位里的最大席位号（缩容的下界：不能把有人坐的席位删掉）。 */
+function maxOccupiedSeatNo(session) {
+  let max = 0;
+  for (const seat of Object.values(session.seats || {})) {
+    if (seat.deviceId && seat.no > max) max = seat.no;
+  }
+  return max;
+}
+
+/** 玩家端可见的席位占用列表：只暴露「几号、有没有人」，不含会员身份。 */
+function seatList(session) {
+  return Object.values(session.seats || {})
+    .sort((a, b) => a.no - b.no)
+    .map((s) => ({ no: s.no, occupied: !!s.deviceId }));
 }
 
 /* ---------------- 规则版本（奖品四档 + 特殊数字） ----------------
@@ -1191,6 +1262,7 @@ function publicPlayers(session) {
     const item = {
       id: p.id,
       maskedId: p.maskedId,
+      seatNo: p.seatNo,
       submitted: p.oddEven != null,
       status: choiceOf(session, p.id),
       draft: !!(drafts && drafts.has(p.id)) && p.oddEven == null,
@@ -1230,6 +1302,7 @@ function bigscreenPlayers(session) {
     return {
       id: p.id,
       maskedId: p.maskedId,
+      seatNo: p.seatNo,
       status: submitted ? 'submitted' : (d ? 'draft' : 'none'),
       oe: submitted ? p.oddEven : (d ? d.oe : null),
       num: submitted ? p.number : (d ? d.num : null),
@@ -1513,11 +1586,24 @@ async function handleApi(req, res, url) {
     if (name === false) {
       return json(res, 400, { ok: false, code: 'session_name_too_long', maxLen: MAX_SESSION_NAME });
     }
+    // 参与人数（= 席位总数）：不传按默认 12；传了就必须是 1…64 的整数，不做静默回退
+    let seatCount = DEFAULT_SEAT_COUNT;
+    if (body.seats !== undefined && body.seats !== null && body.seats !== '') {
+      const parsed = parseSeatNo(body.seats);
+      if (parsed === null) {
+        return json(res, 400, {
+          ok: false, code: 'invalid_seat_count',
+          min: MIN_SEAT_COUNT, max: MAX_SEAT_COUNT
+        });
+      }
+      seatCount = parsed;
+    }
 
     const created = await store.create({
       id: newSessionId(),
       name,
       maxOpen: MAX_SESSIONS,
+      seatCount,
       makeId: () => newSessionId()
     });
     if (!created.ok) {
@@ -1538,8 +1624,80 @@ async function handleApi(req, res, url) {
       sid: session.id,
       session: {
         id: session.id, name: session.name, round: session.round, status: session.status,
-        ruleVersion: session.ruleVersion
+        seatCount: session.seatCount, ruleVersion: session.ruleVersion
       },
+      sessions: staffSessionList(await store.list())
+    });
+  }
+
+  /* 调整场次参与人数（席位配置）。员工 / 管理员都可用。
+   * 规则（与加入、占用校验共用同一把版本锁，因此不存在「校验通过但写进去超卖」）：
+   *   - 新人数必须是 1…MAX_SEAT_COUNT 的整数
+   *   - 不能小于「已占用席位里的最大席位号」：有人坐的席位不能凭空消失（要缩容先让人离开）
+   *   - 扩容补空席位；缩容只删空席位，已绑定设备的席位号保持稳定、不重排
+   *   - 已登记玩家的 seatNo 不受影响（缩容 bounds 已经覆盖了所有有人的席位） */
+  if (req.method === 'POST' && url.pathname === '/api/session-seats') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+    const staff = await getStaffSession(body.token);
+    if (!staff) return json(res, 401, { ok: false, code: 'unauthorized' });
+
+    const sidSeat = String(body.sid || '') || staff.sessionId;
+    const next = parseSeatNo(body.seats);
+    if (next === null) {
+      return json(res, 400, {
+        ok: false, code: 'invalid_seat_count',
+        min: MIN_SEAT_COUNT, max: MAX_SEAT_COUNT
+      });
+    }
+    const current = await store.load(sidSeat, { fresh: true });
+    if (!current) return json(res, 404, { ok: false, code: 'session_not_found' });
+    if (current.status !== 'open') return json(res, 409, { ok: false, code: 'session_closed' });
+
+    const out = await store.mutate(sidSeat, (s) => {
+      if (s.status !== 'open') {
+        return { abort: { status: 409, body: { ok: false, code: 'session_closed' } } };
+      }
+      const maxUsed = maxOccupiedSeatNo(s);
+      if (next < maxUsed) {
+        return {
+          abort: {
+            status: 409,
+            body: {
+              ok: false, code: 'seat_count_below_occupied',
+              maxOccupied: maxUsed, occupied: occupiedSeatCount(s), seatCount: next
+            }
+          }
+        };
+      }
+      // 缩容：删掉新上界之外的空席位；扩容：把缺的席位补成空席位
+      for (const key of Object.keys(s.seats)) {
+        if (Number(key) > next) delete s.seats[key];
+      }
+      for (let i = 1; i <= next; i += 1) {
+        if (!s.seats[i]) {
+          s.seats[i] = { no: i, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
+        }
+      }
+      s.seatCount = next;
+      return { result: { seatCount: next, occupied: occupiedSeatCount(s) } };
+    });
+
+    if (out.notFound) return json(res, 404, { ok: false, code: 'session_not_found' });
+    if (out.aborted) return json(res, out.aborted.status, out.aborted.body);
+    if (out.conflict) return json(res, 409, { ok: false, code: 'write_conflict' });
+    if (out.failed) return json(res, 500, { ok: false, code: 'write_failed' });
+
+    await audit(req, staff, 'session_seats', {
+      sid: sidSeat, target: current.name,
+      detail: { from: current.seatCount, to: next, occupied: out.result.occupied }
+    });
+    return json(res, 200, {
+      ok: true,
+      sid: sidSeat,
+      seatCount: out.result.seatCount,
+      occupied: out.result.occupied,
+      seats: seatList(out.session),
       sessions: staffSessionList(await store.list())
     });
   }
@@ -1637,6 +1795,123 @@ async function handleApi(req, res, url) {
     return json(res, 200, buildStatePayload(ctx.session, pid, view));
   }
 
+  /* 席位占用查询：玩家端选座界面用（也用于刷新「刚被别人抢走」的乐观更新）。
+   * 只返回席位号 + 是否占用；带 deviceId 时额外返回 mySeat（本机占的是几号）。 */
+  if (req.method === 'GET' && url.pathname === '/api/seats') {
+    const ctx = await playerSessionContext(
+      url.searchParams.get('sid') || '',
+      url.searchParams.get('ut') || ''
+    );
+    if (rejectPlayerSession(res, ctx)) return;
+    const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
+    const mine = seatOfDevice(ctx.session, deviceId);
+    return json(res, 200, {
+      ok: true,
+      sid: ctx.session.id,
+      seatCount: ctx.session.seatCount,
+      occupied: occupiedSeatCount(ctx.session),
+      seats: seatList(ctx.session),
+      mySeat: mine ? mine.no : null
+    });
+  }
+
+  /* 加入场次：设备选一个席位并绑定。
+   *   - 第一次加入必须带 seatNo（产品要求「必须选择具体席位」，不自动分配）
+   *   - 同一设备重复加入（刷新 / 换轮次 / 令牌过期重签）只认已绑定的席位，
+   *     即使传了别的 seatNo 也不会换座 —— 「沿用已绑定的 seat」是服务端的硬约束
+   *   - 已占用席位返回 409 seat_taken；越界返回 409 seat_out_of_range
+   *   - 占用判断在 store.mutate 内完成：两个设备同时抢同一席位只有一个能成功 */
+  if (req.method === 'POST' && url.pathname === '/api/join') {
+    const body = await readBody(req);
+    if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
+
+    const deviceId = normalizeDeviceId(body.deviceId);
+    if (!deviceId) return json(res, 400, { ok: false, code: 'device_invalid' });
+
+    const ctx = await playerSessionContext(String(body.sid || ''), String(body.ut || ''));
+    if (rejectPlayerSession(res, ctx)) return;
+
+    const hasAsked = body.seatNo !== undefined && body.seatNo !== null && body.seatNo !== '';
+    const asked = hasAsked ? parseSeatNo(body.seatNo) : null;
+
+    const out = await store.mutate(ctx.session.id, (s) => {
+      if (s.status !== 'open') {
+        return { abort: { status: 409, body: { ok: false, code: 'session_closed' } } };
+      }
+      const bound = seatOfDevice(s, deviceId);
+      if (bound) {
+        // 已绑定设备：无论传了什么号都沿用原席位（换轮次 / 刷新 / 令牌过期的统一入口）
+        return { result: { seatNo: bound.no, reused: true } };
+      }
+      if (!hasAsked) {
+        return {
+          abort: {
+            status: 400,
+            body: {
+              ok: false, code: 'seat_required',
+              seatCount: s.seatCount, occupied: occupiedSeatCount(s), seats: seatList(s)
+            }
+          }
+        };
+      }
+      if (asked === null) {
+        return {
+          abort: {
+            status: 400,
+            body: { ok: false, code: 'seat_invalid', min: MIN_SEAT_COUNT, max: MAX_SEAT_COUNT }
+          }
+        };
+      }
+      if (asked > s.seatCount) {
+        return {
+          abort: {
+            status: 409,
+            body: {
+              ok: false, code: 'seat_out_of_range',
+              seatCount: s.seatCount, occupied: occupiedSeatCount(s), seats: seatList(s)
+            }
+          }
+        };
+      }
+      const seat = s.seats[asked];
+      if (!seat) {
+        // 理论不可达：seatCount 内的席位一定被铺满；防御性拒绝，不静默建行
+        return { abort: { status: 409, body: { ok: false, code: 'seat_out_of_range', seatCount: s.seatCount } } };
+      }
+      if (seat.deviceId) {
+        return {
+          abort: {
+            status: 409,
+            body: {
+              ok: false, code: 'seat_taken', seatNo: asked,
+              seatCount: s.seatCount, occupied: occupiedSeatCount(s), seats: seatList(s)
+            }
+          }
+        };
+      }
+      seat.deviceId = deviceId;
+      seat.boundAt = Date.now();
+      return { result: { seatNo: asked, reused: false } };
+    });
+
+    if (out.notFound) return json(res, 404, { ok: false, code: 'session_not_found' });
+    if (out.aborted) return json(res, out.aborted.status, out.aborted.body);
+    if (out.conflict) return json(res, 409, { ok: false, code: 'write_conflict' });
+    if (out.failed) return json(res, 500, { ok: false, code: 'write_failed' });
+
+    const session = out.session;
+    return json(res, 200, {
+      ok: true,
+      sid: session.id,
+      seatNo: out.result.seatNo,
+      reused: out.result.reused,
+      seatCount: session.seatCount,
+      occupied: occupiedSeatCount(session),
+      seats: seatList(session),
+      session: { id: session.id, name: session.name, round: session.round, locked: session.number != null }
+    });
+  }
+
   /* 二维码识别：内容即会员号，但**不再直接当 ID 用**。
    * 落库与内存一律用 ref = HMAC(pepper, 会员号)（盲索引，不可逆、确定性），
    * 明文只以密文形式存 member_enc，接口和页面只出现 ref 与脱敏标签 ****1234。
@@ -1653,6 +1928,11 @@ async function handleApi(req, res, url) {
     const ctx = await playerSessionContext(String(body.sid || ''), String(body.ut || ''));
     if (rejectPlayerSession(res, ctx)) return;
 
+    // 扫码必须发生在「已选席位」的设备上：席位是现场的物理座位，会员登记挂到席位上。
+    // 没选席位的设备先去 /api/join（玩家端会自动弹出选座卡片）。
+    const deviceId = normalizeDeviceId(body.deviceId);
+    if (!deviceId) return json(res, 400, { ok: false, code: 'device_invalid' });
+
     // 加密就在这一层做：ref 给主键与接口，enc 给落库，maskedId 给页面
     const id = memberId.ref(content);
     const enc = memberId.seal(content);
@@ -1662,12 +1942,49 @@ async function handleApi(req, res, url) {
       if (s.status !== 'open') {
         return { abort: { status: 409, body: { ok: false, code: 'session_closed' } } };
       }
-      // 情况一：本场次本轮已扫过该码 → 幂等恢复同一玩家（任意设备、任意次数）
+      const seat = seatOfDevice(s, deviceId);
+      if (!seat) {
+        return {
+          abort: {
+            status: 403,
+            body: {
+              ok: false, code: 'seat_required',
+              seatCount: s.seatCount, occupied: occupiedSeatCount(s), seats: seatList(s)
+            }
+          }
+        };
+      }
+      // 情况一：本场次本轮已扫过该码 → 幂等恢复同一玩家（同一席位、任意次数）
       const existing = s.players[id];
+      // 一个会员一轮只能占一个席位：在别的机器上重扫不会「换座」，
+      // 否则原席位会留下一个无主的 player 行，人数与席位对不上。
+      if (existing && existing.seatNo != null && existing.seatNo !== seat.no) {
+        return {
+          abort: {
+            status: 409,
+            body: { ok: false, code: 'member_other_seat', seatNo: existing.seatNo }
+          }
+        };
+      }
+      // 一个席位一轮只坐一个会员：座位上已有人在玩时，换人必须先让原玩家登出（leftAt）。
+      // 这条对「本人回来」同样生效：离开后席位被同座的新玩家接走，原玩家不能再挤回来。
+      const occupantId = seat.memberId && seat.memberId !== id ? seat.memberId : '';
+      const occupant = occupantId ? s.players[occupantId] : null;
+      if (occupant && occupant.leftAt == null) {
+        return {
+          abort: {
+            status: 409,
+            body: { ok: false, code: 'seat_member_conflict', seatNo: seat.no }
+          }
+        };
+      }
       if (existing) {
         // 密文不参与身份判定：ref 才是身份。这里只在「本进程刚生成的密文与库里不同」时更新，
         // 效果是轮换后重扫一次就把这一行带到当前密钥版本（不强制，纯属顺手升级）。
         existing.enc = enc;
+        existing.seatNo = seat.no;
+        seat.memberId = id;
+        seat.memberEnc = enc;
         const idt = s.identities[id];
         if (idt) {
           idt.lastSeenRound = s.round;
@@ -1679,7 +1996,7 @@ async function handleApi(req, res, url) {
         // 但本轮已锁定后不再放回：锁定即名单冻结，否则「离开前不算、回来后又有」
         // 会让结果表与已落库的归档对不上。
         if (s.number == null) existing.leftAt = null;
-        return { result: { pid: id, status: 'known' } };
+        return { result: { pid: id, status: 'known', seatNo: seat.no } };
       }
 
       // 情况二：本场次本轮新码。已开奖 → 拒绝入场
@@ -1687,25 +2004,31 @@ async function handleApi(req, res, url) {
         return { abort: { status: 400, body: { ok: false, code: 'scan_locked' } } };
       }
 
-      // 情况三：本场次本轮新码 → 建档
+      // 情况三：本场次本轮新码 → 建档（席位号随玩家一起落库，便于大屏/员工端按座位展示）
       s.players[id] = {
-        id, enc, maskedId, oddEven: null, number: null,
+        id, enc, maskedId, seatNo: seat.no, oddEven: null, number: null,
         registeredAt: Date.now(), submittedAt: null
       };
+      seat.memberId = id;
+      seat.memberEnc = enc;
+      if (!seat.boundAt) seat.boundAt = Date.now();
       const prev = s.identities[id];
       s.identities[id] = {
         lastSeenRound: s.round,
         completedRounds: (prev && prev.completedRounds) || 0,
         enc
       };
-      return { result: { pid: id, status: 'known' } };
+      return { result: { pid: id, status: 'known', seatNo: seat.no } };
     });
 
     if (out.notFound) return json(res, 404, { ok: false, code: 'session_not_found' });
     if (out.aborted) return json(res, out.aborted.status, out.aborted.body);
     if (out.conflict) return json(res, 409, { ok: false, code: 'write_conflict' });
     if (out.failed) return json(res, 500, { ok: false, code: 'write_failed' });
-    return json(res, 200, { ok: true, pid: out.result.pid, maskedId, sid: out.session.id, status: out.result.status });
+    return json(res, 200, {
+      ok: true, pid: out.result.pid, maskedId, sid: out.session.id,
+      status: out.result.status, seatNo: out.result.seatNo
+    });
   }
 
   /* 玩家离开现场 / 主动登出：打标记、不删数据。
@@ -2096,6 +2419,13 @@ async function handleApi(req, res, url) {
       s.lockedAt = null;
       s.lockedBy = '';
       s.players = {};
+      // 席位：设备绑定保留（换轮次不用重新选座），只清「这一轮坐在这里的会员」。
+      // 会员登记仍然是每轮一次（players 清空 → 玩家端回到扫码卡片），
+      // 但扫码时沿用同一席位，不会让玩家再选一次座。
+      for (const seat of Object.values(s.seats || {})) {
+        seat.memberId = '';
+        seat.memberEnc = null;
+      }
       // 重绑规则：本轮（round 已 +1）改用最新版。rule 字段与快照 SQL JOIN 出来的形态一致
       // （原始 prizes/bonus，ruleOf 会再做归一化），ruleVersion 写回 round.rule_version（当前轮权威来源）。
       s.ruleVersion = latest.version;
@@ -2563,6 +2893,12 @@ async function handleStream(req, res, url) {
     const out = await store.mutate(session.id, (s) => {
       const self = s.players[pid];
       if (!self || self.leftAt == null || s.number != null) return { skip: true, result: {} };
+      // 席位已被同座的新玩家接走：不能靠重连把自己放回名单（与扫码的占用判定同一口径）
+      const seat = self.seatNo != null ? s.seats[self.seatNo] : null;
+      if (seat && seat.memberId && seat.memberId !== pid) {
+        const occupant = s.players[seat.memberId];
+        if (occupant && occupant.leftAt == null) return { skip: true, result: {} };
+      }
       self.leftAt = null;
       return { result: {} };
     });
@@ -2636,6 +2972,25 @@ const PAGE_ENTRY = {
   '/bigscreen/': '/bigscreen/index.html',
   '/bigscreen.html': '/bigscreen/index.html'
 };
+
+/**
+ * 前端席位配置：浏览器里跑的是原生脚本，拿不到 lib/seats.js（CommonJS），
+ * 所以把常量生成一小段 JS 下发，而不是在 public/ 下再抄一份数字——
+ * 抄一份就等于又埋了一个「改一处忘一处」的漂移点。
+ * 页面里用 window.SEAT_CONFIG.defaultCount / min / max。
+ */
+function serveSeatConfig(res) {
+  const body = 'window.SEAT_CONFIG = ' + JSON.stringify({
+    defaultCount: DEFAULT_SEAT_COUNT,
+    min: MIN_SEAT_COUNT,
+    max: MAX_SEAT_COUNT
+  }) + ';\n';
+  res.writeHead(200, {
+    'Content-Type': MIME['.js'],
+    'Cache-Control': 'no-store'
+  });
+  res.end(body);
+}
 
 function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
@@ -2733,6 +3088,7 @@ async function bootstrapSessions() {
       id: FIRST_SESSION_ID,
       name: '第 1 场',
       maxOpen: MAX_SESSIONS,
+      seatCount: DEFAULT_SEAT_COUNT,
       makeId: () => FIRST_SESSION_ID
     });
     if (created.ok) console.log('[session] 初始化默认场次:', FIRST_SESSION_ID, created.session && created.session.name);
@@ -2848,6 +3204,9 @@ async function start() {
         if (!res.headersSent) json(res, 500, { ok: false, error: '服务器内部错误' });
         else res.end();
       });
+    } else if (url.pathname === '/shared/seat-config.js') {
+      // 由 lib/seats.js 生成，前端唯一的席位默认值/上下界来源
+      serveSeatConfig(res);
     } else if (url.pathname.startsWith('/api/')) {
       handleApi(req, res, url).catch((e) => {
         console.error('[api] ' + url.pathname + ' 处理失败:', e && e.stack ? e.stack : e);

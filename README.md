@@ -2,7 +2,7 @@
 
 门店现场使用的手机端互动竞猜工具。顾客扫描自己的会员码登记，猜本轮数字的单/双与具体数字；工作人员确认本轮数字后立即开奖，结果实时推送到所有在线设备。参与者凭竞猜结果在门店按规则获取积分。
 
-运营规模：**单场 6–12 位玩家**，一位工作人员用一部手机即可主持；同一门店同一时段可**全集群并行 1–4 场**（多实例共享同一份状态），场次可随时新建、切换、关闭，不需改配置或重启（跨场汇总仍待补，见 [6.1 运营模型与容量](#61-运营模型与容量)）。
+运营规模：**单场默认 12 个席位（可配 1–64；默认值与上下界统一定义在 `lib/seats.js`）**，一位工作人员用一部手机即可主持；同一门店同一时段可**全集群并行 1–4 场**（多实例共享同一份状态），场次可随时新建、切换、关闭，不需改配置或重启（跨场汇总仍待补，见 [6.1 运营模型与容量](#61-运营模型与容量)）。
 
 本项目只负责「登记 → 预测 → 锁定 → 开奖 → 展示」这条链路，**不包含积分记账与发放**，积分体系由门店侧另行实现。
 
@@ -23,6 +23,7 @@
 | 开奖 | 工作人员在员工端点选 0–9 并确认，确认即锁定，不可更改 |
 | 轮次 | 锁定后由工作人员手动开启新一轮，轮次号 +1 |
 | 场次 | 全集群并行 1–4 场；员工登录默认归属一场，可运行时新建 / 切换 / 关闭，状态按场次隔离，SSE 按场次分组推送 |
+| 场次席位 | 每场可配置参与人数（1–64，默认 12，常量见 `lib/seats.js`），按 `seat` 席位记录落库；设备第一次加入必须选具体席位，绑定跟场次走、跨轮次保留（换轮次不重选）；同一席位只能被一台设备占用，人数上限与已占用席位始终自洽 |
 | 玩家场次口令 | 多场并行时，玩家选择 / 切换场次必须输入口令；验证后绑定 12 小时，刷新、重开页面、后续操作都固定在该场次，未再次验证不可切换 |
 | 员工场次口令 | 员工「切换场次 / 新建场次」需输入独立口令（默认 `7777`，`STAFF_SESSION_PASSWORD` 覆盖）；管理员免校验。与登录密码、玩家口令三者互不复用 |
 | 身份档案 | 跨轮次累计每人完成的竞猜轮次数，用于区分「新玩家 / 老玩家」 |
@@ -161,7 +162,7 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 
 | 项目 | 设计值 | 说明 |
 |---|---|---|
-| 单场玩家数 | 6–12 位 | 服务端**没有人数上限校验**，超员不会被拒绝；6–12 是场地组织与员工端结算表的可读区间 |
+| 单场玩家数 | 可配置 1–64，默认 12（`DEFAULT_SEAT_COUNT`） | 人数上限 = 席位总数，由 `/api/join` 强制校验（超过配置的席位号无法加入）；6–12 仍是场地组织与员工端结算表的舒适区间 |
 | 并行场次 | 1–4 场 | 每场由一位工作人员主持，各自独立登录、独立录号、独立开新轮 |
 | 场内轮次 | 不限，连续开轮 | 一场内可反复「锁定 → 开始新一轮」，轮次号在该场内递增 |
 
@@ -180,15 +181,33 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 跨场次对账（当日参与人数、逐人猜测明细） | ✅ 支持。每轮锁定即追加写入归档表（append-only），提供当日聚合接口与 CSV 导出，见 6.6 | 按 `session_id` 分账；同一会员号跨场记录逐行导出，不合并不算分 |
 
 
+### 6.1.1 席位模型（seat）
+
+一个场次的「参与人数」就是席位总数：创建场次时物化 `1…N` 条 `session_seat` 记录，管理界面可在场次条里调整（见 6.5）。席位号稳定、不重排。
+
+默认值与上下界只有一处定义：**`lib/seats.js` 的 `DEFAULT_SEAT_COUNT`（12）、`MIN_SEAT_COUNT`（1）、`MAX_SEAT_COUNT`（64）**，以及配套的 `parseSeatCount()`（严格解析，非法即 null）与 `clampSeatCount()`（宽松收敛，用于读库兜底）。`server.js`、`db.js`、`store.js` 全部引用它；浏览器侧拿不到 CommonJS，改由 `GET /shared/seat-config.js` 下发 `window.SEAT_CONFIG = {defaultCount, min, max}`（管理界面新建场次的预填值即取自它）。改默认人数只改这一个文件，不要在各层重新写数字。
+
+| 动作 | 行为 | 校验 / 失败码 |
+|---|---|---|
+| 配置人数 | 新建场次时指定，默认 12（`DEFAULT_SEAT_COUNT`）；可在管理界面改 | 必须是 1–64 的整数（`invalid_seat_count`）；不能小于已占用席位里的最大席位号（`seat_count_below_occupied`） |
+| 设备加入 | 玩家端选一个具体席位 → `POST /api/join` | 第一次必须带 `seatNo`（`seat_required`）；席位已被别的设备占用 → `seat_taken`；号段超出配置 → `seat_out_of_range`；并发抢同一席位只有一个成功 |
+| 重新加入 | 同一设备再次 `join`（刷新 / 令牌过期 / 换轮次） | 服务端按设备标识找回原席位，即使传了别的 `seatNo` 也不会换座（幂等） |
+| 扫码登记 | 只有已选席位的设备能扫码；会员与席位一一对应 | 未选座 → `seat_required`；同一会员在别的席位重扫 → `member_other_seat`；该席位本轮已有其他玩家 → `seat_member_conflict` |
+| 开新一轮 | `players` 清空，`session_seat` 只清本轮会员、**保留设备绑定** | 玩家不需要重新选座，扫码自动落回原席位 |
+| 缩容 | 只能删空席位；已绑定设备的席位号保持稳定 | 低于最大已占用席位号直接拒绝，不存在「把有人坐的席位删掉」的中间态 |
+
+占用校验、配置变更、扫码登记都走 `store.mutate` 的同一把乐观锁：席位写入与人数上限在同一个事务里提交，所以多实例并发下也不会出现「校验时还空着、写进去两个人」或「先扩容后回滚」的撕裂状态。
+
 ### 6.2 一轮的完整生命周期
 
 1. **选择场次（多场并行时）**：打开玩家端 → 若同时进行 ≥2 场，先选择自己所在场次并输入**场次口令**。验证通过后本机绑定该场次（12 小时），刷新 / 重开页面 / 扫码 / 预测都固定在此场次；想换场次必须重新输入口令。只有 1 场进行中时免口令自动进入（无处可选）。
-2. **玩家登记**：扫自己的会员码（或手动输入会员号）→ 服务端对会员号做盲索引（`ref = HMAC-SHA256(pepper, 会员号)`，不可逆）作为玩家唯一标识，原文只以密文存 `member_enc`。本轮开奖后新码无法入场。
-3. **点选与确认**：点「单 / 双」与 0–9 数字（含 0 和 9，`0` 算「双」）时即刻上报（500ms 合并，值变才发），大屏马上显示「已选待确认」；点「确认提交」才落库，之后不可修改、不可重复提交。只选不确认 = 未参赛，锁定后作废。
-4. **等待开奖**：页面显示已提交的预测，状态条提示等待中；开奖数字在锁定前不会下发给任何客户端。
-5. **工作人员锁定**：员工端登录 → 点选 0–9 → 若仍有玩家未提交会先弹提示 → 二次确认 → 锁定并广播结果。
-6. **查看结果**：员工端展示逐人命中表（单双命中、数字命中）；玩家端展示开奖数字与自己两项预测的命中情况。
-7. **开启新一轮**：员工端「开始新一轮」→ 轮次 +1、本轮玩家清空、跨轮身份档案保留；玩家需重新扫码登记。
+2. **选席位**：本机第一次进入该场次时先选一个席位（`POST /api/join`）。选定后绑定跟场次走，刷新、换轮次都不用再选；同一席位不能被第二台设备占用。之后从页面重进只会按设备标识找回原席位。
+3. **玩家登记**：扫自己的会员码（或手动输入会员号）→ 服务端对会员号做盲索引（`ref = HMAC-SHA256(pepper, 会员号)`，不可逆）作为玩家唯一标识，原文只以密文存 `member_enc`；登记记录带 `seat_no`。本轮开奖后新码无法入场。
+4. **点选与确认**：点「单 / 双」与 0–9 数字（含 0 和 9，`0` 算「双」）时即刻上报（500ms 合并，值变才发），大屏马上显示「已选待确认」；点「确认提交」才落库，之后不可修改、不可重复提交。只选不确认 = 未参赛，锁定后作废。
+5. **等待开奖**：页面显示已提交的预测，状态条提示等待中；开奖数字在锁定前不会下发给任何客户端。
+6. **工作人员锁定**：员工端登录 → 点选 0–9 → 若仍有玩家未提交会先弹提示 → 二次确认 → 锁定并广播结果。
+7. **查看结果**：员工端展示逐人命中表（单双命中、数字命中）；玩家端展示开奖数字与自己两项预测的命中情况。
+8. **开启新一轮**：员工端「开始新一轮」→ 轮次 +1、本轮玩家清空、跨轮身份档案保留；**席位绑定保留**，玩家重新扫码即可，不需要重新选座。
 
 **离开与登出。** 玩家关闭/离开页面（`pagehide`）或点「登出」，即视为不在现场：**所有实时列表、大屏卡片、人数与统计立刻不再包含他**。本轮锁定前，重新扫码或页面回到前台（SSE 重连）会把他放回名单；**锁定即名单冻结**，之后的离开、登出、重新扫码都不再改写本轮结果表与归档。
 
@@ -197,7 +216,8 @@ export DATABASE_URL='postgres://user:pass@db.example.com:5432/postgres?sslmode=r
 | 状态 | 含义 | 页面表现 |
 |---|---|---|
 | 选择场次 | 没有本机绑定，且同时进行 ≥2 场（或原场次已关闭） | 显示场次列表；点选后弹出口令输入框 |
-| 未登记 | 无本地身份，或新一轮已开始 | 显示扫码卡片 |
+| 选择席位 | 已绑定场次，但本机还没加入（第一次进入 / 席位被清） | 显示席位网格；已占用的置灰，点空闲席位即加入 |
+| 未登记 | 已有席位，无本地身份，或新一轮已开始 | 显示扫码卡片 |
 | 已登记 | 已识别身份，未提交预测 | 显示预测卡片 |
 | 等待开奖 | 已提交，本轮未锁定 | 显示等待动画与自己的预测 |
 | 已开奖 | 本轮已锁定 | 显示开奖数字、单双/数字两项命中判定，以及按命中组合对应的奖品文案 |
@@ -389,12 +409,15 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | POST | `/api/staff-logout` | token | `{token}` | 注销会话（写 `logout` 日志） |
 | GET | `/api/staff-check` | token | `?token=` | 会话是否仍有效，返回绑定的 `sid`、场次列表与 `user` |
 | GET | `/api/sessions` | — | `?token=` | 场次列表；无 token 只返回进行中的场次，带有效 token 返回含已关闭场次的完整列表 |
-| POST | `/api/session-create` | token(+场景口令) | `{token, name, sessionPassword}` | 新建场次（上限 4），创建者自动切到新场次，`name` 可省略（自动命名），上限 24 字。`staff` 角色需 `sessionPassword` |
+| POST | `/api/session-create` | token(+场景口令) | `{token, name, seats?, sessionPassword}` | 新建场次（上限 4），创建者自动切到新场次，`name` 可省略（自动命名），上限 24 字；`seats` 为参与人数（1–64，默认 12，`invalid_seat_count` 拒绝越界）。`staff` 角色需 `sessionPassword` |
+| POST | `/api/session-seats` | token | `{token, sid, seats}` | 调整场次参与人数（= 席位总数）。不能小于已占用席位的最大号（`409 seat_count_below_occupied` + `maxOccupied/occupied`）；扩容补空席位，缩容只删空席位。返回 `{seatCount, occupied, seats, sessions}`，写 `session_seats` 审计 |
+| GET | `/api/seats` | — | `?sid=&ut=&deviceId=` | 席位占用列表 `{seatCount, occupied, seats:[{no,occupied}], mySeat}`；带 `deviceId` 时 `mySeat` 为本机已绑定席位 |
+| POST | `/api/join` | — | `{sid, ut, deviceId, seatNo?}` | 设备加入场次并占一个席位。第一次必须带 `seatNo`（否则 `seat_required`）；已绑定设备幂等返回原席位（传别的号也不换座）；已占用 → `409 seat_taken`；越界 → `409 seat_out_of_range`；并发抢座只有一个成功 |
 | POST | `/api/session-select` | token(+场景口令) | `{token, sid, sessionPassword}` | 切换该员工会话的归属场次，不影响其他员工。`staff` 角色需 `sessionPassword` |
 | POST | `/api/session-close` | token | `{token, sid}` | 关闭场次：通知并断开该场玩家端、从玩家端列表移除、数据保留 |
 | POST | `/api/session-unlock` | — | `{sid, password}` 或 `{sid, auto:true}` | 玩家端选择 / 切换场次：校验口令，成功返回绑定令牌 `ut`（12 小时）。`auto` 仅在唯一进行中场次时可用 |
 | GET | `/api/state` | — | `?sid=&ut=&pid=`；大屏加 `&view=bigscreen` | 某场次的全量状态快照；带 `pid` 时额外返回该玩家的 `me`（含草稿）。`view=bigscreen` 返回大屏视图（开奖前也含每个人的选项与草稿），默认公开（`BIGSCREEN_PUBLIC=0` 时需员工 token） |
-| POST | `/api/scan` | — | `{sid, ut, content}` | 登记身份，返回 `{ok, pid, sid, status:"known"}` |
+| POST | `/api/scan` | — | `{sid, ut, content, deviceId}` | 登记身份，返回 `{ok, pid, sid, seatNo, status:"known"}`。设备必须先通过 `/api/join` 占席位：未选座 → `403 seat_required`；同一会员换席位重扫 → `409 member_other_seat`；该席位本轮已有其他人 → `409 seat_member_conflict` |
 | PUT | `/api/pick` | — | `{sid, ut, pid, oddEven, number, seq}` | **临时选择（草稿）**：只写内存、不落库、不推进 `version`；`seq` 单调，更小的序号返回 `200 {accepted:false, ignored:"stale_seq"}` 而不是报错 |
 | DELETE | `/api/pick` | — | `{sid, ut, pid, seq}` | 撤销草稿，同样按 `seq` 单调判定（删除也吃序号，避免旧请求复活选择） |
 | POST | `/api/submit` | — | 头 `Idempotency-Key`，体 `{sid, ut, pid, oddEven, number}` | **确认提交**：`oddEven` 为 `"单"` / `"双"`，`number` 为 0–9；同 key 重放返回 `200 {replay:true}`，异 key 已提交返回 `409 already_submitted` + 终态。**只有它才落库、才算参赛** |
@@ -436,6 +459,9 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   "round": 3,
   "locked": false,
   "number": null,
+  "seatCount": 12,
+  "seats": [ { "no": 1, "occupied": true }, { "no": 2, "occupied": false } ],
+  "mySeat": 2,
   "prizes": {
     "both":    { "title": "", "desc": "" },
     "number":  { "title": "", "desc": "" },
@@ -445,10 +471,10 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
   "bonus": { "number": 8, "title": "幸运加奖", "desc": "全员一瓶饮料", "triggered": false },
   "counts": { "total": 2, "submitted": 1, "draft": 1, "none": 0 },
   "players": [
-    { "id": "M00123", "submitted": true,  "status": "submitted", "draft": false, "isVeteran": true },
-    { "id": "M00124", "submitted": false, "status": "draft",     "draft": true,  "isVeteran": false }
+    { "id": "M00123", "maskedId": "****0123", "seatNo": 1, "submitted": true,  "status": "submitted", "draft": false, "isVeteran": true },
+    { "id": "M00124", "maskedId": "****0124", "seatNo": 2, "submitted": false, "status": "draft",     "draft": true,  "isVeteran": false }
   ],
-  "me": { "id": "M00124", "oddEven": null, "number": null,
+  "me": { "id": "M00124", "maskedId": "****0124", "seatNo": 2, "oddEven": null, "number": null,
           "draft": { "oe": "双", "num": 6, "seq": 3 } }
 }
 ```
@@ -524,6 +550,15 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 | `session_limit` | 409 | 进行中场次已达 4 个（返回 `max`） |
 | `session_already_closed` | 409 | 重复关闭同一场次 |
 | `session_name_too_long` | 400 | 场次名超过 24 字（返回 `maxLen`） |
+| `invalid_seat_count` | 400 | 参与人数不是 1–64 的整数（返回 `min` / `max`） |
+| `seat_count_below_occupied` | 409 | 缩容低于已占用的最大席位号（返回 `maxOccupied` / `occupied` / `seatCount`） |
+| `seat_required` | 400 / 403 | `/api/join` 第一次加入未带 `seatNo`（400）；`/api/scan` 的设备还没选席位（403） |
+| `seat_invalid` | 400 | 席位号格式不合法（非 1–64 的整数） |
+| `seat_out_of_range` | 409 | 席位号超过该场次当前配置的 `seatCount`（返回最新 `seats`） |
+| `seat_taken` | 409 | 该席位已被另一台设备占用（返回 `seatNo` 与最新 `seats`） |
+| `device_invalid` | 400 | 设备标识缺失或不符合 `[A-Za-z0-9_-]{8,64}` |
+| `member_other_seat` | 409 | 同一会员本轮已在别的席位登记（返回原 `seatNo`） |
+| `seat_member_conflict` | 409 | 该席位本轮已有其他玩家，需原玩家先登出 |
 | `session_locked` | 403 | 本机已绑定其他场次，请求的 `sid` 与绑定不符（返回 `boundSid`） |
 | `session_need_unlock` | 403 | 未带有效绑定令牌，且当前有 ≥2 个进行中场次，需先过口令 |
 | `bigscreen_unauthorized` | 403 | 仅在 `BIGSCREEN_PUBLIC=0` 时出现：请求了 `view=bigscreen` 却没带有效员工 token（大屏会看到未开奖的选项，公开模式下不再拦） |
@@ -601,10 +636,11 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 | 表 | 内容 | 写入策略 |
 |---|---|---|
-| `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、创建/关闭时间 | 建场次时插入；随快照提交 upsert 元信息 |
+| `game_session` | 场次实体：ID、名称、状态（open/closed）、显示序号、**参与人数 `seat_count`**、创建/关闭时间 | 建场次时插入；随快照提交 upsert 元信息 |
+| `session_seat` | 场次席位：`seat_no`（1…N，稳定不重排）、绑定的设备 `device_id`、本轮该席位的会员 `member_id` / `member_enc`、绑定时间（**主键 `(session_id, seat_no)`**） | 建场次 / 扩容时物化；随快照提交批量 upsert，缩容只删空席位；**reset 只清 `member_*`，保留 `device_id`** |
 | `session_state` | 每个场次一行：**状态版本号** + 最近提交时间（多实例乐观锁凭据） | 提交事务里 `version + 1`（CAS） |
 | `round` | 每个场次一行：当前轮次、开奖数字、锁定时间、锁定人账号 `locked_by`、**本轮所用规则版本 `rule_version`**（**主键 `session_id`**；当前轮的权威版本来源，reset 时重绑最新版） | 按场次 upsert，reset 时更新 `rule_version` |
-| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`left_at` 为离开/登出标记，null = 在场。非空的行保留在库里（重新扫码可复用），但不出现在任何实时列表、人数、统计与归档中 | 批量 `unnest` upsert + 删除快照里不存在的行 |
+| `player` | 本场次本轮每个玩家的登记与预测（**主键 `(session_id, id)`**）；`seat_no` 为本轮登记的席位；`left_at` 为离开/登出标记，null = 在场。非空的行保留在库里（重新扫码可复用），但不出现在任何实时列表、人数、统计与归档中 | 批量 `unnest` upsert + 删除快照里不存在的行 |
 | `identity` | 场次内跨轮次身份档案：最近出现轮次、已完成轮次数（**主键 `(session_id, id)`**） | 批量 `UPSERT`，不删除，跨轮保留 |
 | `round_archive` | 竞猜归档表头：一轮一行，场次快照 + 轮次号 + 开奖数字 + 锁定时间 + 人数统计 + 锁定人 `locked_by` + **规则版本 `rule_version`**（唯一键 `(session_id, round)`） | 只 `INSERT`，重复轮次跳过 |
 | `rule_version` | 规则版本：版本号 + 四档奖品 JSONB + 全员额外奖励 JSONB + 快照指纹 `config_hash` + 来源 + 操作人（**append-only**） | 管理界面保存时追加一版；内容与最新版相同则不写 |
@@ -621,7 +657,7 @@ CSV 用 UTF-8 BOM + CRLF，Excel 双击不乱码；列头顺序固定，见 7.3�
 
 同一会员号可以同时存在于多个场次（各场次是独立记录），因此 `player` / `identity` 的主键是 `(session_id, id)`；空库首次启动时由 `bootstrapSessions()` 建出第一个场次（ID 固定为 `main`，员工与玩家链接可长期复用）。
 
-所有写操作按场次走一次事务：`BEGIN` → 抢版本号（CAS）→ 写 `game_session` / `round` / `player` / `identity` → 归档段（`SAVEPOINT`）→ `COMMIT`。玩家的写入从「一 人一条 SQL」改成「一次 `unnest` 批量 upsert + 一条删除」，单次提交固定为 4–5 条语句，锁持有时间不再随人数线性增长。
+所有写操作按场次走一次事务：`BEGIN` → 抢版本号（CAS）→ 写 `game_session` / `round` / `session_seat` / `player` / `identity` → 归档段（`SAVEPOINT`）→ `COMMIT`。玩家的写入从「一 人一条 SQL」改成「一次 `unnest` 批量 upsert + 一条删除」，单次提交固定为 5–6 条语句，锁持有时间不再随人数线性增长。席位写入与轮次、玩家在同一个事务里，因此「人数上限校验通过」与「席位占用落库」不会出现中间态。
 
 **归档表与运行态表是两套东西。** `round` 只留一行、`player` 每轮被清空，它们是「当前一轮」的可变快照；`round_archive` / `round_archive_entry` 是一轮结束后的只增不改留痕。两者的写入点在同一个事务里（`db.commitSnapshot` → `archiveRoundInTx`），归档段用 `SAVEPOINT` 单独包住，并有三重保护：
 
@@ -734,10 +770,11 @@ npm test                                  # 用 Docker 起临时 postgres:16-alp
 TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 ```
 
-覆盖范围（71 个用例，跑真实 `server.js` + 真实 Postgres，不 mock 业务逻辑）：
+覆盖范围（109 个用例，跑真实 `server.js` + 真实 Postgres，不 mock 业务逻辑）：
 
 | 文件 | 覆盖 |
 |---|---|
+| `test/seat.test.mjs` | 席位配置：创建即物化 1…N、默认 12、非法人数拒绝；加入：必须选座、占用冲突、越界、重复加入沿用原席位（传别的号也不换座）、非法席位号；缩容不能低于最大已占用席位号、扩容补空席位；扫码必须已选席位、同一会员不能换座、一个席位一轮只坐一人、离开后同席位可换人；`reset` 保留设备绑定、只清本轮会员，扫码自动落回原席位；并发抢同一席位只有一个设备成功 |
 | `test/archive.test.mjs` | 登录/口令/扫码/预测的全部错误码；锁定与归档同事务；当日聚合口径（场次/轮次/去重人数/命中）；`detail`/`round` 两种 CSV 的列头、转义、命中判定，以及已移除的 `member` 口径返回 400；`reset` 不清归档；0 人轮次口径；跨场次分账与 `sid` 筛选；日期区间与非法日期；接口鉴权；append-only 触发器拒绝 UPDATE/DELETE/TRUNCATE |
 | `test/archive-failure.test.mjs` | 归档表不可写时锁定仍生效且返回 `archived:false`；`reset` 被 409 拦住；恢复后 `archive-sync` 幂等补齐；重启自动回填「已锁定但未归档」的轮次 |
 | `test/rule-version.test.mjs` | 规则版本落库与边界：升级时旧 `app_config` 落成 v1、历史场次挂 v1；保存 = 新增版本且旧版本原样保留；版本表 append-only（UPDATE/DELETE/TRUNCATE 被拒）；四档与特殊数字同版本、改一块不清空另一块；规则按轮绑定（新开一轮重绑最新版、进行中的轮不受影响、新场次用新版）；对账 CSV「规则版本」列与归档行一致；**直查库**（另一实例直接写库、无任何通知，本实例立刻读到新版本与新版奖品） |
@@ -762,7 +799,7 @@ TEST_DATABASE_URL=postgres://... npm test # 复用已有库，不碰 Docker
 - **玩家绑定是「防误换」而非强身份认证。** 令牌绑定场次、不可跨场，但任何人拿到这台设备即可沿用其绑定继续玩（与扫码身份同一台设备的既有模型一致）；令牌 12 小时过期，口令本身从不落地，所以清掉 localStorage 只会退回选择界面，仍需口令才能重新进场。
 - **令牌走查询参数。** SSE（EventSource）无法自定义请求头，所以员工 token 与玩家绑定令牌都以 `?token=` / `?ut=` 传递，会进访问日志。反向代理层建议关闭查询串记录，或改走 Cookie。令牌都不含口令，泄露影响是「可读该场次状态」，不能改口令、不能跨场。
 - **规则改动不会立刻生效，这是设计而非缺陷。** 保存奖品/特殊数字只产生新版本，正在进行的轮次继续用它绑定那一版；之后新建的场次、或同一场次新开的轮次（reset）才用新规则（详见 6.10）。需要立刻切换就关场重建，或开新一轮。
-- **没有人数上限校验。** 单场 6–12 位是运营约定，服务端不拦；人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
+- **人数上限 = 席位总数（默认 12，可配 1–64，均由 `lib/seats.js` 定义）。** 由 `/api/join` 强制：超过 `seatCount` 的席位号无法加入，同一席位只能被一台设备占用。人数越多，每次状态变更的写放大与全量广播开销越大，延迟随人数线性上升。同时进行的场次上限为 4（`MAX_SESSIONS`），超出会被拒。
 - **支持多实例（水平扩容）。** 会话、员工登录态、限频全部在 Postgres，跨实例变更走 `LISTEN/NOTIFY`，写入用 `session_state.version` 乐观锁 + 全局 advisory lock 串行化（详见 9.5）。仍有的边界：`LISTEN` 不能走事务级连接池；SSE 连接是每实例各自的（不需要粘性会话）；进程内读缓存 TTL 5 秒，通知全丢时最坏有 5 秒延迟；同时进行的场次上限 4 是**全集群**口径。
 - **员工会话重启不再丢失（行为变化）。** 会话落在 `staff_session`，有效期 12 小时；这是多实例的硬要求（A 签发的 token 必须能被 B 认）。要立刻下线某人：在管理界面**停用该账号或重置密码**，会立即删掉它所有会话行（不会等 12 小时）。登录会话的鉴权以账号表当前状态为准，所以降级角色同样立即生效。
 - 托管库强制 TLS 时，在 `DATABASE_URL` 里加 `sslmode`（TLS 只有一个入口，没有拆开写法的分支）。

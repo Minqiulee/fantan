@@ -192,6 +192,17 @@
       err_session_limit: '最多同时进行 {max} 个场次，请先关闭一个',
       err_session_already_closed: '该场次已经关闭',
       err_session_name_too_long: '场次名称过长（最多 {maxLen} 个字）',
+      sessionSeatsBtn: '席位设置',
+      seatConfigTitle: '设置参与人数',
+      seatConfigBody: '当前 {seatCount} 个席位，已占用 {occupied} 个。人数不能小于已占用的最大席位号。',
+      seatConfigPlaceholder: '参与人数（1-64）',
+      seatConfigOk: '保存',
+      seatConfigSaved: '已设置为 {n} 人',
+      seatConfigInvalid: '请输入 1-64 的整数',
+      adminSeatCreateBody: '本场参与人数（= 席位数，1-64）。创建后仍可在场次条调整。',
+      sessionSeatsMeta: '席位 {used}/{total}',
+      err_seat_count_below_occupied: '不能少于已占用的最大席位号 {maxOccupied}（当前已占用 {occupied} 个）',
+      err_invalid_seat_count: '参与人数必须是 {min}-{max} 的整数',
 
       /* 管理界面 /admin */
       adminEntry: '管理',
@@ -307,6 +318,17 @@
       p_st_ready: '已登记 · 待预测',
       p_st_wait: '已预测 · 等待开奖',
       p_st_done: '已出结果',
+      p_st_seat: '待选席位',
+
+      p_seatTitle: '选择席位',
+      p_seatHint: '请选择你所在的席位。同一台设备本场只需选择一次，换轮次不用重选。',
+      p_seatLoading: '正在读取席位…',
+      p_seatFree: '空闲',
+      p_seatOccupied: '已占用',
+      p_seatMine: '我的席位',
+      p_seatNo: '席位 {n}',
+      p_seatJoined: '已加入 {n} 号席位',
+      p_seatFail: '选座失败，请重试或联系工作人员',
 
       p_scanTitle: '扫描我的二维码',
       p_openCam: '打开相机扫描',
@@ -408,7 +430,14 @@
       p_err_session_need_unlock: '请先输入场次口令',
       p_err_player_wrong_password: '场次口令错误，请向工作人员确认',
       p_err_player_too_many_attempts: '口令错误次数过多，请 {retryAfter} 秒后再试',
-      p_err_unlock_password_required: '该场次需要口令才能进入'
+      p_err_unlock_password_required: '该场次需要口令才能进入',
+      p_err_seat_required: '请先选择席位',
+      p_err_seat_taken: '该席位刚被占用，请另选一个',
+      p_err_seat_invalid: '席位号不合法',
+      p_err_seat_out_of_range: '该席位不存在，请重新选择',
+      p_err_device_invalid: '设备标识无效，请刷新页面重试',
+      p_err_member_other_seat: '你本轮已在 {seatNo} 号席位登记，请回到该席位',
+      p_err_seat_member_conflict: '该席位本轮已有其他玩家，请让原玩家先登出'
     },
 
     'zh-HK': {
@@ -587,6 +616,17 @@
       err_session_limit: '最多同時進行 {max} 個場次，請先關閉一個',
       err_session_already_closed: '該場次已經關閉',
       err_session_name_too_long: '場次名稱過長（最多 {maxLen} 個字）',
+      sessionSeatsBtn: '席位設定',
+      seatConfigTitle: '設定參與人數',
+      seatConfigBody: '目前 {seatCount} 個席位，已佔用 {occupied} 個。人數不能小於已佔用的最大席位號。',
+      seatConfigPlaceholder: '參與人數（1-64）',
+      seatConfigOk: '儲存',
+      seatConfigSaved: '已設定為 {n} 人',
+      seatConfigInvalid: '請輸入 1-64 的整數',
+      adminSeatCreateBody: '本場參與人數（= 席位數，1-64）。建立後仍可在場次條調整。',
+      sessionSeatsMeta: '席位 {used}/{total}',
+      err_seat_count_below_occupied: '不能少於已佔用的最大席位號 {maxOccupied}（目前已佔用 {occupied} 個）',
+      err_invalid_seat_count: '參與人數必須是 {min}-{max} 的整數',
 
       /* 管理界面 /admin */
       adminEntry: '管理',
@@ -702,6 +742,17 @@
       p_st_ready: '已登記 · 待預測',
       p_st_wait: '已預測 · 等待開獎',
       p_st_done: '已出結果',
+      p_st_seat: '待選席位',
+
+      p_seatTitle: '選擇席位',
+      p_seatHint: '請選擇你所在的席位。同一台裝置本場只需選擇一次，換輪次不用重選。',
+      p_seatLoading: '正在讀取席位…',
+      p_seatFree: '空閒',
+      p_seatOccupied: '已佔用',
+      p_seatMine: '我的席位',
+      p_seatNo: '席位 {n}',
+      p_seatJoined: '已加入 {n} 號席位',
+      p_seatFail: '選座失敗，請重試或聯絡工作人員',
 
       p_scanTitle: '掃描我的二維碼',
       p_openCam: '打開相機掃描',
@@ -802,7 +853,14 @@
       p_err_session_need_unlock: '請先輸入場次口令',
       p_err_player_wrong_password: '場次口令錯誤，請向工作人員確認',
       p_err_player_too_many_attempts: '口令錯誤次數過多，請 {retryAfter} 秒後再試',
-      p_err_unlock_password_required: '該場次需要口令才能進入'
+      p_err_unlock_password_required: '該場次需要口令才能進入',
+      p_err_seat_required: '請先選擇席位',
+      p_err_seat_taken: '該席位剛被佔用，請另選一個',
+      p_err_seat_invalid: '席位號不合法',
+      p_err_seat_out_of_range: '該席位不存在，請重新選擇',
+      p_err_device_invalid: '裝置標識無效，請重新整理頁面再試',
+      p_err_member_other_seat: '你本輪已在 {seatNo} 號席位登記，請回到該席位',
+      p_err_seat_member_conflict: '該席位本輪已有其他玩家，請讓原玩家先登出'
     },
 
     'en-US': {
@@ -981,6 +1039,17 @@
       err_session_limit: 'Up to {max} sessions at a time; close one first',
       err_session_already_closed: 'This session is already closed',
       err_session_name_too_long: 'Session name is too long (max {maxLen} characters)',
+      sessionSeatsBtn: 'Seats',
+      seatConfigTitle: 'Participant limit',
+      seatConfigBody: 'Currently {seatCount} seats, {occupied} occupied. It cannot be lower than the highest occupied seat number.',
+      seatConfigPlaceholder: 'Participants (1-64)',
+      seatConfigOk: 'Save',
+      seatConfigSaved: 'Set to {n} participants',
+      seatConfigInvalid: 'Enter an integer from 1 to 64',
+      adminSeatCreateBody: 'Participants for this session (= seats, 1-64). You can adjust it later from the session bar.',
+      sessionSeatsMeta: 'Seats {used}/{total}',
+      err_seat_count_below_occupied: 'Cannot be lower than the highest occupied seat number {maxOccupied} ({occupied} occupied)',
+      err_invalid_seat_count: 'Participants must be an integer from {min} to {max}',
 
       /* Admin console /admin */
       adminEntry: 'Admin',
@@ -1096,6 +1165,17 @@
       p_st_ready: 'Registered · Predict',
       p_st_wait: 'Predicted · Waiting',
       p_st_done: 'Result out',
+      p_st_seat: 'Pick a seat',
+
+      p_seatTitle: 'Choose a seat',
+      p_seatHint: 'Pick the seat you are sitting at. This device only needs to choose once per session — round changes keep the same seat.',
+      p_seatLoading: 'Loading seats…',
+      p_seatFree: 'Free',
+      p_seatOccupied: 'Taken',
+      p_seatMine: 'My seat',
+      p_seatNo: 'Seat {n}',
+      p_seatJoined: 'Joined seat {n}',
+      p_seatFail: 'Could not take the seat. Try again or ask staff.',
 
       p_scanTitle: 'Scan my QR code',
       p_openCam: 'Open camera to scan',
@@ -1196,7 +1276,14 @@
       p_err_session_need_unlock: 'Please enter the session passcode first',
       p_err_player_wrong_password: 'Wrong session passcode. Please check with staff',
       p_err_player_too_many_attempts: 'Too many wrong attempts. Try again in {retryAfter}s',
-      p_err_unlock_password_required: 'This session requires a passcode'
+      p_err_unlock_password_required: 'This session requires a passcode',
+      p_err_seat_required: 'Please choose a seat first',
+      p_err_seat_taken: 'That seat was just taken — please choose another',
+      p_err_seat_invalid: 'Invalid seat number',
+      p_err_seat_out_of_range: 'That seat does not exist — please choose again',
+      p_err_device_invalid: 'Device id is invalid — please reload the page',
+      p_err_member_other_seat: 'You are already registered at seat {seatNo}; please go back to it',
+      p_err_seat_member_conflict: 'Someone else is already playing at this seat; ask them to log out first'
     }
   };
 

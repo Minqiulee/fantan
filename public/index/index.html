@@ -43,6 +43,14 @@
     <div class="hint" data-i18n="p_pickHint">选择你所在的场次需输入场次口令；选错场次看不到本场的开奖结果。</div>
   </div>
 
+  <!-- ⓪-1 选择席位（本机第一次加入本场次时；选定后跟场次走，换轮次不再询问） -->
+  <div class="card hidden" id="cardSeat">
+    <h2><span class="step">0</span><span data-i18n="p_seatTitle">选择席位</span></h2>
+    <div class="seat-grid" id="seatGrid"></div>
+    <div class="err" id="seatErr"></div>
+    <div class="hint" data-i18n="p_seatHint">请选择你所在的席位。同一台设备本场只需选择一次，换轮次不用重选。</div>
+  </div>
+
   <!-- ① 扫描自己的二维码 -->
   <div class="card" id="cardScan">
     <h2><span class="step">1</span><span data-i18n="p_scanTitle">扫描我的二维码</span></h2>

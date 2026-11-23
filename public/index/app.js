@@ -25,6 +25,61 @@
   var sid = bind ? bind.sid : '';
   var ut = bind ? bind.ut : '';
   var pid = '';
+
+  /* ---------- 设备与席位 ----------
+   * 设备标识：本机随机串（localStorage 长期保存），服务端把它与「场次 + 席位号」绑定。
+   * 席位绑定按场次单独记忆：oe_seat:<sid> = { no, dev }。
+   * 换轮次（/api/reset）不会清掉它 —— 玩家不需要重新选座；
+   * 只有换场次 / 服务端明确说这个席位已不属于本机时才重新选。
+   */
+  var DEVICE_KEY = 'oe_device';
+  var SEAT_PREFIX = 'oe_seat:';
+  var SEAT_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+  function ensureDeviceId() {
+    var v = '';
+    try { v = localStorage.getItem(DEVICE_KEY) || ''; } catch (e) { v = ''; }
+    if (SEAT_RE.test(v)) return v;
+    // 不用 crypto.randomUUID：老浏览器 / 非安全上下文下可能没有
+    v = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10) +
+      Math.random().toString(36).slice(2, 10);
+    v = v.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+    if (!SEAT_RE.test(v)) v = 'd' + v;
+    try { localStorage.setItem(DEVICE_KEY, v); } catch (e) { /* 隐私模式忽略 */ }
+    return v;
+  }
+
+  var deviceId = ensureDeviceId();
+
+  function seatKey(s) { return SEAT_PREFIX + (s || ''); }
+
+  function loadSeat(s) {
+    if (!s) return null;
+    try {
+      var raw = localStorage.getItem(seatKey(s));
+      if (!raw) return null;
+      var b = JSON.parse(raw);
+      if (!b || !b.no || Number(b.no) < 1) return null;
+      if (b.dev && b.dev !== deviceId) return null;          // 换了设备（清过浏览器数据）就不认
+      return { no: Number(b.no), dev: deviceId };
+    } catch (e) { return null; }
+  }
+
+  function saveSeat(d) {
+    if (!d || !d.ok || !d.seatNo) return;
+    seat = { no: Number(d.seatNo), dev: deviceId };
+    try { localStorage.setItem(seatKey(sid), JSON.stringify(seat)); } catch (e) { /* 忽略 */ }
+  }
+
+  function clearSeat() {
+    seat = null;
+    try { localStorage.removeItem(seatKey(sid)); } catch (e) { /* 忽略 */ }
+  }
+
+  var seat = loadSeat(sid);
+  var seatList = [];             // [{ no, occupied }]：服务端返回的席位占用
+  var seatBusy = false;
+
   var sessList = [];             // 服务端返回的进行中场次
   var state = null;
   var picking = false;           // 是否正在展开场次选择（切换时不打断当前场次）
@@ -263,6 +318,7 @@
   /* ---------- 状态判定 ---------- */
   function phase(s) {
     if (!sid) return 'pick';                   // 还没选场次（或本场已结束被清空）
+    if (!seat) return 'seat';                  // 本机还没加入本场次（需选席位）
     if (!s || !s.me) return 'unreg';           // 未扫码（或新一轮）
     if (s.me.oddEven == null) return 'ready';  // 已登记待预测
     if (!s.locked) return 'wait';              // 已预测等待开奖
@@ -271,6 +327,7 @@
 
   var PHASE_META = {
     pick:  { cls: 'st-unreg', text: function () { return t('p_pickTitle'); } },
+    seat:  { cls: 'st-unreg', text: function () { return t('p_st_seat'); } },
     unreg: { cls: 'st-unreg', text: function () { return t('p_st_unreg'); } },
     ready: { cls: 'st-ready', text: function () { return t('p_st_ready'); } },
     wait:  { cls: 'st-wait',  text: function () { return t('p_st_wait'); } },
@@ -294,14 +351,19 @@
 
     // 场次 + 轮次标题（未选场次时留空）
     $('roundInfo').textContent = (sid && s)
-      ? t('p_sessionRound', { name: s.session.name, n: s.round }) + (s.locked ? t('p_locked') : t('p_inProgress'))
+      ? t('p_sessionRound', { name: s.session.name, n: s.round })
+        + (s.locked ? t('p_locked') : t('p_inProgress'))
+        + (seat ? ' · ' + t('p_seatNo', { n: seat.no }) : '')
       : '';
 
     $('cardSession').classList.toggle('hidden', !(picking || ph === 'pick'));
+    $('cardSeat').classList.toggle('hidden', picking || ph !== 'seat');
     $('cardScan').classList.toggle('hidden', picking || ph !== 'unreg');
     $('cardPred').classList.toggle('hidden', picking || ph !== 'ready');
     $('cardWait').classList.toggle('hidden', picking || ph !== 'wait');
     $('cardResult').classList.toggle('hidden', picking || ph !== 'done');
+
+    if (ph === 'seat') renderSeatPicker();
 
     // 提交成功后按钮会保持 disabled 防重复提交；下一轮重新登记时必须恢复可点，
     // 否则同一页面连玩多轮的玩家会卡在「选项都选了但按钮点不动」。
@@ -322,6 +384,111 @@
     }
 
     if (ph === 'done') renderResult(s);
+  }
+
+  /* ---------- 席位选择（本机第一次加入本场次） ---------- */
+
+  /** 可用于渲染的席位列表：state（SSE 实时）与接口返回都写进 seatList，界面只认这一份 */
+  function seatData() {
+    var list = seatList || [];
+    return list.slice().sort(function (a, b) { return a.no - b.no; });
+  }
+
+  function renderSeatPicker() {
+    var box = $('seatGrid');
+    if (!box) return;
+    var seats = seatData();
+    if (!seats.length) {
+      box.innerHTML = '<div class="hint" style="margin:0">' + esc(t('p_seatLoading')) + '</div>';
+      return;
+    }
+    box.innerHTML = seats.map(function (x) {
+      var mine = !!seat && seat.no === x.no;
+      var taken = !!x.occupied && !mine;
+      var cls = 'seat-opt' + (taken ? ' taken' : '') + (mine ? ' mine' : '');
+      var tag = mine ? t('p_seatMine') : (taken ? t('p_seatOccupied') : t('p_seatFree'));
+      return '<button class="' + cls + '" type="button" data-no="' + x.no + '"'
+        + (taken ? ' disabled' : '') + '>' + x.no + '<small>' + esc(tag) + '</small></button>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.seat-opt'), function (b) {
+      b.addEventListener('click', function () {
+        if (b.disabled) return;
+        chooseSeat(Number(b.getAttribute('data-no')));
+      });
+    });
+  }
+
+  function joinSeatReq(no) {
+    return fetch('/api/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: sid, ut: ut, deviceId: deviceId, seatNo: no })
+    }).then(function (r) { return r.json(); });
+  }
+
+  /** 拉一次席位占用（未选座时渲染选座界面；选座冲突后刷新可用性） */
+  function refreshSeats() {
+    if (!sid) return Promise.resolve();
+    var q = '/api/seats?sid=' + encodeURIComponent(sid) +
+      '&ut=' + encodeURIComponent(ut) +
+      '&deviceId=' + encodeURIComponent(deviceId);
+    return fetch(q, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) return;
+        seatList = d.seats || [];
+        // 服务端已不认这条绑定（场次重建 / 席位被调整）：清掉本地，回到选座
+        if (seat && d.mySeat == null) clearSeat();
+        render();
+      })
+      .catch(function () { /* 断网时保留本地状态 */ });
+  }
+
+  /**
+   * 已选过席位的设备：进页面时做一次幂等重签。
+   *   - 服务端按 deviceId 找回原席位，不需要重新选
+   *   - 只有「席位被别人占了 / 号段被缩掉」才清本地绑定，退回选座
+   */
+  function ensureSeatBinding() {
+    if (!sid) return Promise.resolve();
+    if (!seat) { refreshSeats(); return Promise.resolve(); }
+    return joinSeatReq(seat.no).then(function (d) {
+      if (d && d.ok) {
+        saveSeat(d);
+        seatList = d.seats || seatList;
+      } else if (d && (d.code === 'seat_taken' || d.code === 'seat_out_of_range' || d.code === 'seat_required')) {
+        clearSeat();
+      }
+      render();
+      if (!seat) refreshSeats();
+    }).catch(function () { /* 断网：保留本地绑定，下次操作再对齐 */ });
+  }
+
+  function chooseSeat(no) {
+    if (seatBusy || !sid) return;
+    seatBusy = true;
+    $('seatErr').textContent = '';
+    joinSeatReq(no).then(function (d) {
+      seatBusy = false;
+      if (!d || !d.ok) {
+        $('seatErr').textContent = window.I18N.errCode(d && d.code, d, 'p_err_') || t('p_seatFail');
+        if (d && (d.code === 'seat_taken' || d.code === 'seat_out_of_range') && d.seats) {
+          seatList = d.seats;
+          render();
+        }
+        return;
+      }
+      saveSeat(d);
+      seatList = d.seats || seatList;
+      clearPredSelection();
+      render();
+      startStream();
+      poll();
+      toast(t('p_seatJoined', { n: d.seatNo }), 'ok');
+    }).catch(function () {
+      seatBusy = false;
+      $('seatErr').textContent = t('p_scanNetErr');
+    });
   }
 
   function renderResult(s) {
@@ -459,6 +626,7 @@
     // 场次已被关闭：退回场次选择（正常情况下服务端会先推 session_closed 事件）
     if (s.session && s.session.status === 'closed') { onSessionClosed(); return; }
     $('connLost').classList.add('hidden');
+    if (s.seats) seatList = s.seats;   // 席位占用随状态一起刷新（选座界面实时可见）
     var prevPh = state ? phase(state) : null;
     state = s;
     render();
@@ -600,6 +768,8 @@
     ut = '';
     bind = null;
     pid = '';
+    seat = null;
+    seatList = [];
     state = null;
     try { localStorage.removeItem(BIND_KEY); } catch (e) { /* 隐私模式忽略 */ }
   }
@@ -654,12 +824,15 @@
     bind = { sid: d.sid, ut: d.ut, exp: Number(d.expiresAt) || 0 };
     try { localStorage.setItem(BIND_KEY, JSON.stringify(bind)); } catch (e) { /* 忽略 */ }
     pid = localStorage.getItem(pidKey(sid)) || '';
+    seat = loadSeat(sid);
+    seatList = [];
     state = null;
     selOE = null; selNum = null;
     picking = false;
     clearPredSelection();
     $('scanErr').textContent = '';
     render();
+    ensureSeatBinding();
     startStream();
     poll();
   }
@@ -734,7 +907,9 @@
       sid = bind.sid;
       ut = bind.ut;
       pid = localStorage.getItem(pidKey(sid)) || '';
+      seat = loadSeat(sid);
       render();
+      ensureSeatBinding();
       startStream();
       fetchState().then(function (d) {
         if (handleAuthFail(d)) return;
@@ -763,10 +938,16 @@
     if (!sid) { $('scanErr').textContent = t('p_pickHint'); return; }
     fetch('/api/scan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: content, sid: sid, ut: ut })
+      body: JSON.stringify({ content: content, sid: sid, ut: ut, deviceId: deviceId })
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok) {
         if (handleAuthFail(d)) return;
+        // 席位失效（被清 / 场次重建）：退回选座，而不是让玩家对着扫码卡片反复失败
+        if (d.code === 'seat_required') {
+          clearSeat();
+          refreshSeats();
+          render();
+        }
         $('scanErr').textContent = window.I18N.errCode(d.code, d, 'p_err_') || t('p_scanFail');
         return;
       }

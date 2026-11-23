@@ -4,8 +4,9 @@
  * 全部运行态与归档数据都在 Postgres，应用重启后数据仍在。
  *
  * 数据实体与表结构（均含时间戳）：
- *   - game_session  场次实体（名称、状态、创建/关闭时间）—— 一个实例可并行承载 1–4 场
+ *   - game_session  场次实体（名称、状态、容纳人数、创建/关闭时间）—— 一个实例可并行承载 1–4 场
  *   - round         场次内的当前轮次状态（开奖数字、锁定时间），每场一行
+ *   - session_seat  场次席位（座位号、绑定的设备、本轮坐在这里的会员），跨轮次保留
  *   - player        场次内每个玩家的登记与预测，主键 (session_id, id)
  *   - identity      场次内的跨轮次身份档案，主键 (session_id, id)
  *   - round_archive 竞猜归档表头（一轮一行，append-only）
@@ -56,6 +57,8 @@
 const { Pool } = require('pg');
 const crypto = require('crypto');
 const memberId = require('./lib/member-id');
+// 席位数默认值 / 上下界只有一处定义，本层所有兜底与 clamp 都引用它
+const { DEFAULT_SEAT_COUNT, clampSeatCount } = require('./lib/seats');
 
 const LOCAL_DEFAULT_URL = 'postgres://postgres:postgres@localhost:5432/oddeven';
 
@@ -303,10 +306,30 @@ async function initDb() {
       name       TEXT NOT NULL,             -- 场次名称（工作人员可命名）
       status     TEXT NOT NULL DEFAULT 'open', -- open | closed
       seq        INTEGER NOT NULL DEFAULT 1,   -- 显示顺序
+      seat_count INTEGER NOT NULL DEFAULT ${DEFAULT_SEAT_COUNT},  -- 本场容纳人数（= 席位总数，可运行时调整；默认值见 lib/seats.js）
       created_at BIGINT NOT NULL,           -- 创建时间戳（毫秒）
       closed_at  BIGINT                     -- 关闭时间戳（毫秒，null 表示未关闭）
     );
   `);
+
+  // 席位表：一场 N 行（1…seat_count），是「谁占用哪个座位」的唯一事实来源。
+  //   - device_id  绑定到该席位的设备（浏览器本地随机串）；跨轮次保留，换轮次不用重选
+  //   - member_id / member_enc  本轮坐在这里的会员（每轮 reset 清空，席位本身不清）
+  //   - 席位由场次创建 / 扩缩容时物化出来，占用校验在 store.mutate 的同一把乐观锁内完成
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS session_seat (
+      session_id TEXT    NOT NULL,          -- 所属场次
+      seat_no    INTEGER NOT NULL,          -- 席位号（1…seat_count，稳定不重排）
+      device_id  TEXT,                      -- 绑定设备（null = 空席位）
+      member_id  TEXT,                      -- 本轮该席位的会员 ref（null = 本轮未登记）
+      member_enc TEXT,                      -- 会员号密文（与 player.member_enc 同格式）
+      bound_at   BIGINT,                    -- 设备绑定时间戳（毫秒）
+      PRIMARY KEY (session_id, seat_no)
+    );
+  `);
+  await p.query(
+    'CREATE INDEX IF NOT EXISTS idx_session_seat_device ON session_seat (session_id, device_id);'
+  );
 
   // 轮次表：一场一行（当前轮）
   await p.query(`
@@ -331,6 +354,7 @@ async function initDb() {
       id            TEXT NOT NULL,          -- 会员号盲索引 ref（m_…）
       member_enc    TEXT,                   -- 会员号密文（mid:v<n>:…，按前缀挑密钥）
       round         INTEGER NOT NULL,       -- 场次内所属轮次
+      seat_no       INTEGER,                -- 本轮登记的席位号（null = 席位化之前的历史行）
       odd_even      TEXT,                   -- 预测单/双（null 表示未提交）
       number        INTEGER,                -- 预测数字
       registered_at BIGINT NOT NULL,        -- 登记时间戳（毫秒）
@@ -339,8 +363,9 @@ async function initDb() {
       PRIMARY KEY (session_id, id)          -- 同一 ID 可同时存在于多个场次
     );
   `);
-  // 已有库补列：密文列是后加的
+  // 已有库补列：密文列、席位列都是后加的
   await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS member_enc TEXT;');
+  await p.query('ALTER TABLE player ADD COLUMN IF NOT EXISTS seat_no INTEGER;');
 
   // 身份档案：一场内一份，跨该场次的轮次累计
   await p.query(`
@@ -479,11 +504,13 @@ async function initDb() {
 
 /** 快照行 → 场次对象（与改造前内存里的结构完全一致，前端/SSE 负载不用改）。 */
 function rowToSession(r) {
+  const seatCount = clampSeatCount(r.seat_count);
   const s = {
     id: r.session_id,
     name: r.name,
     status: r.status,
     seq: Number(r.seq),
+    seatCount,
     createdAt: Number(r.created_at),
     closedAt: r.closed_at != null ? Number(r.closed_at) : null,
     round: r.round_no != null ? Number(r.round_no) : 1,
@@ -498,8 +525,26 @@ function rowToSession(r) {
       : null,
     players: {},
     identities: {},
+    seats: {},
     version: r.version != null ? Number(r.version) : 1
   };
+  // 席位先按 seat_count 铺满，再用库里的行覆盖：
+  // 老场次（席位化之前建的）没有 session_seat 行，也必须能正常读出「N 个空席位」，
+  // 否则第一次 join 会因为快照里没有 seat 而误判越界。
+  for (let i = 1; i <= seatCount; i += 1) {
+    s.seats[i] = { no: i, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
+  }
+  for (const row of r.seats || []) {
+    const no = Number(row.seat_no);
+    if (!Number.isInteger(no) || no < 1 || no > seatCount) continue;
+    s.seats[no] = {
+      no,
+      deviceId: row.device_id || '',
+      memberId: row.member_id || '',
+      memberEnc: row.member_enc || null,
+      boundAt: row.bound_at != null ? Number(row.bound_at) : null
+    };
+  }
   for (const p of r.players || []) {
     // 会员号在这里完成「密文 → ref + 脱敏 ID」的转换：内存、接口、页面都只见到这三样，
     // 明文只在解密的那一瞬间存在。缺密文的行 decodeRow 直接抛错，不做任何降级。
@@ -508,6 +553,7 @@ function rowToSession(r) {
       id: mid.id,
       enc: mid.enc,
       maskedId: mid.maskedId,
+      seatNo: p.seat_no != null ? Number(p.seat_no) : null,
       oddEven: p.odd_even,
       number: p.number != null ? Number(p.number) : null,
       registeredAt: Number(p.registered_at),
@@ -530,11 +576,11 @@ function rowToSession(r) {
  * 兜底 `max(version)`（版本化之前建、round 列为 null 的历史行，读到最新一版）。
  * 这样规则永远是「这一次读库」的结果，不需要进程内缓存，也没有 TTL 可言。 */
 const SNAPSHOT_SQL = `
-  SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
+  SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.seat_count, gs.created_at, gs.closed_at,
          rv.version AS rule_version, rv.prizes AS rule_prizes, rv.bonus AS rule_bonus,
          st.version AS version,
          r.round AS round_no, r.number AS round_number, r.locked_at, r.locked_by,
-         pl.j AS players, idt.j AS identities
+         pl.j AS players, idt.j AS identities, stt.j AS seats
     FROM game_session gs
     LEFT JOIN session_state st ON st.session_id = gs.session_id
     LEFT JOIN round r ON r.session_id = gs.session_id
@@ -542,7 +588,8 @@ const SNAPSHOT_SQL = `
            ON rv.version = COALESCE(r.rule_version, (SELECT max(version) FROM rule_version))
     LEFT JOIN LATERAL (
       SELECT json_agg(json_build_object(
-               'id', p.id, 'enc', p.member_enc, 'odd_even', p.odd_even, 'number', p.number,
+               'id', p.id, 'enc', p.member_enc, 'seat_no', p.seat_no,
+               'odd_even', p.odd_even, 'number', p.number,
                'registered_at', p.registered_at, 'submitted_at', p.submitted_at,
                'left_at', p.left_at) ORDER BY p.registered_at ASC) AS j
         FROM player p WHERE p.session_id = gs.session_id
@@ -553,6 +600,12 @@ const SNAPSHOT_SQL = `
                'completed_rounds', i.completed_rounds)) AS j
         FROM identity i WHERE i.session_id = gs.session_id
     ) idt ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object(
+               'seat_no', ss.seat_no, 'device_id', ss.device_id, 'member_id', ss.member_id,
+               'member_enc', ss.member_enc, 'bound_at', ss.bound_at) ORDER BY ss.seat_no ASC) AS j
+        FROM session_seat ss WHERE ss.session_id = gs.session_id
+    ) stt ON TRUE
 `;
 
 /**
@@ -581,11 +634,13 @@ async function loadSessionSnapshot(sessionId) {
 async function listSessionSummaries() {
   const p = getPool();
   const r = await p.query(`
-    SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.created_at, gs.closed_at,
+    SELECT gs.session_id, gs.name, gs.status, gs.seq, gs.seat_count, gs.created_at, gs.closed_at,
            rv.version AS rule_version,
            st.version, r.round AS round_no, r.number AS round_number, r.locked_at, r.locked_by,
            (SELECT count(*)::int FROM player p
-             WHERE p.session_id = gs.session_id AND p.left_at IS NULL) AS player_count
+             WHERE p.session_id = gs.session_id AND p.left_at IS NULL) AS player_count,
+           (SELECT count(*)::int FROM session_seat ss
+             WHERE ss.session_id = gs.session_id AND ss.device_id IS NOT NULL) AS seat_occupied
       FROM game_session gs
       LEFT JOIN session_state st ON st.session_id = gs.session_id
       LEFT JOIN round r ON r.session_id = gs.session_id
@@ -598,6 +653,8 @@ async function listSessionSummaries() {
     name: x.name,
     status: x.status,
     seq: Number(x.seq),
+    seatCount: clampSeatCount(x.seat_count),
+    seatOccupied: Number(x.seat_occupied || 0),
     createdAt: Number(x.created_at),
     closedAt: x.closed_at != null ? Number(x.closed_at) : null,
     round: x.round_no != null ? Number(x.round_no) : 1,
@@ -712,6 +769,7 @@ function playerColumns(players) {
   const ids = [];
   const encs = [];
   const rounds = [];
+  const seats = [];
   const oes = [];
   const nums = [];
   const regs = [];
@@ -725,13 +783,14 @@ function playerColumns(players) {
     if (!pl.enc) throw new Error('player ' + pl.id + ' 缺少会员号密文，拒绝写入');
     encs.push(pl.enc);
     rounds.push(pl.round);
+    seats.push(pl.seatNo != null ? Number(pl.seatNo) : null);
     oes.push(pl.oddEven);
     nums.push(pl.number);
     regs.push(pl.registeredAt);
     subs.push(pl.submittedAt != null ? pl.submittedAt : null);
     lefts.push(pl.leftAt != null ? pl.leftAt : null);
   }
-  return { ids, encs, rounds, oes, nums, regs, subs, lefts };
+  return { ids, encs, rounds, seats, oes, nums, regs, subs, lefts };
 }
 
 /**
@@ -778,12 +837,13 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
 
     // 2. 元信息 + 轮次 + 玩家 + 身份档案
     await client.query(
-      `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO game_session (session_id, name, status, seq, seat_count, created_at, closed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (session_id) DO UPDATE SET
          name=EXCLUDED.name, status=EXCLUDED.status, seq=EXCLUDED.seq,
-         closed_at=EXCLUDED.closed_at`,
-      [session.id, session.name, session.status, session.seq, session.createdAt, session.closedAt]
+         seat_count=EXCLUDED.seat_count, closed_at=EXCLUDED.closed_at`,
+      [session.id, session.name, session.status, session.seq,
+        clampSeatCount(session.seatCount), session.createdAt, session.closedAt]
     );
 
     await client.query(
@@ -795,6 +855,34 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
       [session.id, session.round, session.number, session.lockedAt, session.lockedBy || '',
         session.ruleVersion != null ? Number(session.ruleVersion) : null]
     );
+
+    // 席位：与轮次同一个事务、同一把版本锁。
+    // 缩容只允许删「空席位」（业务侧已校验），这里按快照对齐即可；
+    // 绑定关系（device_id）跨轮次保留，reset 只清 member 两列。
+    const seats = Object.values(session.seats || {});
+    const seatNos = seats.map((x) => Number(x.no));
+    await client.query(
+      'DELETE FROM session_seat WHERE session_id = $1 AND NOT (seat_no = ANY($2::int[]))',
+      [session.id, seatNos]
+    );
+    if (seats.length) {
+      await client.query(
+        `INSERT INTO session_seat (session_id, seat_no, device_id, member_id, member_enc, bound_at)
+         SELECT $1, u.seat_no, u.device_id, u.member_id, u.member_enc, u.bound_at
+           FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::bigint[])
+             AS u(seat_no, device_id, member_id, member_enc, bound_at)
+         ON CONFLICT (session_id, seat_no) DO UPDATE SET
+           device_id=EXCLUDED.device_id, member_id=EXCLUDED.member_id,
+           member_enc=EXCLUDED.member_enc, bound_at=EXCLUDED.bound_at`,
+        [
+          session.id, seatNos,
+          seats.map((x) => x.deviceId || null),
+          seats.map((x) => x.memberId || null),
+          seats.map((x) => x.memberEnc || null),
+          seats.map((x) => (x.boundAt != null ? Number(x.boundAt) : null))
+        ]
+      );
+    }
 
     const players = Object.values(session.players).map((pl) => ({
       ...pl,
@@ -811,16 +899,18 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
     if (players.length) {
       await client.query(
         `INSERT INTO player
-           (session_id, id, member_enc, round, odd_even, number, registered_at, submitted_at, left_at)
-         SELECT $1, u.id, u.enc, u.round, u.odd_even, u.number, u.registered_at, u.submitted_at, u.left_at
-           FROM unnest($2::text[], $3::text[], $4::int[], $5::text[], $6::int[],
-                       $7::bigint[], $8::bigint[], $9::bigint[])
-             AS u(id, enc, round, odd_even, number, registered_at, submitted_at, left_at)
+           (session_id, id, member_enc, round, seat_no, odd_even, number, registered_at, submitted_at, left_at)
+         SELECT $1, u.id, u.enc, u.round, u.seat_no, u.odd_even, u.number, u.registered_at, u.submitted_at, u.left_at
+           FROM unnest($2::text[], $3::text[], $4::int[], $5::int[],
+                       $6::text[], $7::int[],
+                       $8::bigint[], $9::bigint[], $10::bigint[])
+             AS u(id, enc, round, seat_no, odd_even, number, registered_at, submitted_at, left_at)
          ON CONFLICT (session_id, id) DO UPDATE SET
            member_enc=EXCLUDED.member_enc,
-           round=EXCLUDED.round, odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
+           round=EXCLUDED.round, seat_no=EXCLUDED.seat_no,
+           odd_even=EXCLUDED.odd_even, number=EXCLUDED.number,
            submitted_at=EXCLUDED.submitted_at, left_at=EXCLUDED.left_at`,
-        [session.id, cols.ids, cols.encs, cols.rounds, cols.oes, cols.nums, cols.regs, cols.subs, cols.lefts]
+        [session.id, cols.ids, cols.encs, cols.rounds, cols.seats, cols.oes, cols.nums, cols.regs, cols.subs, cols.lefts]
       );
     }
 
@@ -891,10 +981,11 @@ async function commitSnapshot(sessionId, expectedVersion, session) {
  *
  * 返回 { ok:true, session } / { ok:false, code:'session_limit', open } / { ok:false, error }
  */
-async function createSessionRow({ id, name, maxOpen }) {
+async function createSessionRow({ id, name, maxOpen, seatCount = DEFAULT_SEAT_COUNT }) {
   const p = getPool();
   const client = await p.connect();
   const now = Date.now();
+  const seats = clampSeatCount(seatCount);
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SESSION_CREATE_LOCK]);
@@ -911,9 +1002,9 @@ async function createSessionRow({ id, name, maxOpen }) {
     const finalName = name || '第 ' + seq + ' 场';
 
     await client.query(
-      `INSERT INTO game_session (session_id, name, status, seq, created_at, closed_at)
-       VALUES ($1,$2,'open',$3,$4,NULL)`,
-      [id, finalName, seq, now]
+      `INSERT INTO game_session (session_id, name, status, seq, seat_count, created_at, closed_at)
+       VALUES ($1,$2,'open',$3,$4,$5,NULL)`,
+      [id, finalName, seq, seats, now]
     );
     await client.query(
       'INSERT INTO session_state (session_id, version, updated_at) VALUES ($1, 1, $2)',
@@ -924,9 +1015,16 @@ async function createSessionRow({ id, name, maxOpen }) {
        VALUES ($1, 1, NULL, NULL, (SELECT max(version) FROM rule_version))`,
       [id]
     );
+    // 席位物化：1…seatCount 一次建齐，之后占用校验只改行、不改结构
+    await client.query(
+      `INSERT INTO session_seat (session_id, seat_no)
+       SELECT $1, g FROM generate_series(1, $2) AS g
+       ON CONFLICT (session_id, seat_no) DO NOTHING`,
+      [id, seats]
+    );
 
     await client.query('COMMIT');
-    return { ok: true, session: { id, name: finalName, seq } };
+    return { ok: true, session: { id, name: finalName, seq, seatCount: seats } };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
     return { ok: false, error: e.message, code: e.code };

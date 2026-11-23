@@ -229,6 +229,12 @@
 
     var top = document.createElement('div');
     top.className = 'pc-top';
+    if (p.seatNo) {                       // 席位号：现场按座位找人，比脱敏会员号直观
+      var seatEl = document.createElement('span');
+      seatEl.className = 'pc-seat';
+      seatEl.textContent = '#' + p.seatNo;
+      top.appendChild(seatEl);
+    }
     var idEl = document.createElement('span');
     idEl.className = 'pc-id';
     idEl.textContent = p.maskedId || p.id;   // 只展示脱敏标签，明文会员号不下发到浏览器

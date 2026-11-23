@@ -24,6 +24,8 @@
  *   type = 'change' 普通状态变更 | 'closed' 场次关闭（收端要断开该场次连接）
  */
 const { EventEmitter } = require('events');
+// 新建场次不传席位数时的默认值：与 db 层、HTTP 层共用同一份常量（lib/seats.js）
+const { DEFAULT_SEAT_COUNT } = require('./lib/seats');
 
 /** 读缓存有效期：通知机制正常时用不到它，纯粹是「通知丢了」的兜底。 */
 const CACHE_TTL_MS = 5000;
@@ -209,11 +211,11 @@ function createStore({ db, pubsub = null, logger = console, ttlMs = CACHE_TTL_MS
    * 新建场次：上限判断与序号分配在 db 层用全局 advisory lock 串起来（跨实例）。
    * id 冲突（随机短串撞车）时重试几次。
    */
-  async function create({ id, name, maxOpen, makeId }) {
+  async function create({ id, name, maxOpen, seatCount = DEFAULT_SEAT_COUNT, makeId }) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       // 首次用调用方指定的 id（首场固定为 main），撞车后换成新的随机 id
       const sid = attempt === 0 && id ? id : makeId();
-      const r = await db.createSessionRow({ id: sid, name, maxOpen });
+      const r = await db.createSessionRow({ id: sid, name, maxOpen, seatCount });
       if (!r.ok) {
         if (r.code === '23505') continue; // 主键冲突，换个 id 再来
         return r;

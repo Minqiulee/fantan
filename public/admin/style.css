@@ -37,6 +37,7 @@
     font-weight:600; transition:all .12s ease;
   }
   .sess-btn:active { transform:scale(.96); }
+  .sess-btn:disabled { opacity:.42; cursor:not-allowed; }
   .user-chip {
     font-size:12.5px; padding:6px 12px; border-radius:99px; color:var(--muted);
     background:rgba(0,0,0,.22); border:1px solid var(--card-border); font-weight:600;

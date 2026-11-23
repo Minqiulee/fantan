@@ -276,8 +276,61 @@ export async function unlock(api, sid, password = PLAYER_PASSWORD) {
   return api.post('/api/session-unlock', { sid, password });
 }
 
+/* ---------- 席位（每个「设备」一个固定 deviceId，跨轮次复用） ---------- */
+
+let deviceSeq = 0;
+/** 生成测试用设备标识（形如 d1-xxxx，符合 [A-Za-z0-9_-]{8,64}）。 */
+export function newDeviceId() {
+  deviceSeq += 1;
+  return 'd' + deviceSeq + '-' + crypto.randomBytes(6).toString('hex');
+}
+
+/** 占一个席位；返回 { status, body, deviceId }。 */
+export async function joinSeat(api, sid, ut, seatNo, deviceId = newDeviceId()) {
+  const r = await api.post('/api/join', { sid, ut, deviceId, seatNo });
+  return { ...r, deviceId };
+}
+
+/** 场内第一个空席位号；没有空位返回 0。 */
+export async function firstFreeSeat(api, sid, ut, deviceId = '') {
+  const q = '/api/seats?sid=' + encodeURIComponent(sid) + '&ut=' + encodeURIComponent(ut)
+    + (deviceId ? '&deviceId=' + encodeURIComponent(deviceId) : '');
+  const r = await api.get(q);
+  const seats = (r.body && r.body.seats) || [];
+  const free = seats.find((s) => !s.occupied);
+  return free ? free.no : 0;
+}
+
+/**
+ * 扫码登记：自动完成「设备选席位 → 扫码」两步。
+ * 同一 (场次, 会员号) 复用同一个虚拟设备与席位，重复调用保持幂等（与真实浏览器一致）。
+ */
+const deviceSeats = new Map(); // `${sid}|${content}` -> { deviceId, seatNo }
+
+export async function scanWithDevice(api, sid, ut, content, deviceId, seatNo) {
+  const key = sid + '|' + content;
+  let binding = deviceSeats.get(key);
+  if (!binding || (deviceId && deviceId !== binding.deviceId)) {
+    const dev = deviceId || newDeviceId();
+    const no = seatNo || await firstFreeSeat(api, sid, ut);
+    if (!no) throw new Error('场次 ' + sid + ' 没有空席位');
+    const j = await joinSeat(api, sid, ut, no, dev);
+    if (!j.body || !j.body.ok) throw new Error('选座失败：' + JSON.stringify(j.body));
+    binding = { deviceId: dev, seatNo: j.body.seatNo };
+    deviceSeats.set(key, binding);
+  }
+  return api.post('/api/scan', { sid, ut, content, deviceId: binding.deviceId });
+}
+
 export function scan(api, sid, ut, content) {
-  return api.post('/api/scan', { sid, ut, content });
+  return scanWithDevice(api, sid, ut, content).then((r) => {
+    // 场次被重建 / 席位被清掉时，重新走一遍选座（测试文件之间会 DROP SCHEMA）
+    if (r.body && r.body.code === 'seat_required') {
+      deviceSeats.delete(sid + '|' + content);
+      return scanWithDevice(api, sid, ut, content);
+    }
+    return r;
+  });
 }
 
 /** pid 入参统一按「会员号原文」传，内部折算成接口里的盲索引 ref。 */
