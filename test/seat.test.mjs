@@ -70,14 +70,14 @@ after(async () => {
 test('场次创建即按配置物化席位，非法人数被拒', async () => {
   const list = await api.get('/api/sessions?token=' + encodeURIComponent(token));
   const main = list.body.sessions.find((s) => s.id === mainSid);
-  assert.equal(main.seatCount, 12, '默认容纳 12 人');
+  assert.equal(main.seatCount, 6, '默认容纳 6 人');
   assert.equal(main.seatOccupied, 0);
 
   const s = await seatsOf(mainSid, mainUt);
   assert.equal(s.body.ok, true);
-  assert.equal(s.body.seatCount, 12);
-  assert.equal(s.body.seats.length, 12);
-  assert.deepEqual(s.body.seats.map((x) => x.no), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.equal(s.body.seatCount, 6);
+  assert.equal(s.body.seats.length, 6);
+  assert.deepEqual(s.body.seats.map((x) => x.no), Array.from({ length: 6 }, (_, i) => i + 1));
   assert.equal(s.body.seats.every((x) => !x.occupied), true);
 
   for (const bad of [0, -1, 65, 3.5, 'x', true]) {
