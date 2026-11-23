@@ -1,280 +1,498 @@
-/* bigscreen 页面样式 —— 自原 bigscreen.html 内联 <style> 原样抽出 */
-  /* 现场大屏：会投影/挂在墙上远距离观看，所以字号用 vh/vw 撑开，
-     信息层级只有三层——场次与人数、每个人的当前选项、最近动态。 */
-  :root {
-    --bg1: #2a070c; --bg2: #12050a; --bg3: #4a0d15;
-    --card: rgba(86, 14, 20, .52);
-    --card-border: rgba(212, 166, 83, .30);
-    --card-border-strong: rgba(212, 166, 83, .62);
-    --text: #fff2d6;
-    --muted: #e0c294;
-    --gold: #ffd45e;
-    --gold-deep: #e8a020;
-    --ok: #4ade80;
-    --bad: #ff7b7b;
-    --dim: #8d7160;
-  }
-  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  html, body { height:100%; }
-  body {
-    font-family: -apple-system, "PingFang SC", "PingFang HK", "Microsoft YaHei", "STHeiti", sans-serif;
-    color: var(--text);
-    background:
-      radial-gradient(1200px 620px at 50% -8%, rgba(255,180,60,.16), transparent 62%),
-      radial-gradient(900px 520px at 108% 108%, rgba(255,70,70,.13), transparent 58%),
-      linear-gradient(165deg, var(--bg1) 0%, var(--bg3) 36%, var(--bg2) 100%);
-    overflow:hidden;
-  }
-  /* 背景暗纹：与玩家端同一套祥云/铜钱，压到很淡，只作质感 */
-  body::before {
-    content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.35;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='none' stroke='%23d8b98a' stroke-opacity='.10' stroke-width='1.4'%3E%3Ccircle cx='40' cy='40' r='10'/%3E%3Crect x='34' y='34' width='12' height='12' rx='1.5'/%3E%3Cpath d='M104 34c-5 4-5 12 0 16 5-4 5-12 0-16z'/%3E%3Ccircle cx='112' cy='108' r='9'/%3E%3Cpath d='M44 112c-6 5-6 14 0 19 6-5 6-14 0-19z'/%3E%3C/g%3E%3C/svg%3E");
-    background-size:160px 160px;
-  }
+/* bigscreen 页面样式 —— 视觉按 ref.jpg 的实桌效果重做：
+   暗红绒面 + 金线弧 + 桌面外圈；投注盘直接用 assets/pad.webp 做盘体，
+   羊头筹码（assets/chip.webp）作为品牌、贵宾牌与选中格的标志物。
+   信息层级仍是三层：场次与人数、每个人的选项、最近动态。 */
+:root {
+  /* 绒面 / 桌面 */
+  --felt-1: #7a1a20; --felt-2: #5c1219; --felt-3: #400b12; --felt-4: #24070c;
+  --rim-1: #3a0810; --rim-2: #1b0407;
+  /* 金属与纸面 */
+  --gold: #e8c37a; --gold-hi: #f7e2ae; --gold-deep: #a9782c;
+  --cream: #f0e7cd; --ink: #2a1a12;
+  --text: #f6ead2; --muted: #d3b791; --dim: #8a6e5b;
+  --line: rgba(216, 176, 112, .30);
+  --line-strong: rgba(216, 176, 112, .62);
+  --ok: #5ad07f; --bad: #ff7b7b;
+  --serif: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC", "SimSun", serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
 
-  .board {
-    position:relative; z-index:1; height:100%;
-    display:grid;
-    grid-template-rows: auto auto 1fr auto;
-    gap: clamp(10px, 1.4vh, 20px);
-    padding: clamp(14px, 2vh, 28px) clamp(16px, 2.4vw, 44px);
-  }
+body {
+  font-family: -apple-system, "PingFang SC", "PingFang HK", "Microsoft YaHei", "STHeiti", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(1400px 700px at 50% -14%, rgba(255, 170, 80, .10), transparent 62%),
+    radial-gradient(120% 80% at 50% 118%, rgba(0, 0, 0, .72), transparent 66%),
+    linear-gradient(178deg, var(--felt-1) 0%, var(--felt-2) 32%, var(--felt-3) 66%, var(--felt-4) 100%);
+  overflow: hidden;
+}
+/* 绒面暗纹：祥云 + 铜钱，压到很淡，只留质感 */
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .30;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%23e6c79a' stroke-opacity='.13' stroke-width='1.3'%3E%3Ccircle cx='54' cy='54' r='13'/%3E%3Crect x='46' y='46' width='16' height='16' rx='2'/%3E%3Cpath d='M142 46c-6 5-6 15 0 20 6-5 6-15 0-20z'/%3E%3Ccircle cx='150' cy='146' r='12'/%3E%3Cpath d='M58 152c-7 6-7 18 0 24 7-6 7-18 0-24z'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 220px 220px;
+  mix-blend-mode: soft-light;
+}
+/* 四周压暗，把注意力收到桌面中央 */
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(115% 95% at 50% 34%, transparent 52%, rgba(12, 2, 5, .62) 100%);
+}
 
-  /* ---------- 顶栏 ---------- */
-  .hd { display:flex; align-items:center; gap: clamp(12px, 2vw, 32px); }
-  .hd-brand { display:flex; align-items:baseline; gap:10px; flex:none; }
-  .brand-name {
-    font-size: clamp(20px, 2.6vh, 34px); font-weight:900; letter-spacing:3px;
-    background:linear-gradient(180deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-  }
-  .brand-tag {
-    font-size: clamp(11px, 1.35vh, 15px); font-weight:800; letter-spacing:2px;
-    padding: calc(.4vh + 2px) 12px; border-radius:99px; color:#3a1500;
-    background:linear-gradient(135deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
-  }
-  .hd-mid { flex:1; min-width:0; display:flex; align-items:baseline; gap: clamp(10px,1.4vw,20px); }
-  .hd-sess {
-    font-size: clamp(18px, 2.3vh, 30px); font-weight:800; letter-spacing:1px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  }
-  .hd-meta { display:flex; align-items:center; gap:10px; color:var(--muted); font-size: clamp(12px,1.5vh,17px); }
-  .hd-meta .sep { opacity:.4; }
-  .state-pill {
-    display:inline-flex; align-items:center; gap:7px; padding:3px 12px; border-radius:99px;
-    border:1px solid var(--card-border-strong); font-weight:700; letter-spacing:1px;
-  }
-  .state-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--gold); animation:pulse 1.5s infinite; }
-  .state-pill.locked { color:var(--ok); border-color:rgba(74,222,128,.5); }
-  .state-pill.locked .dot { background:var(--ok); animation:none; }
-  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.72)} }
+.board {
+  position: relative; z-index: 1; height: 100%;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: clamp(6px, .9vh, 14px);
+  padding: clamp(10px, 1.5vh, 22px) clamp(16px, 2.4vw, 44px);
+}
 
-  .sess-sel {
-    font: inherit; font-size: clamp(12px,1.4vh,15px); color:var(--text); font-weight:700;
-    background:rgba(0,0,0,.35); border:1px solid var(--card-border); border-radius:9px;
-    padding:3px 8px; outline:none; cursor:pointer;
-  }
-  .sess-sel option { background:#2a0a10; }
+/* ---------- 顶栏 ---------- */
+.hd { display: flex; align-items: center; gap: clamp(12px, 2vw, 28px); }
+.hd-brand { display: flex; align-items: center; gap: clamp(8px, .9vw, 14px); flex: none; }
+/* 品牌标志物：羊头筹码 */
+.brand-chip {
+  width: clamp(30px, 4.4vh, 52px); height: clamp(30px, 4.4vh, 52px); flex: none;
+  background: url("/assets/chip.webp") center / 206% auto no-repeat;
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, .65));
+}
+.brand-name {
+  font-family: var(--serif);
+  font-size: clamp(20px, 2.6vh, 34px); font-weight: 800; letter-spacing: 4px;
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold) 52%, var(--gold-deep));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .5));
+}
+.brand-tag {
+  font-size: clamp(10px, 1.3vh, 14px); font-weight: 800; letter-spacing: 2px;
+  padding: calc(.4vh + 1px) 11px; border-radius: 3px; color: #3a1500;
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold) 55%, var(--gold-deep));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .5);
+}
+.hd-mid { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: clamp(10px, 1.4vw, 20px); }
+.hd-sess {
+  font-family: var(--serif);
+  font-size: clamp(18px, 2.3vh, 30px); font-weight: 700; letter-spacing: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+}
+.hd-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: clamp(12px, 1.5vh, 17px); }
+.hd-meta .sep { opacity: .4; }
+.state-pill {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 12px; border-radius: 3px;
+  border: 1px solid var(--line-strong); font-weight: 700; letter-spacing: 1px;
+  background: rgba(30, 6, 10, .5);
+}
+.state-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); animation: pulse 1.5s infinite; }
+.state-pill.locked { color: var(--ok); border-color: rgba(90, 208, 127, .55); }
+.state-pill.locked .dot { background: var(--ok); animation: none; }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1) } 50% { opacity: .35; transform: scale(.72) } }
 
-  .hd-right { flex:none; display:flex; align-items:center; gap: clamp(10px,1.2vw,18px); }
-  .conn { font-size: clamp(12px,1.4vh,15px); color:var(--bad); font-weight:700; display:none; }
-  .conn.on { display:inline; }
-  .clock {
-    font-size: clamp(15px, 1.9vh, 24px); font-weight:700; color:var(--muted);
-    font-variant-numeric: tabular-nums; letter-spacing:1px;
-  }
+.sess-sel {
+  font: inherit; font-size: clamp(12px, 1.4vh, 15px); color: var(--text); font-weight: 700;
+  background: rgba(0, 0, 0, .35); border: 1px solid var(--line); border-radius: 4px;
+  padding: 3px 8px; outline: none; cursor: pointer;
+}
+.sess-sel option { background: #2a0a10; }
 
-  /* ---------- 概况条 ---------- */
-  .hero { display:flex; align-items:stretch; gap: clamp(10px,1.2vw,20px); }
-  .stats {
-    flex:1; display:grid; grid-template-columns:repeat(4, 1fr); gap: clamp(8px,1vw,16px);
-    background:linear-gradient(180deg, rgba(100,16,24,.42), rgba(50,7,12,.5));
-    border:1px solid var(--card-border); border-radius: clamp(12px,1.4vw,20px);
-    padding: clamp(10px,1.3vh,18px) clamp(12px,1.6vw,26px);
-  }
-  .st { display:flex; flex-direction:column; justify-content:center; gap:2px; }
-  .st .n {
-    font-size: clamp(26px, 4.2vh, 56px); font-weight:900; line-height:1.05;
-    font-variant-numeric: tabular-nums;
-    background:linear-gradient(180deg,#fff0c2,var(--gold) 55%,var(--gold-deep));
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-  }
-  .st.pick .n { background:linear-gradient(180deg,#d8ffe8,var(--ok)); -webkit-background-clip:text; background-clip:text; }
-  .st.draft .n { background:linear-gradient(180deg,#ffe9bf,#d4a653); -webkit-background-clip:text; background-clip:text; }
-  .st.unpick .n { background:linear-gradient(180deg,#f4e4c8,#c9a173); -webkit-background-clip:text; background-clip:text; }
-  .st .t { font-size: clamp(11px,1.45vh,16px); color:var(--muted); letter-spacing:2px; }
+.hd-right { flex: none; display: flex; align-items: center; gap: clamp(10px, 1.2vw, 18px); }
+.conn { font-size: clamp(12px, 1.4vh, 15px); color: var(--bad); font-weight: 700; display: none; }
+.conn.on { display: inline; }
+.clock {
+  font-size: clamp(15px, 1.9vh, 24px); font-weight: 700; color: var(--muted);
+  font-variant-numeric: tabular-nums; letter-spacing: 1.5px;
+}
 
-  .draw {
-    flex:none; min-width: clamp(150px, 15vw, 260px);
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    border-radius: clamp(12px,1.4vw,20px); border:1px solid var(--card-border-strong);
-    background:linear-gradient(180deg, rgba(120,26,20,.45), rgba(60,10,12,.6));
-    padding: 6px clamp(14px,1.6vw,26px);
-  }
-  .draw .lab { font-size: clamp(10px,1.3vh,14px); letter-spacing:3px; color:var(--muted); }
-  .draw .num {
-    font-size: clamp(34px, 6vh, 76px); font-weight:900; line-height:1.05;
-    background:linear-gradient(180deg,#fff0c2,var(--gold) 50%,var(--gold-deep));
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-  }
-  .draw.idle .num { font-size: clamp(18px,2.2vh,28px); letter-spacing:2px; -webkit-text-fill-color: var(--dim); }
+/* ---------- 概况条 ---------- */
+.hero { display: flex; align-items: stretch; }
+.stats {
+  flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(8px, 1vw, 16px);
+  background: linear-gradient(180deg, rgba(58, 12, 18, .72), rgba(26, 6, 10, .62));
+  border: 1px solid var(--line); border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .45), 0 10px 26px rgba(0, 0, 0, .32);
+  padding: clamp(7px, 1vh, 14px) clamp(12px, 1.6vw, 26px);
+}
+.st { display: flex; flex-direction: column; justify-content: center; gap: 1px; position: relative; }
+.st + .st::before {
+  content: ""; position: absolute; left: calc(clamp(8px, 1vw, 16px) / -2 - .5px); top: 12%; bottom: 12%;
+  width: 1px; background: linear-gradient(180deg, transparent, var(--line), transparent);
+}
+.st .n {
+  font-size: clamp(24px, 3.6vh, 48px); font-weight: 800; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, #fff4d4, var(--gold) 55%, var(--gold-deep));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.st.pick .n { background: linear-gradient(180deg, #d9ffe7, var(--ok)); -webkit-background-clip: text; background-clip: text; }
+.st.draft .n { background: linear-gradient(180deg, #ffe9bf, #cfa257); -webkit-background-clip: text; background-clip: text; }
+.st.unpick .n { background: linear-gradient(180deg, #f0e2c8, #bfa07a); -webkit-background-clip: text; background-clip: text; }
+.st .t { font-size: clamp(11px, 1.35vh, 15px); color: var(--muted); letter-spacing: 2px; }
 
-  /* ---------- 玩家卡片区 ---------- */
-  .stage { position:relative; min-height:0; display:flex; }
-  .grid {
-    flex:1; display:flex; flex-wrap:wrap; align-content:flex-start;
-    gap: clamp(8px, .9vw, 16px); overflow-y:auto; padding-right:4px;
-  }
-  /* 人少时整块垂直居中（画面不空）；人多时锚定顶部，新卡片只往下方长，不会整屏跳动 */
-  .grid[data-density="sparse"] { align-content: safe center; }
-  .grid::-webkit-scrollbar { width:6px; }
-  .grid::-webkit-scrollbar-thumb { background:rgba(212,166,83,.35); border-radius:99px; }
+/* ---------- 桌面 ----------
+   参考实桌：绒面台面 + 一圈金线 + 底部外沿。
+   席位沿下弧铺开，开奖结果钉在弧心。 */
+.stage { position: relative; min-height: 0; overflow: hidden; }
+.felt { position: absolute; inset: 0; pointer-events: none; }
+/* 台面与桌沿的椭圆由 JS 按席位环算出（--tbl-*），盘面才贴得住这道弧：
+   原先的百分比是手调的，弧线和席位环不共弧，盘看着像浮在桌面上。 */
+.felt::before {
+  content: ""; position: absolute; left: 50%; top: var(--tbl-cy, 22%);
+  transform: translate(-50%, -50%);
+  width: var(--tbl-w, 150%); height: var(--tbl-h, 140%); border-radius: 50%;
+  background: radial-gradient(closest-side,
+    rgba(122, 26, 32, .78) 0%, rgba(96, 20, 26, .58) 46%,
+    rgba(64, 12, 18, .32) 76%, rgba(44, 8, 13, 0) 100%);
+}
+/* 席位环内侧的金线：盘与盘之间露出来，把「一圈座位」读成一张桌子。
+   半径由 JS 按真实席位环算好后写进 --ring-* 变量。 */
+.felt .arc {
+  position: absolute; left: 50%; top: var(--ring-cy, 26%); transform: translate(-50%, -50%);
+  width: var(--ring-in-w, 92%); height: var(--ring-in-h, 96%);
+  border-radius: 50%;
+  border: 1px solid rgba(216, 176, 112, .30);
+  box-shadow: 0 0 22px rgba(0, 0, 0, .30) inset;
+}
+/* 往桌心再收两道更淡的同心弧：空着的台面才有「桌面」的层次，不然是一整片红 */
+.felt .arc2 {
+  position: absolute; left: 50%; top: var(--ring-cy, 26%); transform: translate(-50%, -50%);
+  width: calc(var(--ring-in-w, 92%) * .72); height: calc(var(--ring-in-h, 96%) * .72);
+  border-radius: 50%; border: 1px solid rgba(216, 176, 112, .13);
+}
+.felt .arc3 {
+  position: absolute; left: 50%; top: var(--ring-cy, 26%); transform: translate(-50%, -50%);
+  width: calc(var(--ring-in-w, 92%) * .44); height: calc(var(--ring-in-h, 96%) * .44);
+  border-radius: 50%; border: 1px solid rgba(216, 176, 112, .09);
+}
+/* 桌面外沿：一道金线 + 更暗的窄带，落在屏幕底部，把弧内读成「一张桌子」。
+   和席位环同一条椭圆的平行曲线，盘外沿到金线的缝才是等宽的。 */
+.felt .rim {
+  position: absolute; left: 50%; top: var(--tbl-cy, 22%); transform: translate(-50%, -50%);
+  width: var(--tbl-w, 150%); height: var(--tbl-h, 140%); border-radius: 50%;
+  background: radial-gradient(closest-side,
+    rgba(30, 6, 10, 0) 87.2%,
+    rgba(216, 176, 112, .42) 87.6%,
+    rgba(60, 11, 17, .55) 88.2%,
+    rgba(28, 6, 10, .95) 94%,
+    rgba(12, 3, 6, .98) 100%);
+}
+.seats { position: absolute; inset: 0; }
 
-  /* 固定卡片宽度：不随每行剩余空间伸缩，避免末行卡片被撑大、整屏宽度参差 */
-  .pc {
-    --cgap: clamp(3px, .35vw, 6px);
-    flex: 0 0 clamp(158px, 10.6vw, 232px);
-    min-height: clamp(116px, 15vh, 176px);
-    display:flex; flex-direction:column; gap:4px;
-    padding: clamp(8px,1vh,14px) clamp(10px,1vw,16px);
-    border-radius: clamp(10px,1vw,16px);
-    background:linear-gradient(180deg, var(--card), rgba(40,6,10,.6));
-    border:1.5px solid var(--card-border);
-    position:relative; overflow:hidden;
-    transition: border-color .2s ease, opacity .25s ease, background .2s ease;
-  }
-  /* 卡片顶部一条状态色带：远距离一眼分辨「已选 / 未选 / 离开」 */
-  .pc::before {
-    content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--dim);
-  }
-  .pc[data-state="picked"] { border-color: rgba(255,212,94,.55); background:linear-gradient(180deg, rgba(112,22,26,.62), rgba(48,8,12,.66)); }
-  .pc[data-state="picked"]::before { background:linear-gradient(180deg,var(--gold),var(--gold-deep)); }
-  /* 草稿：选了但没按「确认提交」。虚线金边 + 金色文字降饱和，避免和「已确认」混淆 */
-  .pc[data-state="draft"] { border-style:dashed; border-color:rgba(255,212,94,.42); background:linear-gradient(180deg, rgba(74,18,22,.5), rgba(36,8,11,.6)); }
-  .pc[data-state="draft"]::before { background:rgba(212,166,83,.5); }
-  .pc[data-state="unpicked"] { border-style:dashed; border-color:rgba(200,170,130,.28); }
-  .pc[data-state="unpicked"]::before { background:#6b5548; }
-  .pc[data-state="left"] { opacity:.42; }
-  .pc[data-state="left"]::before { background:#5c4a42; }
+.seat {
+  position: absolute; left: 0; top: 0;
+  width: var(--sw, 200px); height: var(--sh, 200px);
+  font-size: calc(var(--sw, 200px) * .072);
+  transform: translate(-50%, -50%);
+}
+/* 盘面跟着弧线转（--rot 由 JS 按椭圆外法线算出）；座位标签挂在 .pc 里，同一个角度 */
+.seat > .pc { width: 100%; height: 100%; transform: rotate(var(--rot, 0deg)); }
 
-  .pc-top { display:flex; align-items:center; gap:6px; min-width:0; }
-  .pc-id {
-    flex:1; min-width:0; font-size: clamp(13px,1.7vh,20px); font-weight:800; letter-spacing:.5px;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  }
-  .pc-vet {
-    flex:none; font-size: clamp(9px,1.1vh,12px); font-weight:700; padding:2px 7px; border-radius:99px;
-    color:var(--gold); background:rgba(255,212,94,.16); border:1px solid rgba(255,212,94,.35);
-  }
-  .pc-seat {
-    flex:none; font-size: clamp(10px,1.2vh,14px); font-weight:800; padding:2px 7px; border-radius:8px;
-    color:var(--muted); background:rgba(0,0,0,.28); border:1px solid var(--card-border);
-  }
-  /* ---------- 选择结果：沿用玩家端同一套 .numgrid 语汇 ----------
-     卡片不再写「单 / 7」这类文字，而是把玩家看到的整块选项原样搬过来：
-     上面是单双两枚（对应玩家端 .pair .opt），下面是 0–9 十格（对应玩家端 #numGrid）。
-     只把被选中的那一格点亮，其余压暗作背景板——远看认金色块，近看认位置。 */
-  .pc-body {
-    flex:1; min-height:0; display:flex; flex-direction:column;
-    justify-content:center; gap: clamp(3px,.5vh,8px);
-  }
-  .numgrid { display:grid; grid-template-columns:repeat(5, 1fr); }
-  .pc-oe { display:grid; grid-template-columns:1fr 1fr; gap: var(--cgap); }
-  .pc-numgrid { flex:1; min-height:0; grid-template-rows:1fr 1fr; gap: var(--cgap); }
+/* 座位标签：钉在盘面顶部正中，随盘面同一个角度转（父级 .pc 已按弧线转好）。
+   原先挂在盘面内上角、且不跟着转，12 个席位时相邻两个的牌位会撞在一起。 */
+.seat-tag {
+  position: absolute; left: 50%; bottom: calc(100% + .58em);
+  transform: translateX(-50%);
+  z-index: 3; pointer-events: none;
+  display: inline-flex; align-items: center; gap: .28em;
+  padding: .2em .58em .2em .4em; border-radius: .2em;
+  font-family: var(--serif);
+  font-size: 1.35em; font-weight: 700; letter-spacing: .13em; line-height: 1.2;
+  color: #f3e3bd; white-space: nowrap;
+  background: linear-gradient(180deg, #4b1116, #260609);
+  border: 1px solid var(--line-strong);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 214, 140, .12), 0 .12em .3em rgba(0, 0, 0, .6);
+}
+.seat-tag::before {
+  content: ""; width: .9em; height: .9em; flex: none;
+  background: url("/assets/chip.webp") center / 206% auto no-repeat;
+  filter: drop-shadow(0 .04em .08em rgba(0, 0, 0, .5));
+}
 
-  .pc-oe span, .pc-numgrid span {
-    position:relative; display:flex; align-items:center; justify-content:center;
-    border-radius: clamp(4px,.45vw,7px); line-height:1;
-    font-weight:900; font-variant-numeric: tabular-nums;
-    color: rgba(224,194,148,.46);
-    background: rgba(0,0,0,.26);
-    border:1px solid rgba(212,166,83,.16);
-    transition: color .18s ease, background .18s ease, border-color .18s ease,
-                box-shadow .18s ease, transform .18s ease;
-  }
-  .pc-oe span { padding: clamp(1px,.3vh,5px) 0; font-size: clamp(10px,1.35vh,17px); letter-spacing:1px; }
-  .pc-numgrid span { padding: clamp(2px,.4vh,6px) 0; font-size: clamp(11px,1.5vh,19px); }
+/* ---------- 投注盘：pad.webp 做盘体 ---------- */
+.pc {
+  position: relative; overflow: visible;
+  transition: opacity .25s ease;
+}
+.pc-pad {
+  position: absolute; inset: 0; border-radius: 4.6%;
+  /* 贴图按 100% 铺满：叠在上面的牌面/键区都是按原图百分比定位的，
+     一旦缩放，图上位置就会整体偏移（这一点别改） */
+  background: #0b0507 url("/assets/pad.webp") center / 100% 100% no-repeat;
+  box-shadow: 0 .16em .4em rgba(0, 0, 0, .55);
+  transition: filter .25s ease, opacity .25s ease;
+}
 
-  /* 选中格 = 玩家端 .numgrid button.sel 的同一套金色，两端口径一致 */
-  .pc-oe span.sel, .pc-numgrid span.sel {
-    color:#3a1500; border-color:#fff0c2; z-index:2; transform:scale(1.05);
-    background:linear-gradient(180deg,#ffd76b 0%,#f0a71c 55%,#d9860c 100%);
-    box-shadow:0 0 12px rgba(255,200,80,.45), inset 0 1px 0 rgba(255,255,255,.6);
-  }
-  /* 待确认（草稿）：同样点亮但降饱和，别和「已确认」混 */
-  .pc[data-state="draft"] .pc-oe span.sel,
-  .pc[data-state="draft"] .pc-numgrid span.sel {
-    color:rgba(58,21,0,.78); border-color:rgba(255,240,194,.5);
-    background:linear-gradient(180deg, rgba(255,215,107,.68), rgba(217,134,12,.62));
-    box-shadow:0 0 8px rgba(255,200,80,.20);
-  }
-  /* 未选择 / 已离开：格子继续压暗，一眼看出「这块是空的」；
-     但已选中的那格保留金色（:not(.sel)），别把玩家自己的选项也压没了 */
-  .pc[data-state="unpicked"] .pc-oe span:not(.sel),
-  .pc[data-state="unpicked"] .pc-numgrid span:not(.sel) { color:rgba(141,113,96,.40); border-color:rgba(200,170,130,.10); }
-  .pc[data-state="left"] .pc-oe span:not(.sel),
-  .pc[data-state="left"] .pc-numgrid span:not(.sel) { color:rgba(185,164,154,.38); border-color:rgba(200,170,130,.10); }
+/* 名牌：压在盘面顶部的拱形饰件上（姓名 / 老玩家 / 状态） */
+.pc-top {
+  position: absolute; left: 17.5%; top: .8%; width: 65%; height: 14.2%;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+  gap: .06em; padding: .1em .42em; border-radius: .2em;
+  background: linear-gradient(180deg, rgba(74, 19, 23, .97), rgba(28, 7, 10, .98));
+  border: 1px solid rgba(216, 176, 112, .5);
+  box-shadow: inset 0 .06em 0 rgba(255, 214, 140, .12), 0 .1em .22em rgba(0, 0, 0, .6);
+}
+.pc-top-l1 { display: flex; align-items: center; gap: .3em; min-width: 0; line-height: 1.15; }
+.pc-dot {
+  width: .34em; height: .34em; border-radius: 50%; flex: none;
+  background: var(--dim); box-shadow: 0 0 0 1px rgba(0, 0, 0, .4);
+}
+.pc-id {
+  flex: 1; min-width: 0; font-size: .84em; font-weight: 800; letter-spacing: .02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #f6e8c9;
+}
+.pc-vet {
+  flex: none; font-size: .48em; font-weight: 700; letter-spacing: .04em;
+  padding: .1em .4em; border-radius: 2px;
+  color: #2f1400; background: linear-gradient(180deg, var(--gold-hi), var(--gold-deep));
+}
+.pc-st {
+  font-size: .52em; line-height: 1.1; letter-spacing: .1em; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: .66em;
+}
 
-  /* 开奖后：判定直接长在选项上——命中的格描绿边、未中描红边（红绿沿用页面既有结果语义）。
-     只用描边不用角标：格子小、密度高，角标会互相顶到一起，描边在远处反而更好认。 */
-  .pc-oe span.sel.hit, .pc-numgrid span.sel.hit {
-    border-color:var(--ok);
-    box-shadow:0 0 0 2px rgba(74,222,128,.92), 0 0 14px rgba(74,222,128,.5), inset 0 1px 0 rgba(255,255,255,.5);
-  }
-  .pc-oe span.sel.miss, .pc-numgrid span.sel.miss {
-    border-color:rgba(255,123,123,.95);
-    box-shadow:0 0 0 2px rgba(255,123,123,.88), 0 0 14px rgba(255,123,123,.45), inset 0 1px 0 rgba(255,255,255,.35);
-  }
+/* ---------- 单双：盖在盘面两块米色牌面上（只换牌心，盘面自带的金框留着） ---------- */
+.pc-oe { position: absolute; inset: 0; }
+/* 牌心位置按 pad.webp 里两块米色牌面的实测边界来（左 110–499、右 537–936、y 145–472），
+   四周各留一点米色，图上的浮雕边框才不会被盖掉。 */
+.pc-plate {
+  position: absolute; top: 15.8%; width: 36.4%; height: 28.9%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .02em; border-radius: .1em; overflow: hidden;
+  font-family: var(--serif); color: var(--ink);
+  /* 米色按图上纸面实测取色（≈ #d8d9bc → #cecbae），和四周的纸面接缝才看不出来 */
+  background: radial-gradient(120% 100% at 50% 10%, #d5d6ba 0%, #d1d1b4 48%, #ccc9ac 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(126, 108, 66, .18),
+    inset 0 .18em .3em rgba(120, 110, 70, .16),
+    inset 0 -.14em .24em rgba(120, 110, 70, .10);
+  transition: box-shadow .18s ease, transform .18s ease;
+}
+.pc-plate[data-oe="单"] { left: 11.5%; }
+.pc-plate[data-oe="双"] { left: 53.2%; }
+.pl-lab {
+  font-size: 1.22em; font-weight: 700; line-height: 1; letter-spacing: .08em; text-indent: .08em;
+  white-space: nowrap;
+}
+.pl-num { font-size: .56em; letter-spacing: .02em; opacity: .7; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 未选中：纸面压暗一档（仍然读得出字），远看就知道这半边没押 */
+.pl-veil {
+  position: absolute; inset: 0;
+  background: rgba(58, 34, 16, .26);
+  box-shadow: inset 0 .16em .34em rgba(60, 40, 20, .30);
+  transition: opacity .2s ease;
+}
+.pc-plate:not(.sel) .pl-lab { opacity: .62; }
+.pc-plate:not(.sel) .pl-num { opacity: .46; }
+.pc-plate.sel { transform: scale(1.02); z-index: 2; }
+.pc-plate.sel .pl-veil { opacity: 0; }
+.pc-plate.sel {
+  box-shadow: 0 0 0 .09em rgba(255, 214, 120, .95), 0 0 .9em rgba(255, 190, 80, .55),
+              inset 0 0 0 1px rgba(150, 132, 88, .2), inset 0 .07em .14em rgba(255, 255, 255, .55);
+}
+/* 开奖后只描绿边标出「猜中」；没猜中的牌面不加任何样式，保持默认 */
+.pc-plate.sel.hit { box-shadow: 0 0 0 .12em var(--ok), 0 0 .9em rgba(90, 208, 127, .6); }
 
-  .pc-foot {
-    display:flex; align-items:center; gap:6px;
-    font-size: clamp(10px,1.25vh,14px); color:var(--muted); letter-spacing:1px;
-  }
-  .pc-foot .d { width:6px; height:6px; border-radius:50%; background:var(--dim); flex:none; }
-  .pc[data-state="picked"] .pc-foot { color:rgba(255,236,196,.9); }
-  .pc[data-state="picked"] .pc-foot .d { background:var(--gold); }
-  .pc[data-state="left"] .pc-foot .d { background:#8a7568; }
+/* 单双押注标志：押哪边，哪块牌面正中就压一枚羊头筹码。
+   筹码特意做大到压住小半个牌面——远看靠筹码落在左边还是右边就能读出来。
+   押注的那块牌面把「单/双」让到下半、号码行（1,3,5,7）收掉，
+   筹码占上半，两边都不打架，也不用把字盖成半个。 */
+.pc-plate.mk { justify-content: flex-end; padding-bottom: .16em; }
+.pc-plate.mk .pl-num { display: none; }
+.pc-plate.mk::after {
+  content: ""; position: absolute; left: 50%; top: 33%; z-index: 3;
+  width: 2.3em; height: 2.3em; margin: -1.15em 0 0 -1.13em;
+  transform: rotate(8deg);
+  background: url("/assets/chip.webp") center / 206% auto no-repeat;
+  filter: drop-shadow(0 .08em .14em rgba(0, 0, 0, .7));
+  pointer-events: none;
+}
+/* 开奖后没中的那块：牌面退回未选中样式，筹码压暗留着——它只说明「押过这儿」，不算高亮 */
+.pc-plate.mk:not(.sel)::after {
+  filter: saturate(.62) brightness(.8) drop-shadow(0 .05em .1em rgba(0, 0, 0, .5));
+}
+/* 命中：绿边 + 右上角一枚对勾（唯一的「正确」标记，别处一律不加） */
+.pc-plate.hit::before {
+  content: "✓"; position: absolute; right: .14em; top: .12em; z-index: 4;
+  width: 1.15em; height: 1.15em;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 1em; font-weight: 900; line-height: 1; color: #06280f;
+  background: radial-gradient(circle at 34% 28%, #e9fff2, var(--ok) 58%, #2b8f4c 100%);
+  box-shadow: 0 0 .5em rgba(90, 208, 127, .85), inset 0 0 0 .05em rgba(255, 255, 255, .6);
+}
 
-  /* 动效：新加入 / 选项变化 / 离开，各自只用一次短动画，避免大屏持续晃眼 */
-  @keyframes cardIn { from { opacity:0; transform:translateY(8px) scale(.96); } to { opacity:1; transform:none; } }
-  @keyframes cardChange { 0% { box-shadow:0 0 0 0 rgba(255,212,94,.85); } 100% { box-shadow:0 0 0 14px rgba(255,212,94,0); } }
-  .pc.enter { animation: cardIn .28s ease both; }
-  .pc.change { animation: cardChange .9s ease-out 1; }
+/* ---------- 数字键区：1–8 八格，严格按参考盘那 8 个键位摆（4 列 × 2 行） ----------
+   键位实测（pad.webp 1024²，取铜边外沿）：列 114/323/534/746、宽 181；行 595/784、高 166。
+   键钮自己画，字号才在大屏上够清楚、选中态也统一；键缝不铺底板，露的就是盘体本身的暗色。 */
+.pc-key {
+  position: absolute; left: 11.13%; top: 58.11%; width: 79.39%; height: 34.67%;
+}
+.pc-numgrid {
+  display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: 1fr 1fr;
+  gap: 6.48% 3.65%;   /* 行缝 23px / 列缝 30px（相对键区 355×813） */
+  height: 100%;
+}
+.pc-numgrid span {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  border-radius: 16%; border: 1.5px solid transparent; line-height: 1.1;
+  font-family: var(--serif);
+  font-size: 1em; font-weight: 800; font-variant-numeric: tabular-nums;
+  color: #e6cbb0;
+  /* 暗红键面 + 铜色描边：两层背景分别铺在 padding-box / border-box 上，边框才有渐变 */
+  background:
+    radial-gradient(115% 130% at 50% 0%, #552b2a 0%, #3d2221 48%, #261413 100%) padding-box,
+    linear-gradient(180deg, #a2735c 0%, #7b4b3a 46%, #6a4133 62%, #966a54 100%) border-box;
+  box-shadow: inset 0 .07em .12em rgba(255, 190, 170, .07), 0 .04em .1em rgba(0, 0, 0, .45);
+  transition: color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.pc-numgrid .kn { font-size: 1.12em; line-height: 1; }
+.pc-numgrid .ku { font-size: .62em; font-style: normal; margin-left: .06em; }
+.pc-numgrid .ku:empty { display: none; }
+/* 选中格：盘面上的金色键钮（筹码统一由 .mk 压，这里只管键面本身） */
+.pc-numgrid span.sel {
+  color: #3a1500; z-index: 3; transform: scale(1.05);
+  background:
+    radial-gradient(120% 120% at 50% 0%, #ffeeb8 0%, #f7ca5f 44%, #d99a28 100%) padding-box,
+    linear-gradient(180deg, #fff2c8 0%, #e5b455 60%, #b47c1e 100%) border-box;
+  box-shadow: 0 0 0 1px rgba(255, 242, 205, .92), 0 0 .7em rgba(255, 196, 80, .55),
+              inset 0 .07em .12em rgba(255, 255, 255, .6);
+}
+/* 数字押注标志：筹码压在格子正中，做大到盖住数字——格子的位置本身就是答案。
+   开奖后没中的格子退回暗红键面，只留这枚压暗的筹码当「押过这儿」的记号。 */
+.pc-numgrid span.mk::after {
+  content: ""; position: absolute; left: 50%; top: 52%; z-index: 4;
+  width: 2.05em; height: 2.05em; margin: -1.05em 0 0 -1.02em;
+  transform: rotate(-9deg);
+  background: url("/assets/chip.webp") center / 206% auto no-repeat;
+  filter: drop-shadow(0 .07em .12em rgba(0, 0, 0, .7));
+  pointer-events: none;
+}
+.pc-numgrid span.mk:not(.sel)::after {
+  filter: saturate(.62) brightness(.8) drop-shadow(0 .05em .09em rgba(0, 0, 0, .5));
+}
+/* 命中：绿边 + 右上角对勾 */
+.pc-numgrid span.hit::before {
+  content: "✓"; position: absolute; right: -.34em; top: -.4em; z-index: 6;
+  width: 1.15em; height: 1.15em;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 1em; font-weight: 900; line-height: 1; color: #06280f;
+  background: radial-gradient(circle at 34% 28%, #e9fff2, var(--ok) 58%, #2b8f4c 100%);
+  box-shadow: 0 0 .55em rgba(90, 208, 127, .9), inset 0 0 0 .05em rgba(255, 255, 255, .6);
+}
+.pc-numgrid span.sel.hit { box-shadow: 0 0 0 2px var(--ok), 0 0 .7em rgba(90, 208, 127, .55); }
 
-  /* 人少时把卡片放大（远距离也看得清），人多时自动收窄，保证一屏装得下更多人 */
-  .grid[data-density="sparse"] .pc { flex-basis: clamp(230px, 17vw, 380px); min-height: clamp(160px, 22vh, 260px); }
-  .grid[data-density="sparse"] .pc-id { font-size: clamp(16px, 2.2vh, 28px); }
-  .grid[data-density="sparse"] .pc-oe span { font-size: clamp(13px, 1.85vh, 24px); }
-  .grid[data-density="sparse"] .pc-numgrid span { font-size: clamp(15px, 2.35vh, 33px); }
-  .grid[data-density="dense"] .pc { flex-basis: clamp(156px, 9.6vw, 200px); min-height: clamp(108px, 13vh, 150px); }
-  .grid[data-density="dense"] .pc-id { font-size: clamp(11px, 1.4vh, 17px); }
-  .grid[data-density="dense"] .pc-oe span { font-size: clamp(9px, 1.15vh, 14px); }
-  .grid[data-density="dense"] .pc-numgrid span { font-size: clamp(10px, 1.4vh, 17px); }
+/* 盘面状态：整块盘的明暗 + 名牌描边，一眼分出「已确认 / 待确认 / 未选 / 空席」 */
+.pc[data-state="picked"] .pc-top { border-color: rgba(232, 195, 122, .9); }
+.pc[data-state="picked"] .pc-dot { background: var(--gold); box-shadow: 0 0 .5em rgba(255, 200, 90, .8); }
+.pc[data-state="picked"] .pc-pad { box-shadow: 0 .16em .4em rgba(0, 0, 0, .55), 0 0 .8em rgba(255, 180, 70, .30); }
 
-  .empty {
-    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    font-size: clamp(18px,2.6vh,34px); letter-spacing:4px; color:var(--dim); font-weight:700;
-  }
-  .empty.on { display:flex; }
+.pc[data-state="draft"] .pc-top { border-style: dashed; border-color: rgba(232, 195, 122, .62); }
+.pc[data-state="draft"] .pc-dot { background: rgba(232, 195, 122, .55); }
+.pc[data-state="draft"] .pc-plate:not(.sel) .pl-veil { opacity: .34; }
+.pc[data-state="draft"] .pc-numgrid span.sel {
+  background:
+    radial-gradient(120% 120% at 50% 0%, #f6dfa4 0%, #dcb063 44%, #b07c22 100%) padding-box,
+    linear-gradient(180deg, #fff2c8 0%, #e5b455 60%, #b47c1e 100%) border-box;
+  box-shadow: 0 0 0 1px rgba(255, 240, 200, .5), 0 0 .5em rgba(255, 196, 80, .28);
+}
 
-  /* ---------- 最近动态 ---------- */
-  .ticker {
-    display:flex; align-items:center; gap: clamp(8px,1vw,16px);
-    border-top:1px solid rgba(212,166,83,.22); padding-top: clamp(6px,.9vh,12px);
-    font-size: clamp(11px,1.4vh,15px); color:var(--muted); min-height: clamp(22px,3vh,34px);
-  }
-  .tk-lab { flex:none; letter-spacing:3px; opacity:.75; }
-  .tk-list { display:flex; gap: clamp(8px,1.2vw,20px); overflow:hidden; flex:1;
-    -webkit-mask-image:linear-gradient(90deg,#000 94%,transparent);
-    mask-image:linear-gradient(90deg,#000 94%,transparent); }
-  .tk { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
-  .tk b { font-weight:800; color:var(--text); max-width: 16ch; overflow:hidden; text-overflow:ellipsis; }
-  .tk .t { opacity:.55; font-variant-numeric: tabular-nums; }
-  .tk .tg { padding:1px 7px; border-radius:99px; font-weight:800; font-size:.92em; }
-  .tk.join .tg { color:#cfe6ff; background:rgba(79,140,255,.22); }
-  .tk.pick .tg { color:#3a1500; background:linear-gradient(135deg,#ffe58a,var(--gold-deep)); }
-  .tk.change .tg { color:#ffe9b0; background:rgba(255,212,94,.22); }
-  .tk.leave .tg { color:#d8ccc4; background:rgba(255,255,255,.10); }
-  .tk.round .tg { color:#0d2a17; background:var(--ok); }
+.pc[data-state="unpicked"] .pc-pad { filter: saturate(.85) brightness(.9); }
 
-  .hidden { display:none !important; }
+/* 命中：状态行转绿（远看第一眼就分出赢家），选项上的对勾才指明是哪一格中了 */
+.pc[data-hit="1"] .pc-st { color: var(--ok); }
+.pc[data-hit="1"] .pc-dot { background: var(--ok); box-shadow: 0 0 .5em rgba(90, 208, 127, .8); }
+
+/* 空席：一张没人动过的盘，整块压暗，不写任何提示文字 */
+.pc[data-state="empty"] .pc-pad { filter: saturate(.42) brightness(.62); }
+.pc[data-state="empty"] .pc-key { opacity: .5; }
+
+/* 动效：新加入 / 选项变化，各一次短动画，避免大屏持续晃眼 */
+@keyframes cardIn { from { opacity: 0; scale: .9; } to { opacity: 1; scale: 1; } }
+@keyframes cardChange { 0% { box-shadow: 0 0 0 0 rgba(255, 212, 94, .8); } 100% { box-shadow: 0 0 0 .9em rgba(255, 212, 94, 0); } }
+.seat.enter .pc-pad { animation: cardIn .3s ease both; }
+.seat.change .pc-pad { animation: cardChange .9s ease-out 1; }
+
+/* ---------- 弧心：开奖结果 ---------- */
+.hub {
+  position: absolute; left: 50%; top: 24%; transform: translate(-50%, -50%);
+  width: min(34vw, 540px); pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: clamp(6px, .9vh, 14px);
+}
+.draw {
+  position: relative; width: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .12em; min-height: clamp(120px, 19vh, 220px);
+  padding: clamp(16px, 2.2vh, 30px) clamp(12px, 1.4vw, 24px) clamp(6px, .9vh, 14px);
+  border-radius: 3px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(150, 44, 40, .45), transparent 62%),
+    linear-gradient(180deg, rgba(96, 20, 24, .94), rgba(40, 7, 11, .97));
+  border: 1px solid rgba(232, 195, 122, .85);
+  box-shadow:
+    inset 0 0 0 .3em rgba(20, 4, 7, .55),
+    inset 0 0 0 calc(.3em + 1px) rgba(232, 195, 122, .55),
+    inset 0 0 2.2em rgba(0, 0, 0, .6),
+    0 1.2em 2.6em rgba(0, 0, 0, .5);
+}
+/* 四角小饰件 */
+.draw::before, .draw::after {
+  content: ""; position: absolute; width: .9em; height: .9em; pointer-events: none;
+  border: 1px solid rgba(232, 195, 122, .75);
+}
+.draw::before { left: .28em; top: .28em; border-right: 0; border-bottom: 0; }
+.draw::after { right: .28em; bottom: .28em; border-left: 0; border-top: 0; }
+/* 盘心的筹码印章 */
+.draw-seal {
+  position: absolute; left: 50%; top: -.62em; transform: translateX(-50%);
+  width: 1.5em; height: 1.5em; font-size: clamp(16px, 2.4vh, 26px);
+  background: url("/assets/chip.webp") center / 206% auto no-repeat;
+  filter: drop-shadow(0 .2em .4em rgba(0, 0, 0, .7));
+}
+.draw .lab {
+  font-family: var(--serif);
+  font-size: clamp(12px, 1.6vh, 19px); letter-spacing: .34em; text-indent: .34em;
+  color: var(--muted);
+}
+.draw .num {
+  font-size: clamp(44px, 9vh, 108px); font-weight: 800; line-height: 1.02;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, #fff6dc, var(--gold) 48%, var(--gold-deep));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 4px 12px rgba(255, 170, 60, .28));
+}
+.draw.idle .num {
+  font-size: clamp(16px, 2.2vh, 28px); letter-spacing: .2em; text-indent: .2em;
+  -webkit-text-fill-color: rgba(211, 183, 145, .82); background: none; filter: none;
+}
+
+.empty {
+  display: none; align-items: center; justify-content: center;
+  font-family: var(--serif);
+  font-size: clamp(13px, 1.6vh, 20px); letter-spacing: .3em; color: var(--muted); font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, .6);
+}
+.empty.on { display: flex; }
+
+/* ---------- 最近动态 ---------- */
+.ticker {
+  display: flex; align-items: center; gap: clamp(8px, 1vw, 16px);
+  border-top: 1px solid rgba(216, 176, 112, .22); padding-top: clamp(5px, .8vh, 10px);
+  font-size: clamp(11px, 1.4vh, 15px); color: var(--muted); min-height: clamp(22px, 3vh, 34px);
+}
+.tk-lab { flex: none; letter-spacing: .28em; opacity: .7; font-family: var(--serif); }
+.tk-list { display: flex; gap: clamp(8px, 1.2vw, 20px); overflow: hidden; flex: 1;
+  -webkit-mask-image: linear-gradient(90deg, #000 94%, transparent);
+  mask-image: linear-gradient(90deg, #000 94%, transparent); }
+.tk { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tk b { font-weight: 800; color: var(--text); max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+.tk .t { opacity: .5; font-variant-numeric: tabular-nums; }
+.tk .tg { padding: 1px 7px; border-radius: 2px; font-weight: 800; font-size: .92em; }
+.tk.join .tg { color: #cfe6ff; background: rgba(79, 140, 255, .22); }
+.tk.pick .tg { color: #3a1500; background: linear-gradient(180deg, var(--gold-hi), var(--gold-deep)); }
+.tk.change .tg { color: #ffe9b0; background: rgba(255, 212, 94, .2); }
+.tk.leave .tg { color: #d8ccc4; background: rgba(255, 255, 255, .1); }
+.tk.round .tg { color: #0d2a17; background: var(--ok); }
+
+.hidden { display: none !important; }

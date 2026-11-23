@@ -44,6 +44,9 @@
       el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder')));
     });
     document.title = t('brand') + ' · ' + t('staffTag');
+    // 数字键的单位后缀（1羊 2羊 …）：英文下为空，只留数字
+    var unit = t('sheepUnit');
+    document.querySelectorAll('#numGrid .u').forEach(function (el) { el.textContent = unit; });
     updateLangButton();
   }
 
@@ -494,7 +497,7 @@
       Array.prototype.forEach.call(document.querySelectorAll('#numGrid button'), function (x) {
         x.classList.toggle('sel', x === b);
       });
-      $('selShow').textContent = selNum;
+      $('selShow').textContent = selNum + (t('sheepUnit') || '');
       $('confirmBtn').disabled = false;
       $('inputErr').textContent = '';
     });
@@ -502,7 +505,7 @@
 
   $('confirmBtn').addEventListener('click', async function () {
     if (confirming || !state || state.locked) return;
-    if (selNum == null || !Number.isInteger(selNum) || selNum < 0 || selNum > 9) {
+    if (selNum == null || !Number.isInteger(selNum) || selNum < 1 || selNum > 8) {
       $('inputErr').textContent = t('errPickNumber');
       return;
     }

@@ -189,8 +189,10 @@
     text-shadow:0 1px 0 rgba(255,255,255,.3);
   }
   .pair .opt.sel small { color:#7a4a00; }
-  .numgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  .numgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
   .numgrid button { padding:18px 0; font-size:24px; }
+  /* 键面单位后缀：1羊 2羊 …（英文下为空） */
+  .numgrid button .u { font-size:.62em; font-style:normal; margin-left:.06em; }
 
   /* 席位选择（4 列数字块；占用态置灰不可点） */
   .seat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }

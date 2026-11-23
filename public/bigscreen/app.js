@@ -20,12 +20,14 @@
   var curRound = null;    // 当前轮次（变化即视为新一轮，整屏清空重来）
   var hasBaseline = false;// 是否已经渲染过首帧（首帧不产生「加入」动态）
 
-  var cards = new Map();  // pid -> { el, refs, sig, submitted, oddEven, number }
+  var cards = new Map();  // pid -> 该玩家所在的盘面 { el, refs, sig, ... }
+  var slots = [];         // 铺开的席位（按席号升序）{ el, tag, card, pid, ang, no }
+  var seatKey = '';       // 当前铺开的号段（"1,2,3,5,6,8"），变了才重建
   var events = [];        // 最近动态（只保留 8 条，够看就行）
 
   var t = window.I18N.t;
   var $ = function (id) { return document.getElementById(id); };
-  var grid = $('grid');
+  var seatsEl = $('seats');
 
   /* ---------- 语言 ---------- */
   window.I18N.init({ storageKey: 'oe_i18n_locale' });
@@ -42,6 +44,7 @@
   // 切换语言后重绘所有动态文本（卡片状态/动态标签都由 t() 生成）
   document.documentElement.addEventListener('locale-change', function () {
     applyStaticI18n();
+    refreshSeatTags();
     if (lastPayload) applyState(lastPayload, true);
     renderTicker();
   });
@@ -127,13 +130,14 @@
     $('sessName').textContent = '—';
     $('sessMeta').textContent = '';
     resetBoard();
+    ensureSeats([]);         // 没有场次就没有席位：整块桌面收起
     $('empty').classList.add('on');
     $('empty').textContent = t('bs_noSession');
   }
 
   function resetBoard() {
-    cards.forEach(function (c) { c.el.remove(); });
     cards.clear();
+    slots.forEach(function (s) { s.pid = null; paintEmpty(s.card); });
     events = [];
     lastVersion = -1;
     curRound = null;
@@ -197,20 +201,14 @@
     $('nUnpicked').textContent = Math.max(0, total - picked - draft);
     $('empty').classList.toggle('on', total === 0);
     if (total === 0) $('empty').textContent = t('bs_waiting');
-    applyDensity(total);
   }
 
-  /** 卡片密度：按「一行能舒服放下几张」推算，人少放大、人多收窄，尽量把屏幕用满 */
-  var lastCount = 0;
-  function applyDensity(n) {
-    lastCount = n;
-    var w = grid.clientWidth || 1200;
-    var cols = Math.max(1, Math.floor(w / 300));
-    var d = n <= cols * 3 ? 'sparse' : (n <= cols * 6 ? 'normal' : 'dense');
-    if (grid.getAttribute('data-density') !== d) grid.setAttribute('data-density', d);
+  /* 桌面尺寸变了（投屏缩放 / 换分辨率）就重算席位——位置是算出来的，不能交给 CSS */
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { layoutSeats(); }).observe(seatsEl);
+  } else {
+    window.addEventListener('resize', layoutSeats);
   }
-
-  window.addEventListener('resize', function () { applyDensity(lastCount); });
 
   /* ---------- 渲染：玩家卡片（按 pid 增量 diff） ---------- */
   function stateOf(p) {
@@ -222,78 +220,301 @@
     return [p.status || '', p.oe || '', p.num == null ? '' : p.num].join('|');
   }
 
-  function makeCard(p, d) {
+  /* ---------- 席位：沿桌面弧线铺开 ----------
+   * 对着实桌的做法：投注盘贴着桌沿摆一圈，盘面朝外、牌位朝桌心，开奖结果钉在弧心。
+   * 席位是固定槽位（1…seatCount）：有人就把人画到盘面上，没人就留一张空盘。
+   *
+   * 几何上的三处取舍：
+   *   1. 盘面按所在位置的**椭圆外法线**转角：盘的下沿与桌面弧线平行，一圈盘才像
+   *      搁在同一张弧形桌沿上，而不是各转各的。端部封顶 66°，不让最外侧的盘横躺。
+   *   2. 盘宽和盘位由同一条弧长算出：相邻盘之间的弧长必须大于盘宽，所以盘与盘
+   *      不可能叠；席位多时盘自动收小，席位少时盘封顶、按等距铺开。
+   *   3. 桌沿、绒面、金线全部由这条席位环的平行曲线推出（pushTableVars），
+   *      盘外沿到桌沿的留白处处一样宽——「贴合」是算出来的，不是靠肉眼对的。
+   */
+  var GEO = {
+    span: 74,       // 席位弧的半角（度）：端部的盘侧倾 50–60°，弧够长又不横躺
+    rotMax: 66,     // 盘面转角封顶：再转下去字就横躺了
+    gap: .085,      // 相邻盘之间的缝（相对盘宽）
+    maxW: .135,     // 盘宽上限（stage 宽的比例）：席位少时别把盘撑得没有缝
+    maxH: .32,      // 盘宽上限（stage 高的比例）
+    rail: .225      // 盘外沿到桌沿的留白（占桌沿椭圆纵向半径的比例；直边贴弧，四角还要让出拱高）
+  };
+
+  function clampNum(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  /** 半椭圆（正下方 0 → 正上方 π）的弧长累计表：把「等弧长」反查回角度。
+   *  inset > 0 时统计的是「内缩 inset 后的平行曲线」的弧长——盘面按法线转角后，
+   *  内沿走的是比中线更短的弧，只有按内沿等距排，相邻两盘的**内角**才不会顶在一起
+   *  （外沿那一侧会自然张开一点，正是一圈盘搁在弧形桌沿上的样子）。 */
+  function arcTable(rx, ry, inset) {
+    var STEP = 360, cum = new Float64Array(STEP + 1), i;
+    var px = 0, py = 0;
+    for (i = 0; i <= STEP; i++) {
+      var a = (i / STEP) * Math.PI;
+      var nx = Math.sin(a) / rx, ny = Math.cos(a) / ry;
+      var nl = Math.hypot(nx, ny);
+      var x = rx * Math.sin(a) - inset * nx / nl;
+      var y = ry * Math.cos(a) - inset * ny / nl;
+      if (i) cum[i] = cum[i - 1] + Math.hypot(x - px, y - py);
+      px = x; py = y;
+    }
+    return { cum: cum, step: STEP, perim: cum[STEP] * 2 };
+  }
+
+  /** 弧长（带符号，正=右半圈）反查极角 */
+  function angAtArc(ring, s) {
+    var sign = s < 0 ? -1 : 1, t = Math.abs(s);
+    var cum = ring.cum, STEP = ring.step;
+    if (t >= cum[STEP]) return sign * Math.PI;
+    var lo = 1, hi = STEP;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (cum[mid] < t) lo = mid + 1; else hi = mid;
+    }
+    var seg = cum[lo] - cum[lo - 1];
+    var frac = seg > 1e-6 ? (t - cum[lo - 1]) / seg : 0;
+    return sign * ((lo - 1 + frac) / STEP) * Math.PI;
+  }
+
+  /** 盘面转角：椭圆在这一点上的外法线方向。
+   *  盘面的「下」正对外法线，下沿就与桌面弧线平行——盘面是搁在桌沿上，不是插在桌上。
+   *  按法线算而不是按极角算：席位环是扁椭圆，极角和法线差得不小，照极角转
+   *  两端的盘会歪着咬进桌沿。端部封顶 66°：再转盘面就横躺，投屏远看一个字都认不出。 */
+  function normalDeg(ang, rx, ry) {
+    var deg = -Math.atan2(Math.sin(ang) / rx, Math.cos(ang) / ry) * 180 / Math.PI;
+    return clampNum(deg, -GEO.rotMax, GEO.rotMax);
+  }
+
+  /** 桌前家具（绒面 / 桌沿 / 金线）跟着席位环走：半径由席位环向外平移得出，
+   *  盘外沿离桌沿的留白才是恒定的一道缝，整圈看起来才是一张桌子。 */
+  function pushTableVars(cy, rx, ry, sw, rail) {
+    var stageEl = seatsEl.parentNode;
+    if (!stageEl || !stageEl.style) return;
+    var pad = sw / 2 + rail;
+    stageEl.style.setProperty('--tbl-cy', cy.toFixed(0) + 'px');
+    stageEl.style.setProperty('--tbl-w', Math.max(160, (rx + pad) * 2).toFixed(0) + 'px');
+    stageEl.style.setProperty('--tbl-h', Math.max(160, (ry + pad) * 2).toFixed(0) + 'px');
+    stageEl.style.setProperty('--ring-cy', cy.toFixed(0) + 'px');
+    stageEl.style.setProperty('--ring-in-w', Math.max(80, (rx - sw * .56) * 2).toFixed(0) + 'px');
+    stageEl.style.setProperty('--ring-in-h', Math.max(80, (ry - sw * .56) * 2).toFixed(0) + 'px');
+  }
+
+  function layoutSeats() {
+    var n = slots.length;
+    if (!n) return;
+    var W = seatsEl.clientWidth || 1280;
+    var H = seatsEl.clientHeight || 620;
+    var cx = W / 2;
+    var swMax = Math.min(W * GEO.maxW, H * GEO.maxH);
+    // 桌心留够高度：端部盘面斜着摆，包围盒的上沿不能顶出 stage（否则被裁掉一条）
+    var cy = Math.max(H * .16, swMax * .70 + 8);
+
+    // 盘宽 ↔ 席位环互相牵制：盘越宽，环越靠内、可用弧长越短。迭代几次就收敛。
+    // 盘宽只由弧长反推，不做「能撑多大就撑多大」——席位一多，盘必须自己缩小。
+    var sw = swMax, rx = 0, ry = 0, ring = null, rail = 0;
+    for (var pass = 0; pass < 8; pass++) {
+      var rimRy = Math.max(H * .3, H * .988 - cy);       // 桌沿椭圆的纵向半径
+      rail = rimRy * GEO.rail;
+      rx = Math.max(W * .18, W / 2 - sw * .69 - 8);       // 端部盘面斜摆，横向占 .69 个盘宽
+      ry = Math.max(H * .20, rimRy - sw / 2 - rail);      // 盘外沿压在桌沿内侧
+      ring = arcTable(rx, ry, sw / 2);                    // 按盘面内沿算可用弧长
+      if (n === 1) break;
+      var fit = ring.perim * GEO.span / 180 / (n - 1) / (1 + GEO.gap);
+      var next = Math.max(26, Math.min(swMax, fit));
+      var done = Math.abs(next - sw) < .5;
+      sw = next;
+      if (done) break;
+    }
+    ring = arcTable(rx, ry, sw / 2);
+
+    var avail = ring.perim * GEO.span / 180;
+    // 盘封顶时把席位按等距铺满整段弧（缝看着才均匀）；没封顶就紧排，只留一道缝
+    var pitch = n > 1 ? Math.max(sw * (1 + GEO.gap), avail / (n - 1)) : 0;
+
+    seatsEl.style.setProperty('--sw', sw.toFixed(1) + 'px');
+    seatsEl.style.setProperty('--sh', sw.toFixed(1) + 'px');
+    pushTableVars(cy, rx, ry, sw, rail);
+
+    for (var i = 0; i < n; i++) {
+      var s = slots[i];
+      var ang = n === 1 ? 0 : angAtArc(ring, (i - (n - 1) / 2) * pitch);
+      s.ang = ang;
+      s.el.style.left = (cx + rx * Math.sin(ang)).toFixed(1) + 'px';
+      s.el.style.top = (cy + ry * Math.cos(ang)).toFixed(1) + 'px';
+      s.el.style.setProperty('--rot', normalDeg(ang, rx, ry).toFixed(2) + 'deg');
+    }
+  }
+
+  /** 铺开给定的席位号（如 1,2,3,5,6,8——现场桌位的编号本来就不连续）。
+   *  号段变了才重建：只换人不换号时，盘面原地更新，不会整桌闪一下。 */
+  function ensureSeats(nums) {
+    var key = nums.join(',');
+    if (key === seatKey) return;
+    seatKey = key;
+    cards.clear();
+    slots.forEach(function (s) { s.el.remove(); });
+    slots = nums.slice(0, 64).map(function (no) { return makeSeat(no); });
+    layoutSeats();
+  }
+
+  /** 席位号从负载里取：优先用服务端 seats 的原编号（可能不连续），没有就 1…seatCount */
+  function seatNumbersOf(d) {
+    var out = [];
+    if (d && d.seats && d.seats.length) {
+      d.seats.forEach(function (s) { if (s && s.no != null) out.push(Number(s.no)); });
+    } else {
+      var n = Number(d && d.seatCount) || 0;
+      for (var i = 1; i <= n; i++) out.push(i);
+    }
+    out.sort(function (a, b) { return a - b; });
+    return out;
+  }
+
+  function refreshSeatTags() {
+    slots.forEach(function (s) { s.tag.textContent = t('bs_seat', { n: s.no }); });
+  }
+
+  /* ---------- 盘面：一块盘 + 谁坐在上面 ----------
+   * 盘体直接用 assets/pad.webp：外圈金框、两块米色牌面（单/双）、下半的深色键区都在图上。
+   * 我们只在图上"贴"三个可变的层：
+   *   1. 名牌（压在盘面顶部的拱形饰件上）——谁坐这儿、确认了没；
+   *   2. 牌面压暗层——盖住米色牌面，未选中时整块压暗；
+   *   3. 键区——1–8 八格（4 列 × 2 行），按参考盘那 8 个固定键位摆，键面写「N羊」。
+   * 位置全部用百分比贴在图上，所以盘面尺寸怎么变都对得上。
+   */
+  function makeBoard() {
     var el = document.createElement('article');
     el.className = 'pc';
-    el.setAttribute('data-pid', p.id);
+
+    var pad = document.createElement('div');
+    pad.className = 'pc-pad';
 
     var top = document.createElement('div');
     top.className = 'pc-top';
-    if (p.seatNo) {                       // 席位号：现场按座位找人，比脱敏会员号直观
-      var seatEl = document.createElement('span');
-      seatEl.className = 'pc-seat';
-      seatEl.textContent = '#' + p.seatNo;
-      top.appendChild(seatEl);
-    }
-    var idEl = document.createElement('span');
+    var l1 = document.createElement('div');
+    l1.className = 'pc-top-l1';
+    var dot = document.createElement('span');
+    dot.className = 'pc-dot';
+    var idEl = document.createElement('b');
     idEl.className = 'pc-id';
-    idEl.textContent = p.maskedId || p.id;   // 只展示脱敏标签，明文会员号不下发到浏览器
-    idEl.title = p.maskedId || p.id;
-    top.appendChild(idEl);
     var vet = document.createElement('span');
     vet.className = 'pc-vet';
     vet.textContent = t('bs_vet');
-    top.appendChild(vet);
+    l1.appendChild(dot);
+    l1.appendChild(idEl);
+    l1.appendChild(vet);
+    var st = document.createElement('div');
+    st.className = 'pc-st';
+    top.appendChild(l1);
+    top.appendChild(st);
 
-    var body = document.createElement('div');
-    body.className = 'pc-body';
-
-    // 单双：与玩家端 .pair .opt 一一对应（两枚都画出来，只把选中的点亮）
+    // 单双：与玩家端 .pair .opt 一一对应，两块牌面各占一半，只把选中的那块点亮
     var oeWrap = document.createElement('div');
     oeWrap.className = 'pc-oe';
     var oeRefs = [];
     ['单', '双'].forEach(function (v) {
-      var b = document.createElement('span');
-      b.setAttribute('data-oe', v);
-      b.textContent = t(v === '单' ? 'odd' : 'even');
-      oeWrap.appendChild(b);
-      oeRefs.push(b);
+      var plate = document.createElement('div');
+      plate.className = 'pc-plate';
+      plate.setAttribute('data-oe', v);
+      var lab = document.createElement('span');
+      lab.className = 'pl-lab';
+      lab.textContent = t(v === '单' ? 'oeOddName' : 'oeEvenName');
+      var nums = document.createElement('span');
+      nums.className = 'pl-num';
+      nums.textContent = t(v === '单' ? 'oeOddNums' : 'oeEvenNums');
+      var veil = document.createElement('span');
+      veil.className = 'pl-veil';
+      plate.appendChild(lab);
+      plate.appendChild(nums);
+      plate.appendChild(veil);
+      oeWrap.appendChild(plate);
+      oeRefs.push({ root: plate, lab: lab, nums: nums });
     });
 
-    // 数字：与玩家端 #numGrid 同一个 .numgrid（5 列 × 2 行，0–9 顺序一致）
+    // 数字键区：与参考盘一一对应，4 列 × 2 行、只有 1–8，键面写「N羊」
+    var key = document.createElement('div');
+    key.className = 'pc-key';
     var numWrap = document.createElement('div');
     numWrap.className = 'numgrid pc-numgrid';
     var cellRefs = [];
-    for (var i = 0; i < 10; i++) {
+    for (var i = 1; i <= 8; i++) {
       var c = document.createElement('span');
       c.setAttribute('data-n', String(i));
-      c.textContent = String(i);
+      var cn = document.createElement('b');
+      cn.className = 'kn';
+      cn.textContent = String(i);
+      var cu = document.createElement('i');
+      cu.className = 'ku';
+      cu.textContent = t('sheepUnit');
+      // 单位写在数字元素里面（行内），两者自然同基线；外层只负责把数字那一行居中。
+      // 单位后缀一律挂着（英文下为空、由 CSS 隐藏），切语言时才不用重建 DOM
+      cn.appendChild(cu);
+      c.appendChild(cn);
       numWrap.appendChild(c);
       cellRefs.push(c);
     }
+    key.appendChild(numWrap);
 
-    body.appendChild(oeWrap);
-    body.appendChild(numWrap);
-
-    var foot = document.createElement('div');
-    foot.className = 'pc-foot';
-    var dot = document.createElement('span');
-    dot.className = 'd';
-    foot.appendChild(dot);
-
+    el.appendChild(pad);
     el.appendChild(top);
-    el.appendChild(body);
-    el.appendChild(foot);
+    el.appendChild(oeWrap);
+    el.appendChild(key);
 
-    var card = { el: el, refs: { id: idEl, vet: vet, oe: oeRefs, cells: cellRefs, foot: foot }, sig: '', locked: false };
-    paintCard(card, p, d);
-    return card;
+    return {
+      el: el,
+      refs: { pad: pad, top: top, id: idEl, vet: vet, st: st, oe: oeRefs, cells: cellRefs },
+      sig: '', locked: false, submitted: false
+    };
+  }
+
+  /** 空席 = 一张没人动过的盘：整块压暗，不留姓名/状态/提示 */
+  function paintEmpty(card) {
+    card.el.setAttribute('data-state', 'empty');
+    card.refs.top.style.display = 'none';
+    card.refs.id.textContent = '';
+    card.refs.id.removeAttribute('title');
+    card.refs.vet.style.display = 'none';
+    card.refs.st.textContent = '';
+    card.refs.oe.forEach(function (o) { o.root.classList.remove('sel', 'hit', 'mk'); });
+    card.refs.cells.forEach(function (el) { el.classList.remove('sel', 'hit', 'mk'); });
+    card.el.setAttribute('data-hit', '0');
+    card.sig = '';
+    card.locked = false;
+    card.submitted = false;
+  }
+
+  function makeSeat(no) {
+    var el = document.createElement('div');
+    el.className = 'seat';
+    el.setAttribute('data-seat', no);
+
+    var tag = document.createElement('div');
+    tag.className = 'seat-tag';
+    tag.textContent = t('bs_seat', { n: no });
+
+    var card = makeBoard();
+    paintEmpty(card);
+    // 牌位挂在盘面里，跟着盘面同一个 transform 转：位置和角度都不另算
+    card.el.appendChild(tag);
+    el.appendChild(card.el);
+    seatsEl.appendChild(el);
+
+    return { el: el, tag: tag, card: card, pid: null, ang: 0, no: no };
   }
 
   /** 把一份玩家数据画到卡片上（d = 当前状态负载，含 locked / number 用于命中标记）
-   *  选择结果全部用图示表达：单双两枚 + 0–9 十格，选中的那格点亮，不做文字拼读。 */
+   *  选择结果全部用图示表达：单双两枚 + 1–8 八格，筹码压在选中的那格/那块牌面上。
+   *  三个状态类各管一件事，别混：
+   *    .mk  —— 这是他押的（筹码就压在这儿；开奖前后都在，用来读「押了哪个」）
+   *    .sel —— 高亮（未开奖时等于 .mk；开奖后只有命中的那个才留 .sel）
+   *    .hit —— 开奖后命中，唯一带「正确」对勾的标记 */
   function paintCard(card, p, d) {
     card.el.setAttribute('data-state', stateOf(p));
+    // 盘面是复用的：上一个玩家走了留下的空盘要先恢复出名牌
+    card.refs.top.style.display = '';
+    card.refs.id.textContent = p.maskedId || p.id;   // 只展示脱敏标签，明文会员号不下发到浏览器
+    card.refs.id.title = p.maskedId || p.id;
     card.refs.vet.style.display = p.isVeteran ? '' : 'none';
 
     // oe/num 是「当前显示值」：已确认取提交值，未确认取草稿值（服务端算好，前端不猜）
@@ -301,34 +522,44 @@
     var num = (p.num == null || p.num === '') ? null : Number(p.num);
     var locked = !!(d && d.locked && d.number != null);
     var judged = locked && !!p.submitted;   // 只有已确认的提交才判命中，草稿不判
-    var oeHit = judged && oe !== null && (oe === '单') === (d.number % 2 === 1);
+    var oeWin = locked ? (d.number % 2 === 1 ? '单' : '双') : null;
+    var oeHit = judged && oe !== null && oe === oeWin;
+    var numHit = judged && num !== null && num === d.number;
 
-    // 单双两枚：选中 → .sel；开奖后判中/未中 → .hit/.miss（描边颜色由 CSS 决定）
-    card.refs.oe.forEach(function (el) {
-      var mine = oe !== null && el.getAttribute('data-oe') === oe;
-      el.classList.toggle('sel', mine);
-      el.classList.toggle('hit', mine && oeHit);
-      el.classList.toggle('miss', mine && judged && !oeHit);
-      el.textContent = t(el.getAttribute('data-oe') === '单' ? 'odd' : 'even');
+    // 单双两块牌面：开奖前选中即高亮；开奖后只有命中的那块继续高亮并打勾，
+    // 其余牌面一律退回未选中样式——筹码留着当「押过这边」的记号，但不点亮。
+    card.refs.oe.forEach(function (o) {
+      var mine = oe !== null && o.root.getAttribute('data-oe') === oe;
+      var hit = mine && oeHit;
+      o.root.classList.toggle('mk', mine);
+      o.root.classList.toggle('sel', mine && (!locked || hit));
+      o.root.classList.toggle('hit', hit);
+      var odd = o.root.getAttribute('data-oe') === '单';
+      o.lab.textContent = t(odd ? 'oeOddName' : 'oeEvenName');
+      o.nums.textContent = t(odd ? 'oeOddNums' : 'oeEvenNums');
     });
 
-    // 数字十格：选中格点亮；开奖后同样用描边标出中/未中
+    // 数字八格：同一套规则（.mk 压筹码 / .sel 高亮 / .hit 打勾）
+    // 单位后缀（羊）随语言切换，切语言时整屏重绘会走到这里
+    var unit = t('sheepUnit');
     card.refs.cells.forEach(function (el) {
       var n = Number(el.getAttribute('data-n'));
       var mine = num !== null && n === num;
-      el.classList.toggle('sel', mine);
-      el.classList.toggle('hit', mine && judged && d.number === n);
-      el.classList.toggle('miss', mine && judged && d.number !== n);
+      var hit = mine && judged && d.number === n;
+      el.classList.toggle('mk', mine);
+      el.classList.toggle('sel', mine && (!locked || hit));
+      el.classList.toggle('hit', hit);
+      var ku = el.querySelector('.ku');
+      if (ku) ku.textContent = unit;
     });
 
-    // 状态行只留一句状态（命中与否已经画在选项上，不再重复文字）
-    var foot = card.refs.foot;
-    while (foot.children.length > 1) foot.removeChild(foot.lastChild);
-    var st = document.createElement('span');
-    st.textContent = t(p.submitted ? 'bs_statePicked'
+    // 名牌第二行只留一句状态；命中的写成「命中」并走绿字（大屏远看最先读到的就是这句）
+    var win = judged && (oeHit || numHit);
+    card.el.setAttribute('data-hit', win ? '1' : '0');
+    card.refs.st.textContent = t(win ? 'bs_hit'
+      : p.submitted ? 'bs_statePicked'
       : p.status === 'draft' ? 'bs_stateDraft'
       : 'bs_stateUnpicked');
-    foot.appendChild(st);
 
     card.sig = sigOf(p);
     card.locked = !!(d && d.locked);
@@ -344,38 +575,72 @@
     setTimeout(function () { el.classList.remove(cls); }, 950);
   }
 
+  /** 玩家落到哪个席位：认席号，不认下标（席号可能不连续）；对不上（理论上不会）就补第一个空位 */
+  function seatIndex(p, want) {
+    var no = Number(p.seatNo);
+    if (Number.isInteger(no)) {
+      for (var k = 0; k < slots.length; k++) {
+        if (slots[k].no === no) return want[k] ? -1 : k;
+      }
+    }
+    for (var i = 0; i < slots.length; i++) if (!want[i]) return i;
+    return -1;
+  }
+
   function syncCards(list, d) {
     var seen = Object.create(null);
+    var want = new Array(slots.length);
+    var i;
+    for (i = 0; i < slots.length; i++) want[i] = null;
+
     list.forEach(function (p) {
       seen[p.id] = 1;
-      var card = cards.get(p.id);
-      if (!card) {
-        card = makeCard(p, d);
-        cards.set(p.id, card);
-        grid.appendChild(card.el);
-        if (hasBaseline) { pushEvent('join', p.id); flash(card.el, 'enter'); }
+      var idx = seatIndex(p, want);
+      if (idx >= 0) want[idx] = p;
+    });
+
+    slots.forEach(function (slot, idx) {
+      var p = want[idx];
+      var card = slot.card;
+      var prev = slot.pid;
+
+      if (!p) {
+        // 这个人走了：席位退回默认棋盘（不留空、不留占位字样）
+        if (prev) {
+          cards.delete(prev);
+          slot.pid = null;
+          paintEmpty(card);
+          if (hasBaseline) pushEvent('leave', prev);
+        }
         return;
       }
+
+      var known = cards.get(p.id);
+      if (!known || known.el !== card.el) {
+        // 新面孔落座（同一席位换人时，上一位的盘面直接被覆盖）
+        if (prev && prev !== p.id) cards.delete(prev);
+        slot.pid = p.id;
+        paintCard(card, p, d);
+        cards.set(p.id, card);
+        if (hasBaseline) { pushEvent('join', p.id); flash(slot.el, 'enter'); }
+        return;
+      }
+
       var next = sigOf(p);
       // 开奖/撤销开奖不改变选择签名，但要让命中标记重新画一遍，所以单列一个判断
       var lockedChanged = (d && d.locked ? 1 : 0) !== (card.locked ? 1 : 0);
       if (card.sig === next && !lockedChanged) return;
-      var prev = { submitted: card.submitted, oddEven: card.oddEven, number: card.number };
+      var old = { submitted: card.submitted, oddEven: card.oddEven, number: card.number };
       paintCard(card, p, d);
       if (hasBaseline) {
-        if (p.submitted && !prev.submitted) pushEvent('pick', p.id);
-        else if (p.submitted && prev.submitted && (p.oddEven !== prev.oddEven || p.number !== prev.number)) pushEvent('change', p.id);
+        if (p.submitted && !old.submitted) pushEvent('pick', p.id);
+        else if (p.submitted && old.submitted && (p.oddEven !== old.oddEven || p.number !== old.number)) pushEvent('change', p.id);
       }
-      flash(card.el, 'change');
+      flash(slot.el, 'change');
     });
 
-    // 不在本帧里的：本轮已重置或玩家被移除，整条移除，避免残留过期数据
-    cards.forEach(function (card, pid) {
-      if (seen[pid]) return;
-      card.el.remove();
-      cards.delete(pid);
-      if (hasBaseline) pushEvent('leave', pid);
-    });
+    // 不在本帧里的：本轮已重置或玩家被移除，连记录一起清掉，避免残留过期数据
+    cards.forEach(function (card, pid) { if (!seen[pid]) cards.delete(pid); });
 
     $('empty').classList.toggle('on', list.length === 0);
     if (list.length === 0) $('empty').textContent = t('bs_waiting');
@@ -467,11 +732,15 @@
     }
 
     if (curRound != null && d.round !== curRound) {
-      cards.forEach(function (c) { c.el.remove(); });
+      // 新一轮：整块桌面清回默认棋盘，只留一条「第 N 轮开始」
       cards.clear();
-      pushEvent('round', d.round);   // 新一轮：整屏清空，只留一条「第 N 轮开始」
+      slots.forEach(function (s) { s.pid = null; paintEmpty(s.card); });
+      pushEvent('round', d.round);
     }
     curRound = d.round;
+
+    // 席位以服务端为准（空席也要摆出来，整张桌子才是完整的）；号段可能不连续
+    ensureSeats(seatNumbersOf(d));
 
     renderHead(d);
     renderStats(d.players || [], d.counts);
@@ -567,6 +836,7 @@
   function onSessionClosed() {
     closeStream();
     resetBoard();
+    ensureSeats([]);
     $('sessName').textContent = '—';
     $('sessMeta').textContent = '';
     $('empty').classList.add('on');

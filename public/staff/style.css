@@ -111,12 +111,13 @@
   .stats .st .t { font-size:12px; color:var(--muted); margin-top:3px; }
 
   /* 数字录入 */
-  .numgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  .numgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
   .numgrid button {
     padding:20px 0; font-size:28px; font-weight:800; border-radius:16px;
     background:rgba(0,0,0,.28); color:var(--text); border:2px solid var(--card-border); cursor:pointer;
     transition: all .12s ease;
   }
+  .numgrid button .u { font-size:.62em; font-style:normal; margin-left:.06em; }
   .numgrid button.sel { background:linear-gradient(135deg,var(--gold),var(--gold-deep));
     border-color:#ffe9a8; color:#3a2500; transform:scale(1.04); }
   .sel-preview { text-align:center; margin:16px 0 2px; font-size:15px; color:var(--muted); }

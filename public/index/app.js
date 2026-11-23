@@ -174,11 +174,19 @@
       el.placeholder = t(el.getAttribute('data-i18n-ph'));
     });
 
-    // 单双选项按钮文字
+    // 单双选项按钮文字：主标「单数羊 / 双数羊」，副标是四注点数
     Array.prototype.forEach.call(document.querySelectorAll('.pair .opt'), function (b) {
       var oe = b.getAttribute('data-oe');
       var main = b.querySelector('.oe-main');
-      if (main) main.textContent = t(oe === '单' ? 'odd' : 'even');
+      if (main) main.textContent = t(oe === '单' ? 'oeOddName' : 'oeEvenName');
+      var sub = b.querySelector('small');
+      if (sub) sub.textContent = t(oe === '单' ? 'oeOddNums' : 'oeEvenNums');
+    });
+
+    // 数字键的单位后缀（1羊 2羊 …）：英文下为空，只留数字
+    var unit = t('sheepUnit');
+    Array.prototype.forEach.call(document.querySelectorAll('#numGrid .u'), function (el) {
+      el.textContent = unit;
     });
 
     // 页面标题

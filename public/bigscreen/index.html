@@ -12,6 +12,7 @@
 <div class="board">
   <header class="hd">
     <div class="hd-brand">
+      <i class="brand-chip" aria-hidden="true"></i>
       <span class="brand-name" data-i18n="brand">羊多一点</span>
       <span class="brand-tag" data-i18n="bs_tag">实时大屏</span>
     </div>
@@ -35,15 +36,25 @@
       <div class="st draft"><div class="n" id="nDraft">0</div><div class="t" data-i18n="bs_draft">待确认</div></div>
       <div class="st unpick"><div class="n" id="nUnpicked">0</div><div class="t" data-i18n="bs_unpicked">未选择</div></div>
     </div>
-    <div class="draw idle" id="drawBox">
-      <div class="lab" id="drawLab" data-i18n="bs_draw">本轮开奖数字</div>
-      <div class="num" id="drawNum" data-i18n="bs_drawing">待开奖</div>
-    </div>
   </section>
 
+  <!-- 桌面：席位沿一圈浅弧铺开，开奖结果钉在弧心 -->
   <section class="stage">
-    <div class="grid" id="grid"></div>
-    <div class="empty on" id="empty" data-i18n="bs_waiting">等待玩家扫码…</div>
+    <div class="felt" aria-hidden="true">
+      <span class="rim"></span>
+      <span class="arc"></span>
+      <span class="arc2"></span>
+      <span class="arc3"></span>
+    </div>
+    <div class="seats" id="seats"></div>
+    <div class="hub">
+      <div class="draw idle" id="drawBox">
+        <i class="draw-seal" aria-hidden="true"></i>
+        <div class="lab" id="drawLab" data-i18n="bs_draw">本轮开奖数字</div>
+        <div class="num" id="drawNum" data-i18n="bs_drawing">待开奖</div>
+      </div>
+      <div class="empty" id="empty" data-i18n="bs_waiting">等待玩家扫码…</div>
+    </div>
   </section>
 
   <footer class="ticker">

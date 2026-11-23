@@ -57,7 +57,7 @@
       inputTitle: '录入本轮数字',
       selPreview: '已选数字',
       confirmLock: '确认并锁定本轮数字',
-      errPickNumber: '请先点选一个 0-9 的数字',
+      errPickNumber: '请先点选一个 1-8 的数字',
 
       /* 自定义确认弹窗 */
       modalCancelText: '取消',
@@ -90,6 +90,13 @@
       miss: '未中',
       odd: '单',
       even: '双',
+      /* 盘面上的单双牌面：与参考盘一致，写「单数羊 (1,3,5,7点)」 */
+      oeOddName: '单数羊',
+      oeEvenName: '双数羊',
+      oeOddNums: '1,3,5,7点',
+      oeEvenNums: '2,4,6,8点',
+      /* 数字键的单位后缀（1羊 2羊 …） */
+      sheepUnit: '羊',
 
       /* 实时大屏 */
       bs_tag: '实时大屏',
@@ -111,6 +118,7 @@
       bs_statePicked: '已确认',
       bs_stateDraft: '已选待确认',
       bs_stateUnpicked: '未选择',
+      bs_seat: '贵宾 {n}',
       bs_vet: '老玩家',
       bs_draw: '本轮开奖数字',
       bs_drawing: '待开奖',
@@ -150,7 +158,7 @@
       err_last_admin: '至少要保留一个可用管理员',
       err_nothing_to_update: '没有需要修改的内容',
       err_unauthorized: '未授权，请先登录员工端',
-      err_invalid_number: '只能录入 0-9 的整数',
+      err_invalid_number: '只能录入 1-8 的整数',
       err_already_locked: '本轮数字已锁定为 {number}，不能重复录入；如需继续请开始新一轮',
 
       /* 竞猜归档与对账（不含积分） */
@@ -378,7 +386,7 @@
       p_scanNetErr: '网络异常，请重试',
       p_scanFail: '识别失败',
       p_selOddEven: '请先选择「单」或「双」',
-      p_selNum: '请再选一个 0-9 的数字',
+      p_selNum: '请再选一个 1-8 的数字',
       p_predSubmitting: '预测已提交，等待开奖！',
       p_predSubmitFail: '提交失败',
       p_predClosed: '本轮已锁定，无法提交',
@@ -389,7 +397,7 @@
       p_rulesTitle: '玩法说明',
       p_rule1: '扫描会员码完成登记，即进入本场',
       p_rule2: '先猜本轮开奖数字是「单」还是「双」',
-      p_rule3: '再猜一个 0-9 的数字（含 0 和 9），两项各只有一次机会，提交后不可修改',
+      p_rule3: '再猜一个 1-8 的数字，两项各只有一次机会，提交后不可修改',
       p_rule4: '工作人员锁定数字后立即公布结果，命中按门店规则计分',
       p_rulesTap: '点击任意位置立即开始',
       p_rulesCountdown: '{n} 秒后自动关闭',
@@ -423,7 +431,7 @@
       p_err_predict_closed: '本轮已开奖，预测已截止',
       p_err_predict_duplicate: '你已提交过预测，不能重复提交或修改',
       p_err_predict_invalid_oe: '请选择「单」或「双」',
-      p_err_predict_invalid: '数字预测必须是 0-9 的整数',
+      p_err_predict_invalid: '数字预测必须是 1-8 的整数',
       p_err_session_not_found: '场次不存在，请重新选择',
       p_err_session_closed: '该场次已结束，请选择其他场次',
       p_err_session_locked: '本机已绑定其他场次，如需切换请重新验证口令',
@@ -481,7 +489,7 @@
       inputTitle: '錄入本輪數字',
       selPreview: '已選數字',
       confirmLock: '確認並鎖定本輪數字',
-      errPickNumber: '請先點選一個 0-9 的數字',
+      errPickNumber: '請先點選一個 1-8 的數字',
 
       /* 自定義確認彈窗 */
       modalCancelText: '取消',
@@ -514,6 +522,12 @@
       miss: '未中',
       odd: '單',
       even: '雙',
+      /* 盤面上的單雙牌面：與參考盤一致，寫「單數羊 (1,3,5,7點)」 */
+      oeOddName: '單數羊',
+      oeEvenName: '雙數羊',
+      oeOddNums: '1,3,5,7點',
+      oeEvenNums: '2,4,6,8點',
+      sheepUnit: '羊',
 
       /* 實時大屏 */
       bs_tag: '實時大屏',
@@ -535,6 +549,7 @@
       bs_statePicked: '已確認',
       bs_stateDraft: '已選待確認',
       bs_stateUnpicked: '未選擇',
+      bs_seat: '貴賓 {n}',
       bs_vet: '老玩家',
       bs_draw: '本輪開獎數字',
       bs_drawing: '待開獎',
@@ -574,7 +589,7 @@
       err_last_admin: '至少要保留一個可用管理員',
       err_nothing_to_update: '沒有需要修改的內容',
       err_unauthorized: '未授權，請先登入員工端',
-      err_invalid_number: '只能錄入 0-9 的整數',
+      err_invalid_number: '只能錄入 1-8 的整數',
       err_already_locked: '本輪數字已鎖定為 {number}，不能重複錄入；如需繼續請開始新一輪',
 
       /* 對賬歸檔（不含積分） */
@@ -802,7 +817,7 @@
       p_scanNetErr: '網絡異常，請重試',
       p_scanFail: '識別失敗',
       p_selOddEven: '請先選擇「單」或「雙」',
-      p_selNum: '請再選一個 0-9 的數字',
+      p_selNum: '請再選一個 1-8 的數字',
       p_predSubmitting: '預測已提交，等待開獎！',
       p_predSubmitFail: '提交失敗',
       p_predClosed: '本輪已鎖定，無法提交',
@@ -813,7 +828,7 @@
       p_rulesTitle: '玩法說明',
       p_rule1: '掃描會員碼完成登記，即進入本場',
       p_rule2: '先猜本輪開獎數字是「單」還是「雙」',
-      p_rule3: '再猜一個 0-9 的數字（含 0 和 9），兩項各只有一次機會，提交後不可修改',
+      p_rule3: '再猜一個 1-8 的數字，兩項各只有一次機會，提交後不可修改',
       p_rule4: '工作人員鎖定數字後立即公佈結果，命中按門店規則計分',
       p_rulesTap: '點擊任意位置立即開始',
       p_rulesCountdown: '{n} 秒後自動關閉',
@@ -846,7 +861,7 @@
       p_err_predict_closed: '本輪已開獎，預測已截止',
       p_err_predict_duplicate: '你已提交過預測，不能重複提交或修改',
       p_err_predict_invalid_oe: '請選擇「單」或「雙」',
-      p_err_predict_invalid: '數字預測必須是 0-9 的整數',
+      p_err_predict_invalid: '數字預測必須是 1-8 的整數',
       p_err_session_not_found: '場次不存在，請重新選擇',
       p_err_session_closed: '該場次已結束，請選擇其他場次',
       p_err_session_locked: '本機已綁定其他場次，如需切換請重新驗證口令',
@@ -904,7 +919,7 @@
       inputTitle: 'Enter This Round\'s Number',
       selPreview: 'Selected number',
       confirmLock: 'Confirm & Lock Number',
-      errPickNumber: 'Please tap a number from 0 to 9 first',
+      errPickNumber: 'Please tap a number from 1 to 8 first',
 
       /* Custom confirm modal */
       modalCancelText: 'Cancel',
@@ -937,6 +952,13 @@
       miss: 'Miss',
       odd: 'Odd',
       even: 'Even',
+      /* Board plates mirror the reference pad: "Odd sheep (1,3,5,7)" */
+      oeOddName: 'Odd',
+      oeEvenName: 'Even',
+      oeOddNums: '1,3,5,7',
+      oeEvenNums: '2,4,6,8',
+      /* Unit suffix for the number keys; empty in English */
+      sheepUnit: '',
 
       /* Live big screen */
       bs_tag: 'Live board',
@@ -958,6 +980,7 @@
       bs_statePicked: 'Confirmed',
       bs_stateDraft: 'Picked, unconfirmed',
       bs_stateUnpicked: 'No pick',
+      bs_seat: 'VIP {n}',
       bs_vet: 'Returning',
       bs_draw: 'Drawn number',
       bs_drawing: 'Not drawn',
@@ -997,7 +1020,7 @@
       err_last_admin: 'At least one active administrator must remain',
       err_nothing_to_update: 'Nothing to update',
       err_unauthorized: 'Unauthorized, please log in to the staff console first',
-      err_invalid_number: 'Please enter an integer from 0 to 9',
+      err_invalid_number: 'Please enter an integer from 1 to 8',
       err_already_locked: 'This round\'s number is already locked to {number}; start a new round to continue',
 
       /* Archive & reconciliation (no points) */
@@ -1225,7 +1248,7 @@
       p_scanNetErr: 'Network error, try again',
       p_scanFail: 'Recognition failed',
       p_selOddEven: 'Choose "Odd" or "Even" first',
-      p_selNum: 'Choose a number from 0-9',
+      p_selNum: 'Choose a number from 1-8',
       p_predSubmitting: 'Prediction submitted, waiting for draw!',
       p_predSubmitFail: 'Submit failed',
       p_predClosed: 'This round is locked',
@@ -1236,7 +1259,7 @@
       p_rulesTitle: 'How to Play',
       p_rule1: 'Scan your member code to register for this session',
       p_rule2: 'Guess whether the winning number is Odd or Even',
-      p_rule3: 'Then pick a number from 0-9 (0 and 9 included) — one guess each, no changes after submitting',
+      p_rule3: 'Then pick a number from 1-8 — one guess each, no changes after submitting',
       p_rule4: 'Results show as soon as staff lock the number; hits earn points per store rules',
       p_rulesTap: 'Tap anywhere to start now',
       p_rulesCountdown: 'Closes in {n}s',
@@ -1269,7 +1292,7 @@
       p_err_predict_closed: 'This round has been drawn; predictions are closed',
       p_err_predict_duplicate: 'You have already submitted a prediction and cannot resubmit or change it',
       p_err_predict_invalid_oe: 'Please choose "Odd" or "Even"',
-      p_err_predict_invalid: 'Number prediction must be an integer from 0 to 9',
+      p_err_predict_invalid: 'Number prediction must be an integer from 1 to 8',
       p_err_session_not_found: 'Session not found, please choose again',
       p_err_session_closed: 'This session has ended, please choose another one',
       p_err_session_locked: 'This device is bound to another session — re-enter the passcode to switch',
