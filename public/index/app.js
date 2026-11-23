@@ -317,7 +317,7 @@
 
     if (ph === 'wait') {
       $('myPred').innerHTML =
-        '<div class="chip">' + esc(t('p_oeCol')) + ' <b>' + esc(s.me.oddEven) + '</b></div>' +
+        '<div class="chip">' + esc(t('p_oeCol')) + ' <b>' + esc(oeText(s.me.oddEven)) + '</b></div>' +
         '<div class="chip">' + esc(t('p_numCol')) + ' <b>' + esc(s.me.number) + '</b></div>';
     }
 
@@ -333,7 +333,7 @@
     var oeHit = (me.oddEven === '单') === (n % 2 === 1);
     var numHit = me.number === n;
     $('vOE').className = 'v ' + (oeHit ? 'hit' : 'miss');
-    $('vOEd').innerHTML = verdictHtml(me.oddEven, oeHit);
+    $('vOEd').innerHTML = verdictHtml(oeText(me.oddEven), oeHit);
     $('vNum').className = 'v ' + (numHit ? 'hit' : 'miss');
     $('vNumd').innerHTML = verdictHtml(me.number, numHit);
 
@@ -361,6 +361,11 @@
     $('bonusTitle').textContent = title;
     $('bonusDesc').textContent = desc;
     $('bonusDesc').classList.toggle('hidden', !desc);
+  }
+
+  /* 存储值为中文「单/双」，显示时按当前语言翻译（简：单/双，繁：單/雙，英：Odd/Even） */
+  function oeText(oe) {
+    return oe === '单' ? t('odd') : (oe === '双' ? t('even') : String(oe));
   }
 
   /* 单项预测的两行结构：上面是猜的值，下面是命中结论（✓ 命中 / ✗ 未中） */
