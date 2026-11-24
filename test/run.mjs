@@ -28,6 +28,7 @@ const FILES = [
   'test/bonus.test.mjs',
   'test/rule-version.test.mjs',
   'test/sse-reconnect.test.mjs',
+  'test/sse-liveness.test.mjs',
   'test/identity.test.mjs',
   'test/presence.test.mjs',
   'test/seat.test.mjs'

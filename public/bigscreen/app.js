@@ -16,6 +16,31 @@
   var streamClosed = false;
   var errCount = 0;
 
+  /* 静默断链看门狗。
+   *
+   * 大屏是现场唯一的展示面，断了没人会去刷新页面 —— 而链路被黑洞化时（切网、代理挂掉、
+   * 隧道断）服务端心跳只是单向写、浏览器收不到任何字节也不会触发 onerror，画面会一直
+   * 停在旧状态上，看起来「还在跑」。这里以「最后一次收到事件的时刻」为准，超过
+   * STREAM_IDLE_MS 没有任何事件（含 ping 心跳）就主动 close 重建。
+   */
+  var STREAM_IDLE_MS = 25000;  // 服务端每 15s 一个 ping
+  var STREAM_WATCH_MS = 5000;
+  var streamWatchdog = null;
+  var lastEventAt = 0;
+
+  /** 收包即续命：任何事件（state / draft / session_closed / ping）都算链路活着。 */
+  function noteStreamAlive() { lastEventAt = Date.now(); }
+
+  function armWatchdog() {
+    if (streamWatchdog) clearInterval(streamWatchdog);
+    streamWatchdog = setInterval(function () {
+      if (streamClosed || !es) return;
+      if (Date.now() - lastEventAt < STREAM_IDLE_MS) return;
+      startStream();  // 内部先 closeStream 再建新连接，onopen 会拉一次全量对齐
+      poll();
+    }, STREAM_WATCH_MS);
+  }
+
   var lastVersion = -1;   // 已应用的最新场次版本号（小于它的帧直接丢弃）
   var curRound = null;    // 当前轮次（变化即视为新一轮，整屏清空重来）
   var hasBaseline = false;// 是否已经渲染过首帧（首帧不产生「加入」动态）
@@ -758,6 +783,7 @@
   /* ---------- 网络：SSE + 快照对齐 ---------- */
   function closeStream() {
     streamClosed = true;
+    if (streamWatchdog) { clearInterval(streamWatchdog); streamWatchdog = null; }
     if (es) { es.close(); es = null; }
   }
 
@@ -775,18 +801,26 @@
     streamClosed = false;
     errCount = 0;
     es = new EventSource('/api/stream?' + boardQuery(true));
+    noteStreamAlive();   // 以建连时刻为看门狗起点
+    armWatchdog();
 
     es.onopen = function () {
       errCount = 0;
+      noteStreamAlive();
       $('connTip').classList.remove('on');
       poll();   // 重连成功：补一次全量快照，消除断线期间错过的变更
     };
 
     es.addEventListener('state', function (ev) {
+      noteStreamAlive();
       try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
     });
 
+    // 心跳：内容无用，只用来证明链路还活着（看门狗据此续命）
+    es.addEventListener('ping', noteStreamAlive);
+
     es.addEventListener('draft', function (ev) {
+      noteStreamAlive();
       var d = {};
       try { d = JSON.parse(ev.data) || {}; } catch (e) { return; }
       if (d.sid && d.sid !== sid) return;
@@ -794,6 +828,7 @@
     });
 
     es.addEventListener('session_closed', function (ev) {
+      noteStreamAlive();
       var d = {};
       try { d = JSON.parse(ev.data) || {}; } catch (e) { /* 忽略坏帧 */ }
       if (d.sid && d.sid !== sid) return;

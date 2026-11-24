@@ -82,3 +82,30 @@
  3) 死连接：group.size 只随新建连接增长、半开连接不会被服务端回收；写已销毁的 res 不会
     打挂进程（Node 22 会吞掉 ECONNRESET），真正的隐患是内核缓冲填满后无界的 userspace 待发队列。
     处置：客户端看门狗止损 + 服务端 writableLength 阈值回收。
+
+════════ 修复后复测（2026-11-24） ════════
+  修复点（server.js + 三个前端）：
+   1) 建连撤销 left_at 前加只读预检 needsLeaveRevoke()，不需要撤销就不进 store.mutate；
+   2) sseSend 统一以「destroyed / writableEnded / writableLength > 1MiB」判死，
+      广播、草稿、心跳三条写路径都经它，失效连接就地 destroy + 出组 + 清心跳定时器；
+   3) 连接级 req/res error 处理器 + 进程级 uncaughtException（传输类错误忽略、
+      其他记录后退出）/ unhandledRejection 兜底；
+   4) 前端三个页面加空闲看门狗：25s 收不到任何事件（含 ping）就 close() 重连；
+   5) /healthz 增加 sse: { connections, groups, maxPendingBytes }。
+
+  复测 1｜半开连接回收（40 人场次，客户端读完首帧后停止读取，持续灌广播）
+    推送约 1.9MB / 260 帧后连接被回收：待发队列峰值 988KB（阈值 1024KB），
+    从暂停到出组 2.3s；/healthz sse.connections 1 → 0，groups 1 → 0；
+    进程 /healthz 正常、日志无未捕获异常；新连接首帧正常。
+
+  复测 2｜静默断链的客户端止损（真实 Chromium + 可黑洞化 TCP 代理）
+    黑洞化（连接保持 ESTABLISHED、数据不流动）后 27.5s，页面主动 close 并重新发起
+    /api/stream —— 即 25s 空闲阈值 + 5s 巡检粒度。修复前同一场景 45s 内不会再连。
+    健康连接对照：45s 无状态变更时不产生第二次 /api/stream（心跳续命，无误杀）。
+
+  复测 3｜建连成本（同机实测 p50，含新建 TCP 连接开销）
+    在场玩家重连（只读预检命中）31.3ms；确需撤销 left_at（真实写事务）46.9ms。
+    差值 ~15.6ms 就是旧路径每次刷新都白付的写锁 + 事务成本（与实验 2 的 12.8–13.5ms 同量级）。
+
+  回归：npm test 112 项全绿，新增 test/sse-liveness.test.mjs 钉死三条语义
+    （在场重连不推进版本、离开后重连撤销并回到名单、锁定后重连不撤销）。

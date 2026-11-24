@@ -405,6 +405,31 @@
   /* ---------- 网络（SSE 实时推送 + 断线重连） ---------- */
   var es = null;           // EventSource 实例
   var streamClosed = false; // 手动关闭标记
+
+  /* 静默断链看门狗。
+   *
+   * 服务端心跳是单向写，链路被黑洞化时既不会报错，浏览器也收不到任何字节，onerror
+   * 永远不来（连接要等内核 TCP 超时才断，分钟级）。客户端以「最后一次收到事件的
+   * 时刻」为准，超过 STREAM_IDLE_MS 没有任何事件（含 ping 心跳）就主动 close 重建，
+   * close 发 FIN，服务端立刻清组，新连接首帧即当前全量快照。
+   */
+  var STREAM_IDLE_MS = 25000;  // 服务端每 15s 一个 ping
+  var STREAM_WATCH_MS = 5000;
+  var streamWatchdog = null;
+  var lastEventAt = 0;
+
+  /** 收包即续命：任何事件（state / session_closed / ping）都算链路活着。 */
+  function noteStreamAlive() { lastEventAt = Date.now(); }
+
+  function armWatchdog() {
+    if (streamWatchdog) clearInterval(streamWatchdog);
+    streamWatchdog = setInterval(function () {
+      if (streamClosed || !es) return;
+      if (Date.now() - lastEventAt < STREAM_IDLE_MS) return;
+      startStream();  // 内部先 closeStream 再建新连接，onopen 会拉一次全量对齐
+      poll();
+    }, STREAM_WATCH_MS);
+  }
   var lastVersion = -1;    // 已应用的最新场次版本号（旧帧直接丢弃，避免轮询响应盖回新状态）
 
   function applyState(s) {
@@ -429,6 +454,7 @@
   /** 关闭当前 SSE 连接。 */
   function closeStream() {
     streamClosed = true;
+    if (streamWatchdog) { clearInterval(streamWatchdog); streamWatchdog = null; }
     if (es) { es.close(); es = null; }
   }
 
@@ -440,15 +466,22 @@
     streamClosed = false;
     es = new EventSource('/api/stream?sid=' + encodeURIComponent(sid) +
       (token ? '&token=' + encodeURIComponent(token) : ''));
+    noteStreamAlive();   // 以建连时刻为看门狗起点
+    armWatchdog();
 
     es.onopen = function () {
+      noteStreamAlive();
       $('connLost').classList.add('hidden');
       poll(); // 重连成功后全量对齐一次
     };
 
     es.addEventListener('state', function (ev) {
+      noteStreamAlive();
       try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略坏帧 */ }
     });
+
+    // 心跳：内容无用，只用来证明链路还活着（看门狗据此续命）
+    es.addEventListener('ping', noteStreamAlive);
 
     // 场次被关闭（可能是别的员工端关的）
     es.addEventListener('session_closed', function (ev) {

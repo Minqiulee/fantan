@@ -233,13 +233,32 @@ function defaultSessionIdOf(list) {
 
 /* ---------------- SSE（Server-Sent Events）---------------- */
 
-/** SSE 分组：session_id -> Set<client>。client = { res, pid, view, lastVersion }。
+/** SSE 分组：session_id -> Set<client>。
+ *  client = { res, pid, view, lastVersion, heartbeat, closed }。
  *  广播只在组内进行，不同场次的客户端互不可见。 */
 const sseClients = new Map();
 
-/** 向单个 SSE 连接发送一条事件。返回是否写入成功（连接已关闭时返回 false）。 */
+/**
+ * 单条连接允许堆积的待发字节上限。
+ *
+ * 半开连接（对端已消失、链路静默）是 SSE 唯一没法靠 write 失败发现的状态：
+ * write() 只是把数据交给 socket，返回 true 不等于对端收到；链路静默后内核发送缓冲
+ * 先吃掉几百 KB，再往后全堆在 socket 写缓冲里无限增长（实测每帧 32KB 一直累加）。
+ * 堆过这个阈值就不再是「对端慢」而是「对端没了」——断开让它重连拿全量快照，
+ * 比留一条永远发不出去、还吃内存的连接强。
+ */
+const SSE_MAX_PENDING_BYTES = 1024 * 1024;
+
+/** 连接是否已经不能再用：已关闭 / 已销毁 / 待发队列堆爆（半开连接）。
+ *  这是判定「该不该继续往这条连接写」的唯一口径。 */
+function sseDead(res) {
+  return !!res.destroyed || !!res.writableEnded || res.writableLength > SSE_MAX_PENDING_BYTES;
+}
+
+/** 向单个 SSE 连接发送一条事件。返回是否写入成功（连接已关闭 / 已失效时返回 false）。 */
 function sseSend(res, event, data, id) {
   try {
+    if (sseDead(res)) return false;
     // state 事件以场次版本号为 id：EventSource 重连时会经 Last-Event-ID 头带回。
     // 服务端不解析该头 —— 广播本来就是全量快照，重连首帧必定落在当前版本，
     // 「客户端错过多少」不需要判断，也无从增量补发
@@ -254,30 +273,70 @@ function sseSend(res, event, data, id) {
   }
 }
 
+/** 把连接从组里摘掉并停掉心跳。幂等：重复调用只有第一次生效。
+ *  心跳是 per-connection 定时器，漏清就是一条永远不会消失的定时器，所以「出组」和
+ *  「停表」必须绑在一起做，不能各写各的。 */
+function sseRemoveClient(sid, client) {
+  if (!client || client.closed) return;
+  client.closed = true;
+  if (client.heartbeat) { clearInterval(client.heartbeat); client.heartbeat = null; }
+  const group = sseClients.get(sid);
+  if (!group) return;
+  group.delete(client);
+  if (group.size === 0) sseClients.delete(sid);
+}
+
+/** 主动掐掉一条失效连接：先出组（幂等），再 destroy。
+ *  用 destroy 而不是 end：半开连接上 end() 只是把 FIN 排进待发队列，永远发不出去。 */
+function sseKillClient(sid, client) {
+  sseRemoveClient(sid, client);
+  try { client.res.destroy(); } catch (e) { /* 已断开 */ }
+}
+
+/**
+ * SSE 在线连接快照（给存活探针用）。
+ *
+ * connections 是「组里还挂着多少条」——半开连接不会被对端关闭、内核也不一定报错，
+ * 所以这个数只增不减就是有死连接。
+ * maxPendingBytes 是当前最大的待发字节：持续贴着 SSE_MAX_PENDING_BYTES 说明有对端
+ * 长期不读，这是「死连接吃内存」唯一能提前看见的指标（rss 曲线看不出来）。
+ */
+function sseStats() {
+  let connections = 0;
+  let maxPendingBytes = 0;
+  for (const group of sseClients.values()) {
+    for (const c of group) {
+      connections += 1;
+      let pending = 0;
+      try { pending = c.res.writableLength || 0; } catch (e) { pending = 0; }
+      if (pending > maxPendingBytes) maxPendingBytes = pending;
+    }
+  }
+  return { connections, groups: sseClients.size, maxPendingBytes };
+}
+
 /** 向某个场次组内的所有客户端广播状态（携带该场次最新版本号）。
  *  按每个客户端各自登记的 pid 构建负载：玩家端带上自己的 me 视角，
  *  工作人员端（pid 为空）不带 me。 */
 function broadcastSessionState(session) {
   const group = sseClients.get(session.id);
   if (!group) return;
-  for (const c of group) {
-    if (c.res.writableEnded) { group.delete(c); continue; }
+  // 迭代副本：循环里会摘除失效连接，直接遍历 Set 边删边跑不安全
+  for (const c of Array.from(group)) {
     if (!sseSend(c.res, 'state', buildStatePayload(session, c.pid, c.view), session.version)) {
-      group.delete(c);
+      sseKillClient(session.id, c);
       continue;
     }
     c.lastVersion = session.version;
   }
-  if (group.size === 0) sseClients.delete(session.id);
 }
 
 /** 向某个场次组发送一条自定义事件（不改变状态版本）。 */
 function emitToSession(session, event, data) {
   const group = sseClients.get(session.id);
   if (!group) return;
-  for (const c of group) {
-    if (c.res.writableEnded) { group.delete(c); continue; }
-    sseSend(c.res, event, data);
+  for (const c of Array.from(group)) {
+    if (!sseSend(c.res, event, data)) sseKillClient(session.id, c);
   }
 }
 
@@ -287,6 +346,9 @@ function dropSessionClients(session) {
   if (!group) return;
   sseClients.delete(session.id);
   for (const c of group) {
+    if (c.closed) continue;
+    c.closed = true;
+    if (c.heartbeat) { clearInterval(c.heartbeat); c.heartbeat = null; }
     try { c.res.end(); } catch (e) { /* 已断开 */ }
   }
 }
@@ -2853,6 +2915,30 @@ async function handleApi(req, res, url) {
 
 const SSE_HEARTBEAT_MS = 15000; // 心跳间隔：15 秒发一次，防止代理/浏览器超时断开
 
+/**
+ * 重连是否需要撤销 pagehide 留下的 leftAt —— 只读判定，不写库。
+ *
+ * 判定条件与下面的 mutator 逐条对齐，作用只是把「肯定不用写」的情况提前筛掉：
+ * 在场玩家的重连占绝大多数，旧路径每次刷新都进 store.mutate，等于每次刷新都排进
+ * withLocalLock 的串行写队列、付一次真实写事务的成本（实测 12.8–13.5ms），
+ * 几十人同时刷新就是秒级排队，而其中绝大多数 mutator 直接 skip。
+ *
+ * 判 true 时仍然走 mutate，由 mutator 在最新快照上重新校验一次（两次读之间可能
+ * 有人离开、有座位被接走），所以语义与「无条件 mutate」完全一致，不存在漏撤销。
+ */
+function needsLeaveRevoke(session, pid) {
+  const self = session.players[pid];
+  if (!self || self.leftAt == null) return false;      // 本来就在场：写库纯属白跑
+  if (session.number != null) return false;            // 本轮已锁定：名单冻结
+  // 席位已被同座的新玩家接走：不能靠重连把自己放回名单（与扫码的占用判定同一口径）
+  const seat = self.seatNo != null ? session.seats[self.seatNo] : null;
+  if (seat && seat.memberId && seat.memberId !== pid) {
+    const occupant = session.players[seat.memberId];
+    if (occupant && occupant.leftAt == null) return false;
+  }
+  return true;
+}
+
 /** 建立 SSE 长连接。必须带 ?sid=<场次ID>；可再带 ?pid=<玩家ID> 以在每次状态事件中附带该玩家视角。
  *  - 连接后立即下发一次本场次的全量状态（事件名 state），首帧强制读库（fresh）
  *  - 期间本场次的状态变更由 store 的 change 事件广播（本实例提交 + 其他实例的 PUB/SUB 通知）
@@ -2888,8 +2974,8 @@ async function handleStream(req, res, url) {
 
   // 玩家端重连即视为「回到现场」：撤销 pagehide 时上报的离开标记。
   // 浏览器刷新 / 从后台切回 / 切场次回来都会走到这里，所以离开状态不会黏住。
-  // 本轮已锁定时不撤销：锁定即名单冻结，重连只能看结果，不能把自己加回本轮名单。
-  if (!view && pid) {
+  // 先只读预检：不需要撤销就不进写路径（不拿写锁、不读库、不开事务）。
+  if (!view && pid && needsLeaveRevoke(session, pid)) {
     const out = await store.mutate(session.id, (s) => {
       const self = s.players[pid];
       if (!self || self.leftAt == null || s.number != null) return { skip: true, result: {} };
@@ -2914,28 +3000,35 @@ async function handleStream(req, res, url) {
   res.write('retry: 2000\n\n'); // 告知客户端断线后 2 秒重连
 
   // 首条事件：本场次的全量状态（复用场次版本号作为事件 id）
-  sseSend(res, 'state', buildStatePayload(session, pid, view), session.version);
+  if (!sseSend(res, 'state', buildStatePayload(session, pid, view), session.version)) {
+    // 首帧就发不出去（连接在建连过程中已经断了）：不要登记进组，否则要等一轮心跳才发现
+    try { res.end(); } catch (e) { /* 已断开 */ }
+    return;
+  }
 
-  const client = { res, pid, view, lastVersion: session.version };
+  const client = { res, pid, view, lastVersion: session.version, heartbeat: null, closed: false };
   let group = sseClients.get(session.id);
   if (!group) { group = new Set(); sseClients.set(session.id, group); }
   group.add(client);
 
-  // 心跳定时器
-  const heartbeat = setInterval(() => {
-    if (res.writableEnded) return;
-    sseSend(res, 'ping', { t: Date.now() });
+  // 连接级错误：SSE 上「对端已经没了」是常态（关页面、切网络、进程被杀），
+  // 这里一律吞掉并清理，不让它冒到进程级。清理是幂等的，和 close 重复触发无害。
+  req.on('error', () => sseRemoveClient(session.id, client));
+  res.on('error', () => sseRemoveClient(session.id, client));
+  // 内核 keepalive 探测：链路静默时靠 TCP 探活兜最后一层（分钟级，比完全不管强）
+  try { req.socket.setKeepAlive(true, 30000); } catch (e) { /* 忽略 */ }
+
+  // 心跳定时器：既是保活，也是唯一的「连接还活着吗」巡检点。
+  // 写失败 / 待发队列堆爆（半开连接）都说明对端已经不在，就地回收，
+  // 否则它会一直挂在组里、一直吃内存，直到内核 TCP 超时（实测 >70s 也不一定报）。
+  client.heartbeat = setInterval(() => {
+    if (!sseSend(res, 'ping', { t: Date.now() })) sseKillClient(session.id, client);
   }, SSE_HEARTBEAT_MS);
 
   // 客户端主动关闭（关闭页面/调用 close()）：清理资源
   req.on('close', () => {
-    clearInterval(heartbeat);
-    const g = sseClients.get(session.id);
-    if (g) {
-      g.delete(client);
-      if (g.size === 0) sseClients.delete(session.id);
-    }
-    res.end();
+    sseRemoveClient(session.id, client);
+    try { res.end(); } catch (e) { /* 已断开 */ }
   });
 }
 
@@ -3047,6 +3140,7 @@ async function handleHealth(req, res, url) {
       ok: true,
       status: 'ok',
       uptimeSec: Math.round((Date.now() - HEALTH_STARTED_AT) / 1000),
+      sse: sseStats(),
       instance: INSTANCE_ID,
       time: new Date().toISOString()
     });
@@ -3247,6 +3341,37 @@ async function start() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
+
+/* ---------------- 进程级兜底 ----------------
+ *
+ * 单条 SSE 连接的 error 事件漏网（没挂连接级监听、或挂在别的地方）会直接变成
+ * uncaughtException —— 一条死连接带走整个进程，所有 SSE 同时断，这是最不该发生的故障。
+ * 所以这里按「错在哪」分两类处理：
+ *   - 传输类（EPIPE / ECONNRESET / 写已结束的流）：对端没了是常态，记一行继续跑；
+ *   - 其他未知异常：进程状态不可信，记完整栈后退出，交给编排器重启。
+ *     这类异常在没有处理器时本来就会带走进程，行为没有变化，只是多了一条可查的日志。
+ */
+const TRANSPORT_ERROR_CODES = new Set([
+  'EPIPE', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ERR_STREAM_WRITE_AFTER_END', 'ERR_STREAM_DESTROYED'
+]);
+
+process.on('uncaughtException', (err) => {
+  const code = err && err.code;
+  if (TRANSPORT_ERROR_CODES.has(code)) {
+    console.warn('[sse] 连接层异常已忽略 code=' + code + ' ' + (err && err.message));
+    return;
+  }
+  console.error('[fatal] 未捕获异常:', err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  // 挂上监听会覆盖 Node 默认的「未处理拒绝即退出」，这里显式补回同样的结局，
+  // 只是先留一条能定位的日志
+  console.error('[fatal] 未处理的 Promise 拒绝:', reason && reason.stack ? reason.stack : reason);
+  process.exit(1);
+});
 
 start();
 
