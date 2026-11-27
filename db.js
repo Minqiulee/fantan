@@ -58,7 +58,7 @@ const { Pool } = require('pg');
 const crypto = require('crypto');
 const memberId = require('./lib/member-id');
 // 席位数默认值 / 上下界只有一处定义，本层所有兜底与 clamp 都引用它
-const { DEFAULT_SEAT_COUNT, clampSeatCount } = require('./lib/seats');
+const { DEFAULT_SEAT_COUNT, clampSeatCount, seatNosFor } = require('./lib/seats');
 
 const LOCAL_DEFAULT_URL = 'postgres://postgres:postgres@localhost:5432/oddeven';
 
@@ -312,14 +312,14 @@ async function initDb() {
     );
   `);
 
-  // 席位表：一场 N 行（1…seat_count），是「谁占用哪个座位」的唯一事实来源。
+  // 席位表：一场 N 行（编号取自 lib/seats.js 的席位清单），是「谁占用哪个座位」的唯一事实来源。
   //   - device_id  绑定到该席位的设备（浏览器本地随机串）；跨轮次保留，换轮次不用重选
   //   - member_id / member_enc  本轮坐在这里的会员（每轮 reset 清空，席位本身不清）
   //   - 席位由场次创建 / 扩缩容时物化出来，占用校验在 store.mutate 的同一把乐观锁内完成
   await p.query(`
     CREATE TABLE IF NOT EXISTS session_seat (
       session_id TEXT    NOT NULL,          -- 所属场次
-      seat_no    INTEGER NOT NULL,          -- 席位号（1…seat_count，稳定不重排）
+      seat_no    INTEGER NOT NULL,          -- 席位号（取自席位清单，稳定不重排）
       device_id  TEXT,                      -- 绑定设备（null = 空席位）
       member_id  TEXT,                      -- 本轮该席位的会员 ref（null = 本轮未登记）
       member_enc TEXT,                      -- 会员号密文（与 player.member_enc 同格式）
@@ -528,15 +528,18 @@ function rowToSession(r) {
     seats: {},
     version: r.version != null ? Number(r.version) : 1
   };
-  // 席位先按 seat_count 铺满，再用库里的行覆盖：
-  // 老场次（席位化之前建的）没有 session_seat 行，也必须能正常读出「N 个空席位」，
+  // 席位先按 seat_count 对应的编号清单铺满，再用库里的行覆盖：
+  // 老场次（席位化之前建的、或编号还是连续 1…N 的）没有对应行时也必须能正常读出「N 个空席位」，
   // 否则第一次 join 会因为快照里没有 seat 而误判越界。
-  for (let i = 1; i <= seatCount; i += 1) {
-    s.seats[i] = { no: i, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
+  for (const no of seatNosFor(seatCount)) {
+    s.seats[no] = { no, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
   }
   for (const row of r.seats || []) {
     const no = Number(row.seat_no);
-    if (!Number.isInteger(no) || no < 1 || no > seatCount) continue;
+    if (!Number.isInteger(no) || no < 1) continue;
+    // 清单之外的库行：有设备绑定的必须保留（老编号的席位不能因为换了清单就丢），
+    // 空席位则忽略——本场次的席位集合以当前清单为准
+    if (!s.seats[no] && !row.device_id) continue;
     s.seats[no] = {
       no,
       deviceId: row.device_id || '',
@@ -1015,12 +1018,12 @@ async function createSessionRow({ id, name, maxOpen, seatCount = DEFAULT_SEAT_CO
        VALUES ($1, 1, NULL, NULL, (SELECT max(version) FROM rule_version))`,
       [id]
     );
-    // 席位物化：1…seatCount 一次建齐，之后占用校验只改行、不改结构
+    // 席位物化：按席位号清单取前 seats 项一次建齐，之后占用校验只改行、不改结构
     await client.query(
       `INSERT INTO session_seat (session_id, seat_no)
-       SELECT $1, g FROM generate_series(1, $2) AS g
+       SELECT $1, u FROM unnest($2::int[]) AS u
        ON CONFLICT (session_id, seat_no) DO NOTHING`,
-      [id, seats]
+      [id, seatNosFor(seats)]
     );
 
     await client.query('COMMIT');

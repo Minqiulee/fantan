@@ -63,13 +63,14 @@ const UNLOCK_LOCK_MS = 30 * 1000;        // 超限后锁定时长
 
 /* 席位（seat）：场次的参与人数 = 席位总数，一个设备占一个席位。
  *   - 设备首次加入场次必须选一个具体席位，绑定关系跟场次走、跨轮次保留
- *   - 席位记录本身（1…seatCount）由场次创建时物化，扩缩容只增删空席位
+ *   - 席位记录本身（按 lib/seats.js 的席位号清单，席位数为 N 就取清单前 N 项）由场次创建时物化，
+ *     扩缩容只增删空席位
  *   - 占用校验与人数上限都在 store.mutate 的同一把版本锁内完成，
  *     所以「两人同时抢同一个席位」只会有一个成功，不存在超卖
  *   - 默认值与上下界只在 lib/seats.js 定义一次：db 层兜底、前端弹窗预填
  *     （见 /shared/seat-config.js）都引用同一份，避免默认值漂移 */
 const {
-  DEFAULT_SEAT_COUNT, MIN_SEAT_COUNT, MAX_SEAT_COUNT, parseSeatCount
+  DEFAULT_SEAT_COUNT, MIN_SEAT_COUNT, MAX_SEAT_COUNT, parseSeatCount, seatNosFor
 } = require('./lib/seats');
 const SEAT_DEVICE_RE = /^[A-Za-z0-9_-]{8,64}$/; // 设备标识：浏览器本地随机串
 
@@ -1695,9 +1696,10 @@ async function handleApi(req, res, url) {
   /* 调整场次参与人数（席位配置）。员工 / 管理员都可用。
    * 规则（与加入、占用校验共用同一把版本锁，因此不存在「校验通过但写进去超卖」）：
    *   - 新人数必须是 1…MAX_SEAT_COUNT 的整数
-   *   - 不能小于「已占用席位里的最大席位号」：有人坐的席位不能凭空消失（要缩容先让人离开）
+   *   - 席位号取自 lib/seats.js 的清单前 N 项（非连续，如 1/2/3/5/6/8）
+   *   - 有人坐的席位不能凭空消失：占用席位的号必须仍在目标清单内（要缩容先让人离开）
    *   - 扩容补空席位；缩容只删空席位，已绑定设备的席位号保持稳定、不重排
-   *   - 已登记玩家的 seatNo 不受影响（缩容 bounds 已经覆盖了所有有人的席位） */
+   *   - 已登记玩家的 seatNo 不受影响（上面的占用校验已经覆盖了所有有人的席位） */
   if (req.method === 'POST' && url.pathname === '/api/session-seats') {
     const body = await readBody(req);
     if (!body) return json(res, 400, { ok: false, code: 'bad_request' });
@@ -1721,7 +1723,14 @@ async function handleApi(req, res, url) {
         return { abort: { status: 409, body: { ok: false, code: 'session_closed' } } };
       }
       const maxUsed = maxOccupiedSeatNo(s);
-      if (next < maxUsed) {
+      // 目标席位号 = 清单前 next 项。缩容/扩容都按这份清单对齐，
+      // 不能再用「号 > next 就删」——席位号不连续，5 号可能在 4 号之前就不存在
+      const target = seatNosFor(next);
+      const targetSet = new Set(target);
+      const droppedOccupied = Object.values(s.seats)
+        .filter((seat) => seat.deviceId && !targetSet.has(seat.no))
+        .map((seat) => seat.no);
+      if (droppedOccupied.length) {
         return {
           abort: {
             status: 409,
@@ -1732,13 +1741,13 @@ async function handleApi(req, res, url) {
           }
         };
       }
-      // 缩容：删掉新上界之外的空席位；扩容：把缺的席位补成空席位
+      // 缩容：删掉目标清单之外的空席位；扩容：把缺的席位补成空席位
       for (const key of Object.keys(s.seats)) {
-        if (Number(key) > next) delete s.seats[key];
+        if (!targetSet.has(Number(key))) delete s.seats[key];
       }
-      for (let i = 1; i <= next; i += 1) {
-        if (!s.seats[i]) {
-          s.seats[i] = { no: i, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
+      for (const no of target) {
+        if (!s.seats[no]) {
+          s.seats[no] = { no, deviceId: '', memberId: '', memberEnc: null, boundAt: null };
         }
       }
       s.seatCount = next;
@@ -1924,7 +1933,11 @@ async function handleApi(req, res, url) {
           }
         };
       }
-      if (asked > s.seatCount) {
+      // 席位是否存在以快照为准：席位号不连续（见 lib/seats.js 的清单），
+      // 不能用「号 > 人数」推断，只能查本场次实际物化出来的席位
+      const seat = s.seats[asked];
+      if (!seat) {
+        // 不在本场席位清单内（含扩容前的旧号段）：拒绝，不静默建行
         return {
           abort: {
             status: 409,
@@ -1934,11 +1947,6 @@ async function handleApi(req, res, url) {
             }
           }
         };
-      }
-      const seat = s.seats[asked];
-      if (!seat) {
-        // 理论不可达：seatCount 内的席位一定被铺满；防御性拒绝，不静默建行
-        return { abort: { status: 409, body: { ok: false, code: 'seat_out_of_range', seatCount: s.seatCount } } };
       }
       if (seat.deviceId) {
         return {

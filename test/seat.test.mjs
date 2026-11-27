@@ -2,7 +2,8 @@
  * 席位（seat）配置与加入流程。
  *
  * 钉死的契约：
- *   1. 场次可配置参与人数 = 席位总数；创建时物化 1…N，扩缩容只增删空席位；
+ *   1. 场次可配置参与人数 = 席位总数；创建时按席位号清单（默认 1/2/3/5/6/8）物化前 N 项，
+ *      扩缩容只增删空席位；
  *   2. 设备第一次加入必须选中一个具体席位，绑定跟场次走；
  *   3. 同一席位不能被两台设备占用（并发抢座只有一个成功），越界 / 未选座有明确错误码；
  *   4. 扫码登记必须发生在已选席位的设备上，玩家记录带 seatNo；一个会员一轮只能占一个席位；
@@ -77,7 +78,7 @@ test('场次创建即按配置物化席位，非法人数被拒', async () => {
   assert.equal(s.body.ok, true);
   assert.equal(s.body.seatCount, 6);
   assert.equal(s.body.seats.length, 6);
-  assert.deepEqual(s.body.seats.map((x) => x.no), Array.from({ length: 6 }, (_, i) => i + 1));
+  assert.deepEqual(s.body.seats.map((x) => x.no), [1, 2, 3, 5, 6, 8], '席位号按清单排，不连续');
   assert.equal(s.body.seats.every((x) => !x.occupied), true);
 
   for (const bad of [0, -1, 65, 3.5, 'x', true]) {
@@ -156,19 +157,20 @@ test('加入必须选具体席位；占用、越界、重复加入都有确定�
   assert.equal(grow.body.seats.length, 5);
   assert.equal(grow.body.occupied, 2);
 
-  const newSeat = await joinSeat(api, sid, ut, 4, c);
+  const newSeat = await joinSeat(api, sid, ut, 5, c);
   assert.equal(newSeat.status, 200, '扩容后的新席位可加入');
-  assert.equal(newSeat.body.seatNo, 4);
+  assert.equal(newSeat.body.seatNo, 5);
 
   const below = await api.post('/api/session-seats', { token, sid, seats: 3 });
-  assert.equal(below.status, 409, '4 号有人，缩到 3 必须被拒');
+  assert.equal(below.status, 409, '5 号有人，缩到 3（清单不含 5）必须被拒');
   assert.equal(below.body.code, 'seat_count_below_occupied');
-  assert.equal(below.body.maxOccupied, 4);
+  assert.equal(below.body.maxOccupied, 5);
 
   const ok = await api.post('/api/session-seats', { token, sid, seats: 4 });
-  assert.equal(ok.status, 200, '缩到最大已占用席位号是允许的');
+  assert.equal(ok.status, 200, '缩到仍包含 5 号的容量是允许的');
   assert.equal(ok.body.seatCount, 4);
   assert.equal(ok.body.seats.length, 4);
+  assert.deepEqual(ok.body.seats.map((x) => x.no), [1, 2, 3, 5]);
 
   await closeSession(sid);
 });
@@ -188,7 +190,7 @@ test('扫码必须在已选席位的设备上；会员与席位一一对应', as
   assert.equal(unbound.body.code, 'seat_required');
 
   assert.equal((await joinSeat(api, sid, ut, 3, d1)).status, 200);
-  assert.equal((await joinSeat(api, sid, ut, 4, d2)).status, 200);
+  assert.equal((await joinSeat(api, sid, ut, 5, d2)).status, 200);
 
   const reg = await scanOn(sid, ut, 'M1', d1);
   assert.equal(reg.status, 200, JSON.stringify(reg.body));
